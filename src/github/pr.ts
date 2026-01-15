@@ -13,6 +13,15 @@ export type PrResult = {
   title: string;
 };
 
+export type OpenPrInfo = {
+  pr: PrIdent;
+  title: string;
+  headBranch: string;
+  headSha: string;
+  baseBranch: string;
+  isDraft: boolean;
+};
+
 export type MergedPrInfo = {
   number: number;
   title: string;
@@ -299,4 +308,45 @@ export async function findMergedPr(options: {
     baseBranch: merged.base.ref,
     mergedAt: merged.merged_at,
   };
+}
+
+export async function listOpenPullRequests(options: {
+  owner: string;
+  repo: string;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<OpenPrInfo[]> {
+  const octokit = createOctokit();
+  let response;
+  try {
+    response = await octokit.rest.pulls.list({
+      owner: options.owner,
+      repo: options.repo,
+      state: 'open',
+      per_page: 50,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'find_pr',
+      error,
+      details: 'Failed to list open PRs',
+    });
+    throw error;
+  }
+
+  return response.data.map((pr) => ({
+    pr: {
+      owner: options.owner,
+      repo: options.repo,
+      number: pr.number,
+      url: pr.html_url ?? undefined,
+    },
+    title: pr.title,
+    headBranch: pr.head.ref,
+    headSha: pr.head.sha,
+    baseBranch: pr.base.ref,
+    isDraft: Boolean(pr.draft),
+  }));
 }

@@ -21,8 +21,15 @@ export const configSchema = z.object({
       project: z.string().optional(),
       teams: z.array(z.string()).optional(),
       ticketPrefixes: z.array(z.string()).optional(),
+      states: z
+        .object({
+          inProgress: z.string().default('In Progress'),
+          inReview: z.string().optional(),
+          done: z.string().optional(),
+        })
+        .default({ inProgress: 'In Progress' }),
     })
-    .default({ enabled: true }),
+    .default({ enabled: true, states: { inProgress: 'In Progress' } }),
   github: z
     .object({
       owner: z.string().optional(),

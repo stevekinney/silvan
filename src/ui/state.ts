@@ -116,6 +116,12 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
         })),
       };
     }
+    case 'github.prs_snapshot': {
+      return {
+        ...state,
+        openPrs: event.payload.prs,
+      };
+    }
     default:
       return state;
   }

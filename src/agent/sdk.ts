@@ -79,6 +79,7 @@ export async function runClaudePrompt(
 export function createToolHooks(options: {
   bus?: EventBus;
   context: EmitContext;
+  onHeartbeat?: () => Promise<void>;
   onToolCall?: (entry: {
     toolCallId: string;
     toolName: string;
@@ -93,6 +94,7 @@ export function createToolHooks(options: {
     hooks: [
       async (input) => {
         if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+        await options.onHeartbeat?.();
         const argsDigest = hashString(JSON.stringify(input.tool_input ?? {}));
         await options.bus?.emit(
           createEnvelope({
@@ -116,6 +118,7 @@ export function createToolHooks(options: {
     hooks: [
       async (input) => {
         if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+        await options.onHeartbeat?.();
         const resultDigest = hashString(JSON.stringify(input.tool_response ?? {}));
         await options.bus?.emit(
           createEnvelope({
@@ -146,6 +149,7 @@ export function createToolHooks(options: {
     hooks: [
       async (input) => {
         if (input.hook_event_name !== 'PostToolUseFailure') return { continue: true };
+        await options.onHeartbeat?.();
         await options.bus?.emit(
           createEnvelope({
             type: 'ai.tool_call_finished',

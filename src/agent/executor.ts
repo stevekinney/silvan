@@ -3,13 +3,13 @@ import type { SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
+import type { StateStore } from '../state/store';
 import { createToolRegistry } from './registry';
-import type { Plan } from './schemas';
 import { createToolHooks, runClaudePrompt } from './sdk';
 import type { SessionPool } from './session';
 
 export type ExecutorInput = {
-  plan: Plan;
+  planDigest?: string;
   model: string;
   repoRoot: string;
   config: Parameters<typeof createToolRegistry>[0]['config'];
@@ -18,11 +18,13 @@ export type ExecutorInput = {
   allowDangerous: boolean;
   bus?: EventBus;
   context: EmitContext;
+  state?: StateStore;
   maxTurns?: number;
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
   toolBudget?: { maxCalls?: number; maxDurationMs?: number };
   sessionPool?: SessionPool;
+  heartbeat?: () => Promise<void>;
   toolCallLog?: Array<{
     toolCallId: string;
     toolName: string;
@@ -42,6 +44,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     ...(input.toolBudget ? { toolBudget: input.toolBudget } : {}),
     emitContext: input.context,
     ...(input.bus ? { bus: input.bus } : {}),
+    ...(input.state ? { state: input.state } : {}),
   });
 
   const readOnlyBuiltinTools = new Set([
@@ -63,10 +66,11 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     'Follow the plan step-by-step, using tools when needed.',
     'Do not invent file contents; use fs.read before edits.',
     'Keep changes minimal and aligned to the plan.',
+    'Use silvan.plan.read to fetch the full plan before making edits.',
     'Return a brief summary of changes.',
     '',
-    'Plan JSON:',
-    JSON.stringify(input.plan, null, 2),
+    'Plan digest:',
+    input.planDigest ?? 'unknown',
   ].join('\n');
 
   const start = performance.now();
@@ -97,6 +101,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     const toolHooks = createToolHooks({
       ...(input.bus ? { bus: input.bus } : {}),
       context: input.context,
+      ...(input.heartbeat ? { onHeartbeat: input.heartbeat } : {}),
       ...(input.toolCallLog
         ? {
             onToolCall: (entry) => {

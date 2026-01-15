@@ -65,6 +65,28 @@ const REVIEW_THREADS_QUERY = `
   }
 `;
 
+const REVIEW_THREAD_QUERY = `
+  query ReviewThread($id: ID!) {
+    node(id: $id) {
+      __typename
+      ... on PullRequestReviewThread {
+        id
+        isResolved
+        isOutdated
+        comments(first: 100) {
+          nodes {
+            id
+            body
+            path
+            line
+            url
+          }
+        }
+      }
+    }
+  }
+`;
+
 type ReviewThreadsResponse = {
   repository: {
     pullRequest: {
@@ -101,6 +123,27 @@ type ResolveThreadResponse = {
   resolveReviewThread: {
     thread: { id: string; isResolved: boolean } | null;
   } | null;
+};
+
+type ReviewThreadResponse = {
+  node:
+    | {
+        __typename: 'PullRequestReviewThread';
+        id: string;
+        isResolved: boolean;
+        isOutdated: boolean;
+        comments: {
+          nodes: Array<{
+            id: string;
+            body: string;
+            path: string | null;
+            line: number | null;
+            url: string | null;
+          }>;
+        };
+      }
+    | { __typename: string }
+    | null;
 };
 
 async function findPrForBranch(options: {
@@ -199,6 +242,35 @@ async function fetchReviewThreads(options: {
   return nodes;
 }
 
+export async function fetchReviewThreadById(options: {
+  threadId: string;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<ReviewThreadNode> {
+  const octokit = createOctokit();
+  let response;
+  try {
+    response = await octokit.graphql<ReviewThreadResponse>(REVIEW_THREAD_QUERY, {
+      id: options.threadId,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'fetch_comments',
+      error,
+      details: 'Failed to fetch review thread',
+    });
+    throw error;
+  }
+
+  if (!response.node || response.node.__typename !== 'PullRequestReviewThread') {
+    throw new Error('Review thread not found');
+  }
+
+  return response.node as ReviewThreadNode;
+}
+
 export async function fetchUnresolvedReviewComments(options: {
   owner: string;
   repo: string;
@@ -274,13 +346,13 @@ export async function resolveReviewThread(options: {
     if (options.bus && options.pr) {
       await options.bus.emit(
         createEnvelope({
-          type: 'github.review_comment_resolved',
+          type: 'github.review_thread_resolved',
           source: 'github',
           level: 'info',
           context: options.context,
           payload: {
             pr: options.pr,
-            commentId: options.threadId,
+            threadId: options.threadId,
             resolved,
           },
         }),

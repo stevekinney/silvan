@@ -19,6 +19,15 @@ export type DashboardState = {
     branch?: string;
     pr?: { id: string; ci: CiState; unresolvedReviewCount: number };
   }>;
+  openPrs: Array<{
+    id: string;
+    title: string;
+    url?: string;
+    headBranch: string;
+    baseBranch: string;
+    ci: CiState;
+    unresolvedReviewCount: number;
+  }>;
 };
 
 export type AllEvents = Event;
@@ -27,5 +36,6 @@ export function initialDashboardState(): DashboardState {
   return {
     runs: {},
     worktrees: [],
+    openPrs: [],
   };
 }

@@ -13,8 +13,13 @@ import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
-import { fetchUnresolvedReviewComments, resolveReviewThread } from '../github/review';
+import {
+  fetchReviewThreadById,
+  fetchUnresolvedReviewComments,
+  resolveReviewThread,
+} from '../github/review';
 import { fetchLinearTicket, moveLinearTicket } from '../linear/linear';
+import type { StateStore } from '../state/store';
 
 export type ToolPolicy = {
   repoRoot: string;
@@ -25,6 +30,7 @@ export type ToolPolicy = {
   toolBudget?: { maxCalls?: number; maxDurationMs?: number };
   emitContext: EmitContext;
   bus?: EventBus;
+  state?: StateStore;
 };
 
 export type ToolContext = ToolPolicy & {
@@ -71,6 +77,19 @@ function toStructuredContent(result: unknown): Record<string, unknown> | undefin
   if (typeof result !== 'object' || result === null) return undefined;
   if (Array.isArray(result)) return undefined;
   return result as Record<string, unknown>;
+}
+
+async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> {
+  if (!ctx.state) {
+    throw new Error('State store unavailable for this tool.');
+  }
+  const runId = ctx.emitContext.runId;
+  const state = await ctx.state.readRunState(runId);
+  const data = state?.data;
+  if (!data || typeof data !== 'object') {
+    return {};
+  }
+  return data as Record<string, unknown>;
 }
 
 export function createToolRegistry(context: ToolContext) {
@@ -142,6 +161,51 @@ export function createToolRegistry(context: ToolContext) {
   };
 
   register({
+    name: 'silvan.state.read',
+    description: 'Read persisted run state data',
+    schema: z.object({ key: z.string().optional() }),
+    metadata: withReadOnlyHint(),
+    async execute({ key }) {
+      const data = await readRunState(context);
+      if (!key) return data;
+      return data[key];
+    },
+  });
+
+  register({
+    name: 'silvan.plan.read',
+    description: 'Read the current run plan',
+    schema: z.object({}),
+    metadata: withReadOnlyHint(),
+    async execute() {
+      const data = await readRunState(context);
+      return data['plan'];
+    },
+  });
+
+  register({
+    name: 'silvan.ticket.read',
+    description: 'Read the current run ticket payload',
+    schema: z.object({}),
+    metadata: withReadOnlyHint(),
+    async execute() {
+      const data = await readRunState(context);
+      return data['ticket'];
+    },
+  });
+
+  register({
+    name: 'silvan.review.read',
+    description: 'Read persisted review thread fingerprints',
+    schema: z.object({}),
+    metadata: withReadOnlyHint(),
+    async execute() {
+      const data = await readRunState(context);
+      return data['reviewThreads'];
+    },
+  });
+
+  register({
     name: 'github.pr.open',
     description: 'Open or update a pull request',
     schema: z.object({
@@ -200,6 +264,20 @@ export function createToolRegistry(context: ToolContext) {
         owner,
         repo,
         headBranch,
+        ...(context.bus ? { bus: context.bus } : {}),
+        context: context.emitContext,
+      });
+    },
+  });
+
+  register({
+    name: 'github.review.thread',
+    description: 'Fetch a review thread by ID',
+    schema: z.object({ threadId: z.string() }),
+    metadata: withReadOnlyHint(),
+    async execute({ threadId }) {
+      return await fetchReviewThreadById({
+        threadId,
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });

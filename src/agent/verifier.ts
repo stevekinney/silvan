@@ -22,6 +22,9 @@ export async function decideVerification(input: {
     results: Array<{ name: string; exitCode: number; stderr: string }>;
   };
   session?: ClaudeSession;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  maxThinkingTokens?: number;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<VerificationDecision> {
@@ -37,6 +40,13 @@ export async function decideVerification(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
+    ...(typeof input.maxBudgetUsd === 'number'
+      ? { maxBudgetUsd: input.maxBudgetUsd }
+      : {}),
+    ...(typeof input.maxThinkingTokens === 'number'
+      ? { maxThinkingTokens: input.maxThinkingTokens }
+      : {}),
     ...(input.session ? { session: input.session } : {}),
   });
 

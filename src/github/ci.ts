@@ -1,16 +1,11 @@
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
-import type { CiState, PrIdent } from '../events/schema';
+import type { CiState, CiStatus, PrIdent } from '../events/schema';
 import { createOctokit } from './client';
 import { emitGitHubError } from './errors';
 
-export type CiResult = {
-  pr: PrIdent;
-  state: CiState;
-  summary?: string;
-  checks: Array<{ name: string; state: string; conclusion?: string; url?: string }>;
-};
+export type CiResult = CiStatus;
 
 type PrWithHead = { pr: PrIdent; headSha: string };
 
@@ -80,16 +75,70 @@ function normalizeCiState(conclusions: Array<string | null | undefined>): CiStat
   return 'unknown';
 }
 
+export async function getCiStatus(options: {
+  owner: string;
+  repo: string;
+  headSha: string;
+  pr: PrIdent;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<CiResult> {
+  const octokit = createOctokit();
+  let checks;
+  try {
+    checks = await octokit.rest.checks.listForRef({
+      owner: options.owner,
+      repo: options.repo,
+      ref: options.headSha,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'fetch_checks',
+      error,
+      pr: options.pr,
+      details: 'Failed to fetch CI checks',
+    });
+    throw error;
+  }
+
+  const checkRuns = checks.data.check_runs;
+  const state = normalizeCiState(checkRuns.map((run) => run.conclusion));
+  const summary = `${checkRuns.length} checks`;
+
+  return {
+    pr: options.pr,
+    state,
+    summary,
+    checks: checkRuns.map((run) => {
+      const state =
+        run.status === 'completed'
+          ? 'completed'
+          : run.status === 'in_progress'
+            ? 'in_progress'
+            : 'queued';
+      const check: NonNullable<CiStatus['checks']>[number] = {
+        name: run.name,
+        state,
+        ...(run.conclusion ? { conclusion: run.conclusion } : {}),
+        ...(run.html_url ? { url: run.html_url } : {}),
+      };
+      return check;
+    }),
+  };
+}
+
 export async function waitForCi(options: {
   owner: string;
   repo: string;
   headBranch: string;
   pollIntervalMs: number;
   timeoutMs: number;
+  onHeartbeat?: () => Promise<void>;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<CiResult> {
-  const octokit = createOctokit();
   const start = Date.now();
   let { pr, headSha } = await findPrForBranch(options);
 
@@ -111,51 +160,14 @@ export async function waitForCi(options: {
       headSha = latest.headSha;
       pr = latest.pr;
     }
-    let checks;
-    try {
-      checks = await octokit.rest.checks.listForRef({
-        owner: options.owner,
-        repo: options.repo,
-        ref: headSha,
-      });
-    } catch (error) {
-      await emitGitHubError({
-        ...(options.bus ? { bus: options.bus } : {}),
-        context: options.context,
-        operation: 'fetch_checks',
-        error,
-        pr,
-        details: 'Failed to fetch CI checks',
-      });
-      throw error;
-    }
-
-    const checkRuns = checks.data.check_runs;
-    const state = normalizeCiState(checkRuns.map((run) => run.conclusion));
-    const summary = `${checkRuns.length} checks`;
-
-    const payload = {
+    const payload = await getCiStatus({
+      owner: options.owner,
+      repo: options.repo,
+      headSha,
       pr,
-      state,
-      summary,
-      checks: checkRuns.map((run) => {
-        const check = {
-          name: run.name,
-          state:
-            run.status === 'completed'
-              ? 'completed'
-              : run.status === 'in_progress'
-                ? 'in_progress'
-                : 'queued',
-        } as const;
-
-        return {
-          ...check,
-          ...(run.conclusion ? { conclusion: run.conclusion } : {}),
-          ...(run.html_url ? { url: run.html_url } : {}),
-        };
-      }),
-    };
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+    });
 
     if (options.bus) {
       await options.bus.emit(
@@ -169,7 +181,7 @@ export async function waitForCi(options: {
       );
     }
 
-    if (state === 'passing' || state === 'failing') {
+    if (payload.state === 'passing' || payload.state === 'failing') {
       const durationMs = Date.now() - start;
       if (options.bus) {
         await options.bus.emit(
@@ -186,6 +198,9 @@ export async function waitForCi(options: {
       return payload;
     }
 
+    if (options.onHeartbeat) {
+      await options.onHeartbeat();
+    }
     await Bun.sleep(options.pollIntervalMs);
   }
 

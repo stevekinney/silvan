@@ -1,12 +1,16 @@
+import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import { cac } from 'cac';
 
+import { collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
+import { detectRepoContext } from '../core/repo';
 import {
+  resumeRun,
   runImplementation,
   runPlanner,
   runRecovery,
@@ -31,7 +35,8 @@ import {
 import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
-import { mountDashboard } from '../ui';
+import { initStateStore } from '../state/store';
+import { mountDashboard, startPrSnapshotPoller } from '../ui';
 import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
@@ -514,12 +519,120 @@ cli
     });
   });
 
+cli.command('runs list', 'List recorded runs').action(async (options: CliOptions) => {
+  const repo = await detectRepoContext({ cwd: process.cwd() });
+  const state = await initStateStore(repo.repoRoot, { lock: false });
+  const runEntries = await readdir(state.runsDir);
+  const files = runEntries.filter((entry) => entry.endsWith('.json'));
+  const runs = [];
+
+  for (const file of files) {
+    const runId = file.replace(/\.json$/, '');
+    const snapshot = await state.readRunState(runId);
+    if (!snapshot) continue;
+    const data = snapshot.data as Record<string, unknown>;
+    const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
+      status?: string;
+      phase?: string;
+      step?: string;
+      updatedAt?: string;
+    };
+    const summary = (typeof data['summary'] === 'object' && data['summary']
+      ? data['summary']
+      : {}) as { prUrl?: string };
+
+    runs.push({
+      runId,
+      status: run.status ?? 'unknown',
+      phase: run.phase ?? 'unknown',
+      step: run.step,
+      updatedAt: run.updatedAt,
+      prUrl: summary.prUrl,
+    });
+  }
+
+  runs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+
+  if (options.json) {
+    console.log(JSON.stringify({ runs }, null, 2));
+    return;
+  }
+
+  for (const run of runs) {
+    const parts = [
+      run.runId,
+      run.status,
+      run.phase,
+      run.step ?? '-',
+      run.updatedAt ?? '-',
+      run.prUrl ?? '',
+    ].filter((part) => part !== '');
+    console.log(parts.join(' | '));
+  }
+});
+
+cli.command('runs inspect <runId>', 'Inspect a run snapshot').action(async (runId: string, options: CliOptions) => {
+  const repo = await detectRepoContext({ cwd: process.cwd() });
+  const state = await initStateStore(repo.repoRoot, { lock: false });
+  const snapshot = await state.readRunState(runId);
+  if (!snapshot) {
+    throw new Error(`Run not found: ${runId}`);
+  }
+  if (options.json) {
+    console.log(JSON.stringify(snapshot, null, 2));
+    return;
+  }
+  console.log(JSON.stringify(snapshot, null, 2));
+});
+
+cli
+  .command('runs resume <runId>', 'Resume a run from state')
+  .option('--dry-run', 'Allow only read-only tools')
+  .option('--apply', 'Allow mutating tools')
+  .option('--dangerous', 'Allow dangerous tools (requires --apply)')
+  .action((runId: string, options: CliOptions) =>
+    withRunContext({ cwd: process.cwd(), mode: 'headless', runId }, async (ctx) =>
+      withAgentSessions(async (sessions) => {
+        const runOptions = {
+          ...(options.dryRun ? { dryRun: true } : {}),
+          ...(options.apply ? { apply: true } : {}),
+          ...(options.dangerous ? { dangerous: true } : {}),
+          sessions,
+        };
+        await resumeRun(ctx, runOptions);
+      }),
+    ),
+  );
+
 cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
   if (options.noUi) {
     throw new Error('The --no-ui flag cannot be used with silvan ui.');
   }
   await withRunContext({ cwd: process.cwd(), mode: 'ui', lock: false }, async (ctx) => {
-    await mountDashboard(ctx.events.bus, ctx.state);
+    let stopPolling = () => {};
+    try {
+      requireGitHubAuth();
+      const github = await requireGitHubConfig({
+        config: ctx.config,
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      });
+      stopPolling = startPrSnapshotPoller({
+        owner: github.owner,
+        repo: github.repo,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      });
+    } catch {
+      stopPolling = () => {};
+    }
+
+    try {
+      await mountDashboard(ctx.events.bus, ctx.state);
+    } finally {
+      stopPolling();
+    }
   });
 });
 
@@ -589,6 +702,68 @@ cli
           sessions,
         }),
       ),
+    ),
+  );
+
+cli
+  .command('agent clarify', 'Answer plan questions')
+  .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
+  .action((options: CliOptions & { answer?: string | string[] }) =>
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
+      withAgentSessions(async (sessions) => {
+        const state = await ctx.state.readRunState(ctx.runId);
+        const data = (state?.data as Record<string, unknown>) ?? {};
+        const plan = data['plan'];
+        if (!plan || typeof plan !== 'object') {
+          throw new Error('No plan found in run state. Run agent plan first.');
+        }
+
+        const questions = Array.isArray((plan as { questions?: unknown }).questions)
+          ? ((plan as { questions?: Array<{ id: string; text: string; required?: boolean }> })
+              .questions ?? [])
+          : [];
+
+        if (questions.length === 0) {
+          console.log('No clarifications needed.');
+          return;
+        }
+
+        const provided = parseAnswerPairs(options.answer);
+        const clarifications = await collectClarifications({
+          questions,
+          answers: {
+            ...(typeof data['clarifications'] === 'object' && data['clarifications']
+              ? (data['clarifications'] as Record<string, string>)
+              : {}),
+            ...provided,
+          },
+        });
+
+        const missingRequired = questions.filter(
+          (question) => question.required !== false && !clarifications[question.id],
+        );
+        if (missingRequired.length > 0) {
+          const ids = missingRequired.map((question) => question.id).join(', ');
+          throw new Error(`Missing required clarifications: ${ids}`);
+        }
+
+        await persistRunState(ctx, ctx.events.mode, (data) => ({
+          ...data,
+          clarifications,
+        }));
+
+        const ticket = data['ticket'];
+        const ticketId =
+          typeof ticket === 'object' && ticket && 'identifier' in ticket
+            ? (ticket as { identifier?: string }).identifier
+            : undefined;
+
+        await runPlanner(ctx, {
+          ...(ticketId ? { ticketId } : {}),
+          clarifications,
+          sessions,
+        });
+      }),
     ),
   );
 
@@ -838,4 +1013,19 @@ async function withAgentSessions<T>(
   } finally {
     sessions.close();
   }
+}
+
+function parseAnswerPairs(
+  raw: string | string[] | undefined,
+): Record<string, string> {
+  if (!raw) return {};
+  const entries = Array.isArray(raw) ? raw : [raw];
+  const answers: Record<string, string> = {};
+  for (const entry of entries) {
+    const [id, ...rest] = entry.split('=');
+    const value = rest.join('=').trim();
+    if (!id || !value) continue;
+    answers[id.trim()] = value;
+  }
+  return answers;
 }

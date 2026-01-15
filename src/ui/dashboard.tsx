@@ -63,6 +63,19 @@ export function Dashboard({ bus }: { bus: EventBus }): React.ReactElement {
         )}
       </Box>
 
+      <Box flexDirection="column">
+        <Text>Open PRs</Text>
+        {snapshot.openPrs.length === 0 ? (
+          <Text color="gray">No open PRs</Text>
+        ) : (
+          snapshot.openPrs.map((pr) => (
+            <Text key={pr.id}>
+              {pr.id} • CI {pr.ci} • {pr.unresolvedReviewCount} unresolved
+            </Text>
+          ))
+        )}
+      </Box>
+
       <Text color="gray">Press q to quit.</Text>
     </Box>
   );

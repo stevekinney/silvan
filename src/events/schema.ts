@@ -175,9 +175,21 @@ export type GitHubReviewCommentsFetched = {
 
 export type GitHubReviewCommentResolved = {
   pr: PrIdent;
-  commentId: string;
+  threadId: string;
   resolved: boolean;
   reason?: string;
+};
+
+export type GitHubPrSnapshot = {
+  prs: Array<{
+    id: string;
+    title: string;
+    url?: string;
+    headBranch: string;
+    baseBranch: string;
+    ci: CiState;
+    unresolvedReviewCount: number;
+  }>;
 };
 
 export type GitHubError = {
@@ -233,6 +245,7 @@ export type AiPlanGenerated = {
   model: AiModelInfo;
   planKind:
     | 'ticket_plan'
+    | 'ci_fix_plan'
     | 'review_fix_plan'
     | 'recovery_plan'
     | 'pr_draft'
@@ -303,9 +316,10 @@ export type Event =
   | EventEnvelope<'worktree.created', WorktreeCreated>
   | EventEnvelope<'worktree.removed', WorktreeRemoved>
   | EventEnvelope<'github.pr_opened_or_updated', GitHubPrOpenedOrUpdated>
+  | EventEnvelope<'github.prs_snapshot', GitHubPrSnapshot>
   | EventEnvelope<'github.review_requested', GitHubReviewRequested>
   | EventEnvelope<'github.review_comments_fetched', GitHubReviewCommentsFetched>
-  | EventEnvelope<'github.review_comment_resolved', GitHubReviewCommentResolved>
+  | EventEnvelope<'github.review_thread_resolved', GitHubReviewCommentResolved>
   | EventEnvelope<'github.error', GitHubError>
   | EventEnvelope<'ci.status', CiStatus>
   | EventEnvelope<'ci.wait_started', CiWaitStarted>

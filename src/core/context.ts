@@ -17,14 +17,39 @@ export async function createRunContext(options: {
   cwd: string;
   mode: EventMode;
   lock?: boolean;
+  runId?: string;
 }): Promise<RunContext> {
-  const runId = crypto.randomUUID();
+  const runId = options.runId ?? crypto.randomUUID();
   const repo = await detectRepoContext({ cwd: options.cwd });
   const configResult = await loadConfig();
   const state = await initStateStore(repo.repoRoot, {
     ...(options.lock !== undefined ? { lock: options.lock } : {}),
   });
   const events = initEvents(state, options.mode);
+
+  await state.updateRunState(runId, (data) => {
+    const now = new Date().toISOString();
+    const existing = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
+    const prior = existing as {
+      version?: string;
+      status?: string;
+      phase?: string;
+      step?: string;
+      attempt?: number;
+      updatedAt?: string;
+    };
+    return {
+      ...data,
+      run: {
+        version: '1.0.0',
+        status: 'running',
+        phase: prior.phase ?? 'idle',
+        step: prior.step,
+        attempt: prior.attempt ?? 0,
+        updatedAt: now,
+      },
+    };
+  });
 
   const emitContext = {
     runId,
@@ -59,7 +84,7 @@ export async function createRunContext(options: {
 }
 
 export async function withRunContext<T>(
-  options: { cwd: string; mode: EventMode; lock?: boolean },
+  options: { cwd: string; mode: EventMode; lock?: boolean; runId?: string },
   fn: (ctx: RunContext) => Promise<T>,
 ): Promise<T> {
   const start = Date.now();
@@ -77,6 +102,29 @@ export async function withRunContext<T>(
     status: RunFinished['status'],
     error?: unknown,
   ): Promise<void> => {
+    await ctx.state.updateRunState(ctx.runId, (data) => {
+      const now = new Date().toISOString();
+      const existing = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
+      const prior = existing as {
+        version?: string;
+        status?: string;
+        phase?: string;
+        step?: string;
+        attempt?: number;
+      };
+      return {
+        ...data,
+        run: {
+          version: '1.0.0',
+          status,
+          phase: prior.phase ?? 'idle',
+          step: prior.step,
+          attempt: prior.attempt ?? 0,
+          updatedAt: now,
+        },
+      };
+    });
+
     const summary = await buildRunSummary(ctx);
     const payload: RunFinished = {
       status,

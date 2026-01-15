@@ -10,6 +10,9 @@ export async function generateRecoveryPlan(input: {
   model: string;
   runState: Record<string, unknown>;
   session?: ClaudeSession;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  maxThinkingTokens?: number;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<RecoveryPlan> {
@@ -26,6 +29,13 @@ export async function generateRecoveryPlan(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
+    ...(typeof input.maxBudgetUsd === 'number'
+      ? { maxBudgetUsd: input.maxBudgetUsd }
+      : {}),
+    ...(typeof input.maxThinkingTokens === 'number'
+      ? { maxThinkingTokens: input.maxThinkingTokens }
+      : {}),
     ...(input.session ? { session: input.session } : {}),
   });
 

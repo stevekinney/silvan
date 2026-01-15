@@ -57,6 +57,14 @@ const config: Config = {
   repo: {
     defaultBranch: 'main',
   },
+  linear: {
+    enabled: true,
+    states: {
+      inProgress: 'In Progress',
+      inReview: 'In Review',
+      done: 'Done',
+    },
+  },
   github: {
     owner: 'acme',
     repo: 'my-repo',
@@ -82,9 +90,13 @@ export default config;
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access for PR and CI commands.
 - `LINEAR_API_KEY`: Linear ticket access for planning.
-- `CLAUDE_MODEL`: override the default Claude model.
+- `CLAUDE_MODEL`: default Claude model (fallback for all phases).
+- `SILVAN_MODEL_PLAN|EXECUTE|REVIEW|PR|RECOVERY|VERIFY`: override model per phase.
 - `SILVAN_MAX_TOOL_CALLS`: cap tool calls per agent execution.
 - `SILVAN_MAX_TOOL_MS`: cap tool execution duration per agent execution.
+- `SILVAN_MAX_TURNS` (and per-phase `SILVAN_MAX_TURNS_*`): cap agent turns.
+- `SILVAN_MAX_BUDGET_USD` (and per-phase `SILVAN_MAX_BUDGET_USD_*`): budget guardrails.
+- `SILVAN_MAX_THINKING_TOKENS` (and per-phase `SILVAN_MAX_THINKING_TOKENS_*`): cap thinking tokens.
 - `SILVAN_PERSIST_SESSIONS=1`: reuse Claude sessions across phases in a run.
 
 ## Commands
@@ -122,11 +134,18 @@ export default config;
 
 - `task start [ticket]` - create worktree + generate plan (ticket inferred from branch if omitted)
 - `agent plan` - generate and persist a structured plan
+- `agent clarify` - answer required plan questions and regenerate the plan
 - `agent run` - execute the plan and open/update PRs
   - `--dry-run` (read-only tools only)
   - `--apply` (allow safe mutations)
   - `--dangerous` (allow dangerous mutations; requires `--apply`)
 - `agent resume` - generate recovery plan and execute recommended next action
+
+### Runs
+
+- `runs list` - list recorded runs
+- `runs inspect <runId>` - inspect a run snapshot
+- `runs resume <runId>` - resume a run from state
 
 ### Diagnostics
 
@@ -152,6 +171,14 @@ Run state and audit logs are stored in `.silvan/` at the repo root:
 - Dirty worktrees are blocked unless `--force` is provided.
 - Git commands emit start/finish events for observability.
 
+## Agent Workflow Notes
+
+- Planning produces a structured plan and stops if clarifications are required.
+- Execution pulls plan and ticket context via tools, keeping prompts smaller.
+- Verification failures are triaged deterministically; the verifier agent runs only when needed.
+- Review loop waits for CI and re-requests reviewers after fixes.
+- Runs persist step cursors for resumability (`runs resume <runId>`).
+
 ## Development
 
 ```bash
@@ -166,9 +193,9 @@ bun test
 
 ## Roadmap
 
-- Review loop polish and CI gating improvements
-- Recovery actions that can safely auto-resume more cases
-- Interactive clarification prompt support
+- Two-stage review planning (fingerprints → fetch full threads on demand)
+- Context budgeter + cached agent outputs by digest
+- Deterministic PR drafting with optional AI polish
 
 ## License
 

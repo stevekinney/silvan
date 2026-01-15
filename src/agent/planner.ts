@@ -15,7 +15,11 @@ export type PlannerInput = {
   worktreeName?: string;
   repoRoot: string;
   model: string;
+  clarifications?: Record<string, string>;
   session?: ClaudeSession;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  maxThinkingTokens?: number;
   bus?: EventBus;
   context: EmitContext;
 };
@@ -53,6 +57,7 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
     '',
     `Ticket: ${ticket ? `${ticket.identifier} ${ticket.title}` : 'None'}`,
     `Description: ${ticket?.description ?? 'N/A'}`,
+    `Clarifications: ${JSON.stringify(input.clarifications ?? {}, null, 2)}`,
     `Repo package: ${repoSummary.packageName ?? 'unknown'}`,
     `Repo root entries: ${repoSummary.rootEntries.join(', ')}`,
     `Worktree: ${input.worktreeName ?? 'current'}`,
@@ -72,6 +77,13 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
+    ...(typeof input.maxBudgetUsd === 'number'
+      ? { maxBudgetUsd: input.maxBudgetUsd }
+      : {}),
+    ...(typeof input.maxThinkingTokens === 'number'
+      ? { maxThinkingTokens: input.maxThinkingTokens }
+      : {}),
     ...(input.session ? { session: input.session } : {}),
   });
 

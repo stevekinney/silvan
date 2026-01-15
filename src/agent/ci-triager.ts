@@ -2,53 +2,31 @@ import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { hashString } from '../utils/hash';
-import { type ReviewFixPlan, reviewFixPlanSchema } from './schemas';
+import { type Plan, planSchema } from './schemas';
 import type { ClaudeSession } from './sdk';
-import { createToolHooks, runClaudePrompt } from './sdk';
+import { runClaudePrompt } from './sdk';
 
-export async function generateReviewFixPlan(input: {
+export async function generateCiFixPlan(input: {
   model: string;
-  threads: Array<{
-    threadId: string;
-    comments: Array<{
-      id: string;
-      path?: string | null;
-      line?: number | null;
-      bodyDigest: string;
-      excerpt?: string;
-    }>;
-    isOutdated: boolean;
-  }>;
-  diffContext?: string;
+  ci: {
+    state: string;
+    summary?: string;
+    checks?: Array<{ name: string; conclusion?: string; url?: string }>;
+  };
   session?: ClaudeSession;
-  mcpServers?: Record<string, unknown>;
-  allowedTools?: string[];
   maxTurns?: number;
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
   bus?: EventBus;
-  context?: EmitContext;
-}): Promise<ReviewFixPlan> {
+  context: EmitContext;
+}): Promise<Plan> {
   const prompt = [
-    'You are the review response agent for Silvan.',
-    'Produce a structured fix plan for unresolved review threads.',
-    'Use github.review.thread to fetch full thread details when needed.',
-    'Return JSON only with: { threads: [{threadId, actionable, summary, comments: [{id, action}]}], verification?, resolveThreads? }.',
+    'You are the CI triage agent for Silvan.',
+    'Given failing CI status, produce a structured fix plan in JSON only.',
+    'Return JSON with shape: { summary, steps, verification }.',
     '',
-    JSON.stringify(
-      {
-        threads: input.threads,
-        diffContext: input.diffContext ?? null,
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(input.ci, null, 2),
   ].join('\n');
-
-  const hooks =
-    input.bus && input.context
-      ? createToolHooks({ bus: input.bus, context: input.context })
-      : undefined;
 
   const result = await runClaudePrompt({
     message: prompt,
@@ -61,22 +39,17 @@ export async function generateReviewFixPlan(input: {
     ...(typeof input.maxThinkingTokens === 'number'
       ? { maxThinkingTokens: input.maxThinkingTokens }
       : {}),
-    ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
-    ...(input.allowedTools ? { allowedTools: input.allowedTools } : {}),
-    ...(hooks ? { hooks } : {}),
     ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {
-    throw new Error(`Review fix plan failed: ${result.subtype}`);
+    throw new Error(`CI fix plan failed: ${result.subtype}`);
   }
 
   const raw = result.structured_output ?? result.result;
-  const parsed = reviewFixPlanSchema.safeParse(
-    typeof raw === 'string' ? JSON.parse(raw) : raw,
-  );
+  const parsed = planSchema.safeParse(typeof raw === 'string' ? JSON.parse(raw) : raw);
   const planDigest = hashString(JSON.stringify(raw));
-  if (input.bus && input.context) {
+  if (input.bus) {
     await input.bus.emit(
       createEnvelope({
         type: 'ai.plan_generated',
@@ -85,14 +58,14 @@ export async function generateReviewFixPlan(input: {
         context: input.context,
         payload: {
           model: { provider: 'anthropic', model: input.model },
-          planKind: 'review_fix_plan' as const,
+          planKind: 'ci_fix_plan' as const,
           planDigest,
         },
       }),
     );
   }
   if (!parsed.success) {
-    if (input.bus && input.context) {
+    if (input.bus) {
       await input.bus.emit(
         createEnvelope({
           type: 'ai.plan_validated',
@@ -103,16 +76,16 @@ export async function generateReviewFixPlan(input: {
             planDigest,
             valid: false,
             errors: parsed.error.issues.map((issue) => ({
-              path: issue.path.join('.') || 'review_fix_plan',
+              path: issue.path.join('.') || 'ci_fix_plan',
               message: issue.message,
             })),
           },
         }),
       );
     }
-    throw new Error('Review fix plan validation failed');
+    throw new Error('CI fix plan validation failed');
   }
-  if (input.bus && input.context) {
+  if (input.bus) {
     await input.bus.emit(
       createEnvelope({
         type: 'ai.plan_validated',
@@ -126,5 +99,6 @@ export async function generateReviewFixPlan(input: {
       }),
     );
   }
+
   return parsed.data;
 }
