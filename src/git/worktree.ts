@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 
+import PQueue from 'p-queue';
+
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
@@ -82,16 +84,20 @@ export async function listWorktrees(options: {
   const worktrees = parseWorktreeList(result.stdout.trim());
 
   if (options.includeStatus) {
-    await Promise.all(
-      worktrees.map(async (worktree) => {
-        const status = await runGit(['status', '--porcelain'], {
-          cwd: worktree.path,
-          bus: options.bus,
-          context: { ...options.context, worktreePath: worktree.path },
-        });
-        worktree.isDirty = status.stdout.trim().length > 0;
-      }),
-    );
+    const queue = new PQueue({ concurrency: 6 });
+    const tasks = worktrees
+      .filter((worktree) => !worktree.isLocked)
+      .map((worktree) =>
+        queue.add(async () => {
+          const status = await runGit(['status', '--porcelain'], {
+            cwd: worktree.path,
+            bus: options.bus,
+            context: { ...options.context, worktreePath: worktree.path },
+          });
+          worktree.isDirty = status.stdout.trim().length > 0;
+        }),
+      );
+    await Promise.all(tasks);
   }
 
   if (options.bus) {
@@ -122,15 +128,18 @@ export async function createWorktree(options: {
   const dir = options.config.naming.worktreeDir;
   const branch = `${options.config.naming.branchPrefix}${options.name}`;
   const path = join(options.repoRoot, dir, options.name);
+  const baseBranch = await resolveBaseBranch({
+    repoRoot: options.repoRoot,
+    defaultBranch: options.config.repo.defaultBranch,
+    ...(options.bus ? { bus: options.bus } : {}),
+    context: options.context,
+  });
 
-  const result = await runGit(
-    ['worktree', 'add', '-b', branch, path, options.config.repo.defaultBranch],
-    {
-      cwd: options.repoRoot,
-      bus: options.bus,
-      context: options.context,
-    },
-  );
+  const result = await runGit(['worktree', 'add', '-b', branch, path, baseBranch], {
+    cwd: options.repoRoot,
+    bus: options.bus,
+    context: options.context,
+  });
 
   if (result.exitCode !== 0) {
     throw new Error(result.stderr || 'Failed to create worktree');
@@ -153,13 +162,54 @@ export async function createWorktree(options: {
           id: worktree.id,
           path,
           branch,
-          baseBranch: options.config.repo.defaultBranch,
+          baseBranch,
         },
       }),
     );
   }
 
   return worktree;
+}
+
+async function resolveBaseBranch(options: {
+  repoRoot: string;
+  defaultBranch: string;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<string> {
+  const localRef = `refs/heads/${options.defaultBranch}`;
+  const remoteRef = `refs/remotes/origin/${options.defaultBranch}`;
+
+  if (await hasRef(localRef, options)) {
+    return options.defaultBranch;
+  }
+  if (await hasRef(remoteRef, options)) {
+    return `origin/${options.defaultBranch}`;
+  }
+
+  await runGit(['fetch', 'origin', options.defaultBranch], {
+    cwd: options.repoRoot,
+    bus: options.bus,
+    context: options.context,
+  });
+
+  if (await hasRef(remoteRef, options)) {
+    return `origin/${options.defaultBranch}`;
+  }
+
+  return options.defaultBranch;
+}
+
+async function hasRef(
+  ref: string,
+  options: { repoRoot: string; bus?: EventBus; context: EmitContext },
+): Promise<boolean> {
+  const result = await runGit(['show-ref', '--verify', '--quiet', ref], {
+    cwd: options.repoRoot,
+    bus: options.bus,
+    context: options.context,
+  });
+  return result.exitCode === 0;
 }
 
 export async function removeWorktree(options: {

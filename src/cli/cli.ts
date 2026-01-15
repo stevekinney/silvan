@@ -3,9 +3,10 @@ import { basename, join } from 'node:path';
 import { cac } from 'cac';
 
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
+import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
 import { createEnvelope } from '../events/emit';
-import type { EventMode } from '../events/schema';
+import type { EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
 import { waitForCi } from '../github/ci';
@@ -13,6 +14,7 @@ import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { mountDashboard } from '../ui';
 import { confirmAction } from '../utils/confirm';
+import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
 
 const cli = cac('silvan');
@@ -23,6 +25,7 @@ type CliOptions = {
   force?: boolean;
   interval?: string;
   timeout?: string;
+  noUi?: boolean;
 };
 
 cli.option('--json', 'Output JSON event stream');
@@ -32,12 +35,14 @@ cli.option('--yes', 'Skip confirmations');
 cli.command('wt list', 'List worktrees').action(async (options: CliOptions) => {
   const mode: EventMode = options.json ? 'json' : 'headless';
   await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-    await listWorktrees({
-      repoRoot: ctx.repo.repoRoot,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      includeStatus: true,
-    });
+    await runStep(ctx, 'git.worktree.list', 'List worktrees', async () =>
+      listWorktrees({
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        includeStatus: true,
+      }),
+    );
   });
 });
 
@@ -48,13 +53,15 @@ cli
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
       const safeName = sanitizeName(name);
 
-      await createWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        name: safeName,
-        config: ctx.config,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
+      await runStep(ctx, 'git.worktree.create', 'Create worktree', async () =>
+        createWorktree({
+          repoRoot: ctx.repo.repoRoot,
+          name: safeName,
+          config: ctx.config,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
     });
   });
 
@@ -64,12 +71,18 @@ cli
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-      const worktrees = await listWorktrees({
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        includeStatus: true,
-      });
+      const worktrees = await runStep(
+        ctx,
+        'git.worktree.list',
+        'List worktrees',
+        async () =>
+          listWorktrees({
+            repoRoot: ctx.repo.repoRoot,
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+            includeStatus: true,
+          }),
+      );
 
       const targets = worktrees.filter(
         (worktree) => worktree.branch === name || basename(worktree.path) === name,
@@ -97,13 +110,15 @@ cli
         }
       }
 
-      await removeWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        path: target.path,
-        force: Boolean(options.force),
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
+      await runStep(ctx, 'git.worktree.remove', 'Remove worktree', async () =>
+        removeWorktree({
+          repoRoot: ctx.repo.repoRoot,
+          path: target.path,
+          force: Boolean(options.force),
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
     });
   });
 
@@ -127,12 +142,13 @@ cli
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
       requireGitHubAuth();
-      const { owner, repo } = await requireGitHubConfig({
+      const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
       });
+      const { owner, repo } = github;
 
       const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: ctx.repo.repoRoot,
@@ -144,15 +160,37 @@ cli
       const intervalMs = Number(options.interval ?? '15000');
       const timeoutMs = Number(options.timeout ?? '900000');
 
-      await waitForCi({
-        owner,
-        repo,
-        headBranch,
-        pollIntervalMs: intervalMs,
-        timeoutMs,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
+      const ciResult = await runStep(ctx, 'github.ci.wait', 'Wait for CI', async () =>
+        waitForCi({
+          owner,
+          repo,
+          headBranch,
+          pollIntervalMs: intervalMs,
+          timeoutMs,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+
+      await persistRunState(ctx, mode, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          ci: ciResult.state,
+        },
+      }));
+
+      if (github.source === 'origin') {
+        await persistRunState(ctx, mode, (data) => ({
+          ...data,
+          repo: {
+            ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
+            github: { owner, repo, source: github.source },
+          },
+        }));
+      }
     });
   });
 
@@ -162,12 +200,13 @@ cli
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
       requireGitHubAuth();
-      const { owner, repo } = await requireGitHubConfig({
+      const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
       });
+      const { owner, repo } = github;
 
       const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: ctx.repo.repoRoot,
@@ -176,47 +215,67 @@ cli
       });
       const headBranch = branchResult.stdout.trim();
 
-      const reviewResult = await fetchUnresolvedReviewComments({
-        owner,
-        repo,
-        headBranch,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
+      const reviewResult = await runStep(
+        ctx,
+        'github.review.fetch',
+        'Fetch review comments',
+        async () =>
+          fetchUnresolvedReviewComments({
+            owner,
+            repo,
+            headBranch,
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          }),
+      );
 
       const now = new Date().toISOString();
       const unresolvedThreadIds = Array.from(
         new Set(reviewResult.comments.map((comment) => comment.threadId)),
       );
       const unresolvedCommentIds = reviewResult.comments.map((comment) => comment.id);
+      const unresolvedCommentFingerprints = reviewResult.comments.map((comment) => ({
+        id: comment.id,
+        threadId: comment.threadId,
+        path: comment.path,
+        line: comment.line,
+        isOutdated: comment.isOutdated,
+        bodyHash: hashString(comment.body),
+      }));
 
-      const snapshotId = await ctx.state.updateRunState(ctx.runId, (data) => ({
+      await persistRunState(ctx, mode, (data) => ({
         ...data,
         review: {
           pr: reviewResult.pr,
           unresolvedThreadIds,
           unresolvedCommentIds,
+          unresolvedCommentFingerprints,
           fetchedAt: now,
+        },
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          unresolvedReviewCount: reviewResult.comments.length,
         },
       }));
 
-      await ctx.events.bus.emit(
-        createEnvelope({
-          type: 'run.persisted',
-          source: 'engine',
-          level: 'info',
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-          payload: {
-            path: join(ctx.state.runsDir, `${ctx.runId}.json`),
-            snapshotId,
-            stateVersion: ctx.state.stateVersion,
+      if (github.source === 'origin') {
+        await persistRunState(ctx, mode, (data) => ({
+          ...data,
+          repo: {
+            ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
+            github: { owner, repo, source: github.source },
           },
-        }),
-      );
+        }));
+      }
     });
   });
 
-cli.command('ui', 'Launch the Ink dashboard').action(async () => {
+cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
+  if (options.noUi) {
+    throw new Error('The --no-ui flag cannot be used with silvan ui.');
+  }
   await withRunContext({ cwd: process.cwd(), mode: 'ui', lock: false }, async (ctx) => {
     await mountDashboard(ctx.events.bus, ctx.state);
   });
@@ -263,12 +322,13 @@ async function handlePrOpen(options: CliOptions): Promise<void> {
   const mode: EventMode = options.json ? 'json' : 'headless';
   await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
     requireGitHubAuth();
-    const { owner, repo } = await requireGitHubConfig({
+    const github = await requireGitHubConfig({
       config: ctx.config,
       repoRoot: ctx.repo.repoRoot,
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
     });
+    const { owner, repo } = github;
 
     const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: ctx.repo.repoRoot,
@@ -280,23 +340,109 @@ async function handlePrOpen(options: CliOptions): Promise<void> {
     const title = headBranch;
     const body = `Automated PR for ${headBranch}.`;
 
-    const prResult = await openOrUpdatePr({
-      owner,
-      repo,
-      headBranch,
-      baseBranch,
-      title,
-      body,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
+    const prResult = await runStep(ctx, 'github.pr.open', 'Open or update PR', async () =>
+      openOrUpdatePr({
+        owner,
+        repo,
+        headBranch,
+        baseBranch,
+        title,
+        body,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+    );
 
-    await requestReviewers({
-      pr: prResult.pr,
-      reviewers: ctx.config.github.reviewers,
-      requestCopilot: ctx.config.github.requestCopilot,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
+    await runStep(ctx, 'github.review.request', 'Request reviewers', async () =>
+      requestReviewers({
+        pr: prResult.pr,
+        reviewers: ctx.config.github.reviewers,
+        requestCopilot: ctx.config.github.requestCopilot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+    );
+
+    await persistRunState(ctx, mode, (data) => ({
+      ...data,
+      summary: {
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
+        prUrl: prResult.pr.url,
+      },
+    }));
+
+    if (github.source === 'origin') {
+      await persistRunState(ctx, mode, (data) => ({
+        ...data,
+        repo: {
+          ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
+          github: { owner, repo, source: github.source },
+        },
+      }));
+    }
   });
+}
+
+async function runStep<T>(
+  ctx: RunContext,
+  stepId: string,
+  title: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await ctx.events.bus.emit(
+    createEnvelope({
+      type: 'run.step',
+      source: 'engine',
+      level: 'info',
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      payload: { stepId, title, status: 'running' } satisfies RunStep,
+    }),
+  );
+  try {
+    const result = await fn();
+    await ctx.events.bus.emit(
+      createEnvelope({
+        type: 'run.step',
+        source: 'engine',
+        level: 'info',
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+        payload: { stepId, title, status: 'succeeded' } satisfies RunStep,
+      }),
+    );
+    return result;
+  } catch (error) {
+    await ctx.events.bus.emit(
+      createEnvelope({
+        type: 'run.step',
+        source: 'engine',
+        level: 'error',
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+        payload: { stepId, title, status: 'failed' } satisfies RunStep,
+      }),
+    );
+    throw error;
+  }
+}
+
+async function persistRunState(
+  ctx: RunContext,
+  mode: EventMode,
+  updater: (data: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  const snapshotId = await ctx.state.updateRunState(ctx.runId, updater);
+  await ctx.events.bus.emit(
+    createEnvelope({
+      type: 'run.persisted',
+      source: 'engine',
+      level: 'info',
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      payload: {
+        path: join(ctx.state.runsDir, `${ctx.runId}.json`),
+        snapshotId,
+        stateVersion: ctx.state.stateVersion,
+      },
+    }),
+  );
 }

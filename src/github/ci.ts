@@ -91,7 +91,7 @@ export async function waitForCi(options: {
 }): Promise<CiResult> {
   const octokit = createOctokit();
   const start = Date.now();
-  const { pr, headSha } = await findPrForBranch(options);
+  let { pr, headSha } = await findPrForBranch(options);
 
   if (options.bus) {
     await options.bus.emit(
@@ -106,6 +106,11 @@ export async function waitForCi(options: {
   }
 
   while (Date.now() - start < options.timeoutMs) {
+    const latest = await findPrForBranch(options);
+    if (latest.headSha !== headSha) {
+      headSha = latest.headSha;
+      pr = latest.pr;
+    }
     let checks;
     try {
       checks = await octokit.rest.checks.listForRef({

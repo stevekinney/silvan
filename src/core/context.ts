@@ -77,9 +77,11 @@ export async function withRunContext<T>(
     status: RunFinished['status'],
     error?: unknown,
   ): Promise<void> => {
+    const summary = await buildRunSummary(ctx);
     const payload: RunFinished = {
       status,
       durationMs: Date.now() - start,
+      ...(summary ? { summary } : {}),
     };
     await ctx.events.bus.emit(
       createEnvelope({
@@ -124,6 +126,45 @@ export async function withRunContext<T>(
       await ctx.state.lockRelease();
     }
   }
+}
+
+async function buildRunSummary(
+  ctx: RunContext,
+): Promise<RunFinished['summary'] | undefined> {
+  const state = await ctx.state.readRunState(ctx.runId);
+  const data = state?.data;
+  if (!data || typeof data !== 'object') return undefined;
+
+  const summary = (data as Record<string, unknown>)['summary'];
+  if (!summary || typeof summary !== 'object') return undefined;
+
+  const typed = summary as {
+    prUrl?: unknown;
+    ci?: unknown;
+    unresolvedReviewCount?: unknown;
+  };
+  const prUrl = typeof typed.prUrl === 'string' ? typed.prUrl : undefined;
+  const ci =
+    typed.ci === 'pending' ||
+    typed.ci === 'passing' ||
+    typed.ci === 'failing' ||
+    typed.ci === 'unknown'
+      ? typed.ci
+      : undefined;
+  const unresolvedReviewCount =
+    typeof typed.unresolvedReviewCount === 'number'
+      ? typed.unresolvedReviewCount
+      : undefined;
+
+  if (!prUrl && !ci && unresolvedReviewCount === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(prUrl ? { prUrl } : {}),
+    ...(ci ? { ci } : {}),
+    ...(unresolvedReviewCount !== undefined ? { unresolvedReviewCount } : {}),
+  };
 }
 
 export class RunCanceledError extends Error {

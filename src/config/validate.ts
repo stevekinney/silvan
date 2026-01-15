@@ -3,9 +3,10 @@ import type { EmitContext } from '../events/emit';
 import { runGit } from '../git/exec';
 import type { Config } from './schema';
 
-type GitHubRepo = { owner: string; repo: string };
+type GitHubOwnerRepo = { owner: string; repo: string };
+type GitHubRepo = GitHubOwnerRepo & { source: 'config' | 'origin' };
 
-function parseGitHubRemote(remoteUrl: string): GitHubRepo | null {
+function parseGitHubRemote(remoteUrl: string): GitHubOwnerRepo | null {
   const cleaned = remoteUrl.trim().replace(/\.git$/, '');
 
   let match = cleaned.match(/^git@github\.com:([^/]+)\/(.+)$/);
@@ -27,7 +28,11 @@ export async function requireGitHubConfig(options: {
   context: EmitContext;
 }): Promise<GitHubRepo> {
   if (options.config.github.owner && options.config.github.repo) {
-    return { owner: options.config.github.owner, repo: options.config.github.repo };
+    return {
+      owner: options.config.github.owner,
+      repo: options.config.github.repo,
+      source: 'config',
+    };
   }
 
   const result = await runGit(['remote', 'get-url', 'origin'], {
@@ -49,7 +54,7 @@ export async function requireGitHubConfig(options: {
     );
   }
 
-  return parsed;
+  return { ...parsed, source: 'origin' };
 }
 
 export function requireGitHubAuth(): void {
