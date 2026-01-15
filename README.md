@@ -1,114 +1,158 @@
-# Project Name
+# Silvan CLI
 
-## Prerequisites
+A production-quality CLI for managing git worktrees and automating PR workflows with a resumable, observable event stream.
 
-- [Bun](https://bun.sh) installed on your machine.
+## Requirements
 
-## Installation
+- Bun >= 1.3
+- Git >= 2.30
+- A GitHub token for PR automation (optional for basic worktree commands)
 
-Create a new project based on this template:
+## Install
 
 ```bash
-# Basic installation
-bun create github.com/stevekinney/bun-template $PROJECT_DIRECTORY
-
-# Skip installing dependencies (useful for CI or offline work)
-bun create github.com/stevekinney/bun-template $PROJECT_DIRECTORY --no-install
+bun install
 ```
 
-The `--no-install` flag is helpful when:
+## Quick Start
 
-- Working in offline environments
-- Using CI pipelines with cached dependencies
-- You plan to modify dependencies before installation
+```bash
+# List worktrees
+bun run src/index.ts wt list
 
-## Core Tools
+# Add a worktree
+bun run src/index.ts wt add my-feature
 
-- Bun: runtime, bundler, test runner, and package manager
-- TypeScript: strict type checking
-- ESLint + Prettier: linting and formatting (flat config)
-- Husky + lint-staged: fast pre-commit checks
+# Open or update a PR for the current branch
+bun run src/index.ts pr open
+
+# Wait for CI to finish
+bun run src/index.ts ci wait
+
+# Show unresolved review comments
+bun run src/index.ts review unresolved
+
+# Launch the dashboard
+bun run src/index.ts ui
+```
+
+## Configuration
+
+The CLI loads configuration via cosmiconfig. It looks for `silvan.config.*` in the repo root or a `silvan` key in `package.json`.
+
+Supported filenames:
+
+- `silvan.config.ts`
+- `silvan.config.js`
+- `silvan.config.json`
+- `silvan.config.yaml`
+- `silvan.config.yml`
+
+Example `silvan.config.ts`:
+
+```ts
+import type { Config } from './src/config/schema';
+
+const config: Config = {
+  repo: {
+    defaultBranch: 'main',
+  },
+  github: {
+    owner: 'acme',
+    repo: 'my-repo',
+    reviewers: ['octocat'],
+    requestCopilot: true,
+  },
+  naming: {
+    branchPrefix: 'feature/',
+    worktreeDir: '.worktrees',
+  },
+  verify: {
+    commands: [
+      { name: 'lint', cmd: 'bun run lint' },
+      { name: 'test', cmd: 'bun test' },
+    ],
+  },
+};
+
+export default config;
+```
+
+## Environment Variables
+
+- `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access for PR and CI commands.
+
+## Commands
+
+### Worktrees
+
+- `wt list` - list worktrees and dirty status
+- `wt add <name>` - create a new worktree and branch
+- `wt remove <name>` - safely remove a worktree (`--force` to override dirty check)
+
+### Pull Requests
+
+- `pr open` - open or update a PR for the current branch
+- `pr sync` - alias for `pr open`
+
+### CI
+
+- `ci wait` - poll GitHub checks for the current branch
+
+### Reviews
+
+- `review unresolved` - fetch unresolved review comments for the current branch PR
+
+### UI
+
+- `ui` - launch the live Ink dashboard
+
+### Agent stubs
+
+- `task start <ticket>`
+- `agent plan`
+- `agent run`
+- `agent resume`
+
+## Output Modes
+
+All commands support:
+
+- `--json` for machine-readable event output
+- `--no-ui` to disable UI (future use)
+
+## State and Audit Logs
+
+Run state and audit logs are stored in `.silvan/` at the repo root:
+
+- `.silvan/runs/` - run snapshots
+- `.silvan/audit/` - event audit logs (JSONL)
+
+## Safety Guarantees
+
+- Worktrees are never removed without confirmation unless `--yes` is passed.
+- Dirty worktrees are blocked unless `--force` is provided.
+- Git commands emit start/finish events for observability.
 
 ## Development
-
-Start the development server:
 
 ```bash
 bun run dev
 ```
 
-### Git Hooks (Husky)
-
-Husky is set up via the `prepare` script on install. Hooks are implemented as Bun TypeScript files in `scripts/husky/` and invoked by wrappers in `.husky/`.
-
-- `pre-commit`: runs lint-staged; ensures `bun.lock` is staged when it has changes alongside `package.json`.
-- `post-checkout`: on branch checkouts, installs deps when `package.json` + `bun.lock` changed; surfaces config changes.
-- `post-merge`: installs deps and cleans caches when config changed; prints merge stats and conflict checks.
-
-Use `--no-verify` to bypass hooks (not recommended).
-
-### Running Tests
-
-This template comes with Bun's built-in test runner. To run tests:
+## Testing
 
 ```bash
 bun test
 ```
 
-For watching mode:
+## Roadmap
 
-```bash
-bun test --watch
-```
+- Planning and execution phases for AI-driven changes
+- Verification command runner and gating
+- Review loop automation
+- Linear integration
 
-For test coverage:
+## License
 
-```bash
-bun test --coverage
-```
-
-### Continuous Integration
-
-No CI workflows are included by default. Add your own under `.github/workflows/` as needed.
-
-### Understanding `bun run` vs `bunx`
-
-`bun run` and `bunx` are two different commands that often confuse beginners:
-
-- **bun run**: Executes scripts defined in your project's package.json (like `bun run dev` runs the "dev" script). Also runs local TypeScript/JavaScript files directly (like `bun run src/index.ts`).
-
-- **bunx**: Executes binaries from npm packages without installing them globally (similar to `npx`). Use it for one-off commands or tools you don't need permanently installed (like `bunx prettier --write .` or `bunx shadcn@canary add button`).
-
-## Project Structure
-
-- `src/` - Source code for your application
-- `.husky/` - Git hook wrappers (shell) calling Bun scripts in `scripts/husky/`
-- `scripts/husky/` - Hook implementations (TypeScript + Bun)
-
-## Customization
-
-### TypeScript Configuration
-
-The template includes TypeScript configuration with path aliases:
-
-```json
-{
-  "compilerOptions": {
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  }
-}
-```
-
-## Template Setup (bun-create)
-
-When using `bun create` with this template, a postinstall sequence runs once to bootstrap the project:
-
-- Sets `package.json:name` from the folder name
-- Copies `.env.example` to `.env` (or appends missing keys)
-- Writes `OPEN_AI_API_KEY`, `ANTHROPIC_AI_API_KEY`, and `GEMINI_AI_API_KEY` from your shell into `.env` if present
-- Runs `bun run prepare` to install Husky
-- Cleans up setup scripts and removes the `bun-create` entry from `package.json`
-
-These steps self-delete after running; you can adjust them by editing files in `scripts/setup/` before the first install.
+TBD

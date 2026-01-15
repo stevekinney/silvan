@@ -1,3 +1,5 @@
+import { run } from './cli/cli';
+
 if (import.meta.main) {
-  console.log('Hello, Project-Name!');
+  run(process.argv);
 }
