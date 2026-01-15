@@ -10,14 +10,20 @@ export type StateStore = {
   runsDir: string;
   auditDir: string;
   lockRelease: () => Promise<void>;
-  writeRunState: (runId: string, data: unknown) => Promise<string>;
+  writeRunState: (runId: string, data: RunStateData) => Promise<string>;
   readRunState: (runId: string) => Promise<RunStateEnvelope | null>;
+  updateRunState: (
+    runId: string,
+    updater: (data: RunStateData) => RunStateData,
+  ) => Promise<string>;
 };
+
+export type RunStateData = Record<string, unknown>;
 
 export type RunStateEnvelope = {
   version: string;
   runId: string;
-  data: unknown;
+  data: RunStateData;
 };
 
 const stateVersion = '1.0.0';
@@ -34,7 +40,7 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
     retries: { retries: 2, factor: 2, minTimeout: 100, maxTimeout: 1000 },
   })) as () => Promise<void>;
 
-  async function writeRunState(runId: string, data: unknown): Promise<string> {
+  async function writeRunState(runId: string, data: RunStateData): Promise<string> {
     const envelope: RunStateEnvelope = {
       version: stateVersion,
       runId,
@@ -60,11 +66,20 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
       return {
         version: '0.0.0',
         runId,
-        data: parsed,
+        data: typeof parsed === 'object' && parsed !== null ? parsed : {},
       };
     } catch {
       return null;
     }
+  }
+
+  async function updateRunState(
+    runId: string,
+    updater: (data: RunStateData) => RunStateData,
+  ): Promise<string> {
+    const current = await readRunState(runId);
+    const next = updater(current?.data ?? {});
+    return writeRunState(runId, next);
   }
 
   return {
@@ -74,5 +89,6 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
     lockRelease,
     writeRunState,
     readRunState,
+    updateRunState,
   };
 }

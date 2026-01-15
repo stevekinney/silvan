@@ -4,6 +4,7 @@ import { cac } from 'cac';
 
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { withRunContext } from '../core/context';
+import { createEnvelope } from '../events/emit';
 import type { EventMode } from '../events/schema';
 import { runGit } from '../git/exec';
 import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
@@ -175,13 +176,42 @@ cli
       });
       const headBranch = branchResult.stdout.trim();
 
-      await fetchUnresolvedReviewComments({
+      const reviewResult = await fetchUnresolvedReviewComments({
         owner,
         repo,
         headBranch,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
       });
+
+      const now = new Date().toISOString();
+      const unresolvedThreadIds = Array.from(
+        new Set(reviewResult.comments.map((comment) => comment.threadId)),
+      );
+      const unresolvedCommentIds = reviewResult.comments.map((comment) => comment.id);
+
+      const snapshotId = await ctx.state.updateRunState(ctx.runId, (data) => ({
+        ...data,
+        review: {
+          pr: reviewResult.pr,
+          unresolvedThreadIds,
+          unresolvedCommentIds,
+          fetchedAt: now,
+        },
+      }));
+
+      await ctx.events.bus.emit(
+        createEnvelope({
+          type: 'run.persisted',
+          source: 'engine',
+          level: 'info',
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          payload: {
+            path: ctx.state.runsDir,
+            snapshotId,
+          },
+        }),
+      );
     });
   });
 

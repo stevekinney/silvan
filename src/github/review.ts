@@ -15,6 +15,11 @@ export type ReviewComment = {
   isOutdated: boolean;
 };
 
+export type ReviewCommentsResult = {
+  pr: PrIdent;
+  comments: ReviewComment[];
+};
+
 const REVIEW_THREADS_QUERY = `
   query UnresolvedReviewThreads(
     $owner: String!
@@ -183,7 +188,7 @@ export async function fetchUnresolvedReviewComments(options: {
   headBranch: string;
   bus?: EventBus;
   context: EmitContext;
-}): Promise<ReviewComment[]> {
+}): Promise<ReviewCommentsResult> {
   const pr = await findPrForBranch(options);
   const threads = await fetchReviewThreads({
     owner: options.owner,
@@ -231,5 +236,5 @@ export async function fetchUnresolvedReviewComments(options: {
     );
   }
 
-  return mapped;
+  return { pr, comments: mapped };
 }
