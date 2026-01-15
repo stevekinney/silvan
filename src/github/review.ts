@@ -20,6 +20,17 @@ export type ReviewCommentsResult = {
   comments: ReviewComment[];
 };
 
+const RESOLVE_THREAD_MUTATION = `
+  mutation ResolveReviewThread($threadId: ID!) {
+    resolveReviewThread(input: { threadId: $threadId }) {
+      thread {
+        id
+        isResolved
+      }
+    }
+  }
+`;
+
 const REVIEW_THREADS_QUERY = `
   query UnresolvedReviewThreads(
     $owner: String!
@@ -85,6 +96,12 @@ type ReviewThreadNode = NonNullable<
 >['nodes'][number];
 
 type ReviewThreadList = ReviewThreadNode[];
+
+type ResolveThreadResponse = {
+  resolveReviewThread: {
+    thread: { id: string; isResolved: boolean } | null;
+  } | null;
+};
 
 async function findPrForBranch(options: {
   owner: string;
@@ -237,4 +254,47 @@ export async function fetchUnresolvedReviewComments(options: {
   }
 
   return { pr, comments: mapped };
+}
+
+export async function resolveReviewThread(options: {
+  threadId: string;
+  pr?: PrIdent;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<{ resolved: boolean }> {
+  const octokit = createOctokit();
+  try {
+    const response = await octokit.graphql<ResolveThreadResponse>(
+      RESOLVE_THREAD_MUTATION,
+      {
+        threadId: options.threadId,
+      },
+    );
+    const resolved = response.resolveReviewThread?.thread?.isResolved ?? false;
+    if (options.bus && options.pr) {
+      await options.bus.emit(
+        createEnvelope({
+          type: 'github.review_comment_resolved',
+          source: 'github',
+          level: 'info',
+          context: options.context,
+          payload: {
+            pr: options.pr,
+            commentId: options.threadId,
+            resolved,
+          },
+        }),
+      );
+    }
+    return { resolved };
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'resolve_comment',
+      error,
+      details: 'Failed to resolve review thread',
+    });
+    throw error;
+  }
 }

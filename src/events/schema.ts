@@ -224,6 +224,43 @@ export type CiWaitFinished = {
   durationMs: number;
 };
 
+export type AiModelInfo = {
+  provider: string;
+  model: string;
+};
+
+export type AiPlanGenerated = {
+  model: AiModelInfo;
+  planKind: 'ticket_plan' | 'review_fix_plan' | 'recovery_plan' | 'pr_draft';
+  tokens?: { input?: number; output?: number };
+  planDigest: string;
+};
+
+export type AiPlanValidated = {
+  planDigest: string;
+  valid: boolean;
+  errors?: Array<{ path: string; message: string }>;
+};
+
+export type AiToolCall = {
+  toolCallId: string;
+  toolName: string;
+  argsDigest: string;
+};
+
+export type AiToolCallResult = {
+  toolCallId: string;
+  ok: boolean;
+  resultDigest?: string;
+  error?: { message: string; code?: string };
+};
+
+export type AiError = {
+  model: AiModelInfo;
+  operation: 'plan' | 'tool_call' | 'review_plan' | 'recover' | 'pr_draft';
+  details?: string;
+};
+
 export type Event =
   | EventEnvelope<'run.started', RunStarted>
   | EventEnvelope<'run.phase_changed', RunPhaseChanged>
@@ -246,4 +283,9 @@ export type Event =
   | EventEnvelope<'github.error', GitHubError>
   | EventEnvelope<'ci.status', CiStatus>
   | EventEnvelope<'ci.wait_started', CiWaitStarted>
-  | EventEnvelope<'ci.wait_finished', CiWaitFinished>;
+  | EventEnvelope<'ci.wait_finished', CiWaitFinished>
+  | EventEnvelope<'ai.plan_generated', AiPlanGenerated>
+  | EventEnvelope<'ai.plan_validated', AiPlanValidated>
+  | EventEnvelope<'ai.tool_call_started', AiToolCall>
+  | EventEnvelope<'ai.tool_call_finished', AiToolCallResult>
+  | EventEnvelope<'ai.error', AiError>;

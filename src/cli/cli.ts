@@ -5,6 +5,12 @@ import { cac } from 'cac';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
+import {
+  runImplementation,
+  runPlanner,
+  runRecovery,
+  runReviewLoop,
+} from '../core/run-controller';
 import { createEnvelope } from '../events/emit';
 import type { EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
@@ -26,6 +32,9 @@ type CliOptions = {
   interval?: string;
   timeout?: string;
   noUi?: boolean;
+  dryRun?: boolean;
+  apply?: boolean;
+  ticket?: string;
 };
 
 cli.option('--json', 'Output JSON event stream');
@@ -281,31 +290,51 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
   });
 });
 
-cli.command('task start <ticket>', 'Start a task (stub)').action((ticket: string) =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, () => {
-    console.log(`TODO: task start for ${ticket}`);
-    return Promise.resolve();
+cli.command('task start <ticket>', 'Start a task').action((ticket: string) =>
+  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
+    const safeName = sanitizeName(ticket);
+    await runStep(ctx, 'git.worktree.create', 'Create worktree', async () =>
+      createWorktree({
+        repoRoot: ctx.repo.repoRoot,
+        name: safeName,
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      }),
+    );
+    await runPlanner(ctx, { ticketId: ticket, worktreeName: safeName });
   }),
 );
 
-cli.command('agent plan', 'Generate plan (stub)').action(() =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, () => {
-    console.log('TODO: agent plan');
-    return Promise.resolve();
-  }),
-);
+cli
+  .command('agent plan', 'Generate plan')
+  .option('--ticket <ticket>', 'Linear ticket ID')
+  .action((options: CliOptions) =>
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
+      await runPlanner(ctx, {
+        ...(options.ticket ? { ticketId: options.ticket } : {}),
+      });
+    }),
+  );
 
-cli.command('agent run', 'Run agent (stub)').action(() =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, () => {
-    console.log('TODO: agent run');
-    return Promise.resolve();
-  }),
-);
+cli
+  .command('agent run', 'Run agent')
+  .option('--dry-run', 'Allow only read-only tools')
+  .option('--apply', 'Allow mutating tools')
+  .action((options: CliOptions) =>
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
+      const runOptions = {
+        ...(options.dryRun ? { dryRun: true } : {}),
+        ...(options.apply ? { apply: true } : {}),
+      };
+      await runImplementation(ctx, runOptions);
+      await runReviewLoop(ctx, runOptions);
+    }),
+  );
 
-cli.command('agent resume', 'Resume agent (stub)').action(() =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, () => {
-    console.log('TODO: agent resume');
-    return Promise.resolve();
+cli.command('agent resume', 'Resume agent').action(() =>
+  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
+    await runRecovery(ctx);
   }),
 );
 
