@@ -11,4 +11,4 @@
 - [x] Improve base branch selection when creating worktrees (prefer `origin/<defaultBranch>` if local missing, fetch if needed).
 - [x] Trim default `silvan.config.ts` to minimal, non-redundant settings (avoid explicit `undefined`).
 - [x] Decide on `--no-ui` behavior (implement or remove flag).
-- [ ] Consider dependency cleanup for unused packages once first callsites exist (pino, p-queue, linear/anthropic SDKs).
+- [x] Keep unused dependencies for now (pino, p-queue, linear/anthropic SDKs).
