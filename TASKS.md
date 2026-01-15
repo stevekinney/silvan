@@ -9,6 +9,6 @@
 - [x] Throttle `git status` concurrency for `wt list --includeStatus` (use `p-queue`).
 - [x] Skip status checks for locked worktrees in `wt list`.
 - [x] Improve base branch selection when creating worktrees (prefer `origin/<defaultBranch>` if local missing, fetch if needed).
-- [ ] Trim default `silvan.config.ts` to minimal, non-redundant settings (avoid explicit `undefined`).
+- [x] Trim default `silvan.config.ts` to minimal, non-redundant settings (avoid explicit `undefined`).
 - [x] Decide on `--no-ui` behavior (implement or remove flag).
 - [ ] Consider dependency cleanup for unused packages once first callsites exist (pino, p-queue, linear/anthropic SDKs).
