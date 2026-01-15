@@ -12,13 +12,15 @@ export type CiResult = {
   checks: Array<{ name: string; state: string; conclusion?: string; url?: string }>;
 };
 
+type PrWithHead = { pr: PrIdent; headSha: string };
+
 async function findPrForBranch(options: {
   owner: string;
   repo: string;
   headBranch: string;
   bus?: EventBus;
   context: EmitContext;
-}): Promise<PrIdent> {
+}): Promise<PrWithHead> {
   const octokit = createOctokit();
   let response;
   try {
@@ -53,10 +55,13 @@ async function findPrForBranch(options: {
 
   const pr = response.data[0]!;
   return {
-    owner: options.owner,
-    repo: options.repo,
-    number: pr.number,
-    url: pr.html_url,
+    pr: {
+      owner: options.owner,
+      repo: options.repo,
+      number: pr.number,
+      url: pr.html_url ?? undefined,
+    },
+    headSha: pr.head.sha,
   };
 }
 
@@ -86,7 +91,7 @@ export async function waitForCi(options: {
 }): Promise<CiResult> {
   const octokit = createOctokit();
   const start = Date.now();
-  const pr = await findPrForBranch(options);
+  const { pr, headSha } = await findPrForBranch(options);
 
   if (options.bus) {
     await options.bus.emit(
@@ -106,7 +111,7 @@ export async function waitForCi(options: {
       checks = await octokit.rest.checks.listForRef({
         owner: options.owner,
         repo: options.repo,
-        ref: options.headBranch,
+        ref: headSha,
       });
     } catch (error) {
       await emitGitHubError({

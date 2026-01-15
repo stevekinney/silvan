@@ -43,7 +43,7 @@ bun run clean            # Clean build artifacts (dist/, coverage/, caches)
 
 ### Core Design Principles
 
-1. **Environment-First Configuration**: All configuration starts with environment variables validated through Zod schemas in `src/environment.ts`. The `environment` object is the single source of truth.
+1. **Config-First Setup**: Repository behavior is driven by `silvan.config.*` (loaded via cosmiconfig and validated with Zod).
 
 2. **Lean Surface Area**: This template intentionally avoids framework-specific scaffolding (custom error classes, logger wrappers, etc.). Add only what you need for your project.
 
@@ -70,7 +70,7 @@ There is no shared `src/types.ts` in this template. Add shared or domain-specifi
 
 ### Adding New Features
 
-1. **Environment variables**: Add to `.env.example` first, then update the schema in `src/environment.ts`.
+1. **Configuration**: Add new settings to `src/config/schema.ts` and `silvan.config.ts`.
 2. **Types**: Shared/reusable types go in `src/types.ts`; domain-specific types live near their modules.
 
 ### Testing Approach
@@ -87,7 +87,7 @@ Prettier plus import sorting keeps imports consistent. A common order is:
 1. Bun built-ins (e.g., `import { file, write } from 'bun'`)
 2. Node built-ins (e.g., `import { readFile } from 'node:fs'`)
 3. External packages (e.g., `import { z } from 'zod'`)
-4. Internal absolute imports (e.g., `@/configuration/environment`)
+4. Internal absolute imports (avoid unless configured)
 5. Relative imports (e.g., `./local-module`)
 
 ## Bun-Specific Considerations
