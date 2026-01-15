@@ -85,6 +85,7 @@ export default config;
 - `CLAUDE_MODEL`: override the default Claude model.
 - `SILVAN_MAX_TOOL_CALLS`: cap tool calls per agent execution.
 - `SILVAN_MAX_TOOL_MS`: cap tool execution duration per agent execution.
+- `SILVAN_PERSIST_SESSIONS=1`: reuse Claude sessions across phases in a run.
 
 ## Commands
 

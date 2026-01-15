@@ -3,6 +3,7 @@ import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { hashString } from '../utils/hash';
 import { type ReviewFixPlan, reviewFixPlanSchema } from './schemas';
+import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 export async function generateReviewFixPlan(input: {
@@ -18,6 +19,7 @@ export async function generateReviewFixPlan(input: {
     isOutdated: boolean;
   }>;
   diffContext?: string;
+  session?: ClaudeSession;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<ReviewFixPlan> {
@@ -40,6 +42,7 @@ export async function generateReviewFixPlan(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {

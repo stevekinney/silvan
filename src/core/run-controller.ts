@@ -4,6 +4,7 @@ import { draftPullRequest } from '../agent/pr-writer';
 import { generateRecoveryPlan } from '../agent/recovery';
 import { generateReviewFixPlan } from '../agent/reviewer';
 import { type Plan, planSchema } from '../agent/schemas';
+import type { SessionPool } from '../agent/session';
 import { decideVerification } from '../agent/verifier';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { createEnvelope } from '../events/emit';
@@ -23,6 +24,7 @@ type RunControllerOptions = {
   dryRun?: boolean;
   apply?: boolean;
   dangerous?: boolean;
+  sessions?: SessionPool;
 };
 
 function getModel(): string {
@@ -115,6 +117,10 @@ async function runStep<T>(
 export async function runPlanner(ctx: RunContext, options: RunControllerOptions) {
   await changePhase(ctx, 'plan');
   const model = getModel();
+  const planSession = options.sessions?.get('plan', {
+    model,
+    permissionMode: 'plan',
+  });
 
   const plan = await runStep(ctx, 'agent.plan.generate', 'Generate plan', () =>
     generatePlan({
@@ -122,6 +128,7 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
       ...(options.worktreeName ? { worktreeName: options.worktreeName } : {}),
       repoRoot: ctx.repo.repoRoot,
       model,
+      ...(planSession ? { session: planSession } : {}),
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     }),
@@ -172,6 +179,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       dryRun: Boolean(options.dryRun),
       allowDestructive: Boolean(options.apply),
       allowDangerous: Boolean(options.dangerous),
+      ...(options.sessions ? { sessionPool: options.sessions } : {}),
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       maxTurns: Number(Bun.env['SILVAN_MAX_TURNS'] ?? 12),
@@ -209,6 +217,10 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   await updateState(ctx, (data) => ({ ...data, verifyReport }));
 
   if (!verifyReport.ok) {
+    const verifySession = options.sessions?.get('verify', {
+      model,
+      permissionMode: 'plan',
+    });
     const decision = await decideVerification({
       model,
       report: {
@@ -219,6 +231,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
           stderr: result.stderr,
         })),
       },
+      ...(verifySession ? { session: verifySession } : {}),
       ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     });
@@ -235,12 +248,17 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
     const url = (ticket as LinearTicket).url;
     return typeof url === 'string' ? url : undefined;
   })();
+  const prSession = options.sessions?.get('pr', {
+    model,
+    permissionMode: 'plan',
+  });
   const prDraft = await runStep(ctx, 'pr.draft', 'Draft PR description', () =>
     draftPullRequest({
       model,
       planSummary,
       changesSummary: summary,
       ...(ticketUrl ? { ticketUrl } : {}),
+      ...(prSession ? { session: prSession } : {}),
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     }),
@@ -344,10 +362,15 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       {},
     );
 
+    const reviewSession = options.sessions?.get('review', {
+      model,
+      permissionMode: 'plan',
+    });
     const fixPlan = await runStep(ctx, 'review.plan', 'Plan review fixes', () =>
       generateReviewFixPlan({
         model,
         threads: Object.values(threads),
+        ...(reviewSession ? { session: reviewSession } : {}),
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
@@ -378,6 +401,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         dryRun: Boolean(options.dryRun),
         allowDestructive: Boolean(options.apply),
         allowDangerous: Boolean(options.dangerous),
+        ...(options.sessions ? { sessionPool: options.sessions } : {}),
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
@@ -445,13 +469,22 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
   }
 }
 
-export async function runRecovery(ctx: RunContext): Promise<void> {
+export async function runRecovery(
+  ctx: RunContext,
+  options: { sessions?: SessionPool } = {},
+): Promise<void> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = (state?.data as Record<string, unknown>) ?? {};
+  const model = getModel();
+  const recoverySession = options.sessions?.get('recovery', {
+    model,
+    permissionMode: 'plan',
+  });
   const plan = await runStep(ctx, 'agent.recovery.plan', 'Plan recovery', () =>
     generateRecoveryPlan({
-      model: getModel(),
+      model,
       runState: data,
+      ...(recoverySession ? { session: recoverySession } : {}),
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     }),

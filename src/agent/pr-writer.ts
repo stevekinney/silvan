@@ -3,6 +3,7 @@ import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { hashString } from '../utils/hash';
 import { type PrDraft, prDraftSchema } from './schemas';
+import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 export async function draftPullRequest(input: {
@@ -10,6 +11,7 @@ export async function draftPullRequest(input: {
   planSummary: string;
   changesSummary: string;
   ticketUrl?: string;
+  session?: ClaudeSession;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<PrDraft> {
@@ -27,6 +29,7 @@ export async function draftPullRequest(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {

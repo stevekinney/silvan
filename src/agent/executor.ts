@@ -1,9 +1,12 @@
+import type { SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { createToolRegistry } from './registry';
 import type { Plan } from './schemas';
 import { createToolHooks, runClaudePrompt } from './sdk';
+import type { SessionPool } from './session';
 
 export type ExecutorInput = {
   plan: Plan;
@@ -19,6 +22,7 @@ export type ExecutorInput = {
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
   toolBudget?: { maxCalls?: number; maxDurationMs?: number };
+  sessionPool?: SessionPool;
   toolCallLog?: Array<{
     toolCallId: string;
     toolName: string;
@@ -90,64 +94,59 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
 
   let result;
   try {
-    result = await runClaudePrompt({
-      message: prompt,
+    const toolHooks = createToolHooks({
+      ...(input.bus ? { bus: input.bus } : {}),
+      context: input.context,
+      ...(input.toolCallLog
+        ? {
+            onToolCall: (entry) => {
+              input.toolCallLog?.push(entry);
+            },
+          }
+        : {}),
+    });
+
+    const permissionMode: SDKSessionOptions['permissionMode'] = input.dryRun
+      ? 'plan'
+      : 'dontAsk';
+    const allow = { behavior: 'allow' } as const;
+    const deny = (message: string) => ({ behavior: 'deny', message }) as const;
+    const canUseTool: SDKSessionOptions['canUseTool'] = (toolName) => {
+      if (registry.toolNames.includes(toolName)) {
+        if (input.dryRun && registry.mutatingToolNames.includes(toolName)) {
+          return Promise.resolve(deny('Dry-run mode: mutating tools disabled.'));
+        }
+        if (!input.allowDestructive && registry.mutatingToolNames.includes(toolName)) {
+          return Promise.resolve(deny('Use --apply to allow mutating tools.'));
+        }
+        return Promise.resolve(allow);
+      }
+      if (readOnlyBuiltinTools.has(toolName)) {
+        return Promise.resolve(allow);
+      }
+      if (writeBuiltinTools.has(toolName)) {
+        if (input.dryRun || !input.allowDestructive) {
+          return Promise.resolve(deny('Use --apply to allow file edits.'));
+        }
+        return Promise.resolve(allow);
+      }
+      if (execBuiltinTools.has(toolName)) {
+        if (input.dryRun || !input.allowDestructive || !input.allowDangerous) {
+          return Promise.resolve(
+            deny('Use --apply and --dangerous to allow command execution.'),
+          );
+        }
+        return Promise.resolve(allow);
+      }
+      return Promise.resolve(deny(`Tool not allowed: ${toolName}`));
+    };
+
+    const sessionOptions = {
       model: input.model,
-      permissionMode: input.dryRun ? 'plan' : 'dontAsk',
+      permissionMode,
       mcpServers: { 'silvan-tools': registry.sdkServer },
-      canUseTool: (toolName) => {
-        if (registry.toolNames.includes(toolName)) {
-          if (input.dryRun && registry.mutatingToolNames.includes(toolName)) {
-            return Promise.resolve({
-              behavior: 'deny',
-              message: 'Dry-run mode: mutating tools disabled.',
-            });
-          }
-          if (!input.allowDestructive && registry.mutatingToolNames.includes(toolName)) {
-            return Promise.resolve({
-              behavior: 'deny',
-              message: 'Use --apply to allow mutating tools.',
-            });
-          }
-          return Promise.resolve({ behavior: 'allow' });
-        }
-        if (readOnlyBuiltinTools.has(toolName)) {
-          return Promise.resolve({ behavior: 'allow' });
-        }
-        if (writeBuiltinTools.has(toolName)) {
-          if (input.dryRun || !input.allowDestructive) {
-            return Promise.resolve({
-              behavior: 'deny',
-              message: 'Use --apply to allow file edits.',
-            });
-          }
-          return Promise.resolve({ behavior: 'allow' });
-        }
-        if (execBuiltinTools.has(toolName)) {
-          if (input.dryRun || !input.allowDestructive || !input.allowDangerous) {
-            return Promise.resolve({
-              behavior: 'deny',
-              message: 'Use --apply and --dangerous to allow command execution.',
-            });
-          }
-          return Promise.resolve({ behavior: 'allow' });
-        }
-        return Promise.resolve({
-          behavior: 'deny',
-          message: `Tool not allowed: ${toolName}`,
-        });
-      },
-      hooks: createToolHooks({
-        ...(input.bus ? { bus: input.bus } : {}),
-        context: input.context,
-        ...(input.toolCallLog
-          ? {
-              onToolCall: (entry) => {
-                input.toolCallLog?.push(entry);
-              },
-            }
-          : {}),
-      }),
+      canUseTool,
+      hooks: toolHooks,
       ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
       ...(typeof input.maxBudgetUsd === 'number'
         ? { maxBudgetUsd: input.maxBudgetUsd }
@@ -155,7 +154,13 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
       ...(typeof input.maxThinkingTokens === 'number'
         ? { maxThinkingTokens: input.maxThinkingTokens }
         : {}),
-    });
+    };
+
+    const session = input.sessionPool?.get('execute', sessionOptions);
+    const runOptions = session
+      ? { message: prompt, model: input.model, session }
+      : { message: prompt, ...sessionOptions };
+    result = await runClaudePrompt(runOptions);
   } finally {
     if (input.bus) {
       const durationMs = Math.round(performance.now() - start);

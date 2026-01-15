@@ -4,6 +4,7 @@ import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { hashString } from '../utils/hash';
+import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 const verificationDecisionSchema = z.object({
@@ -20,6 +21,7 @@ export async function decideVerification(input: {
     ok: boolean;
     results: Array<{ name: string; exitCode: number; stderr: string }>;
   };
+  session?: ClaudeSession;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<VerificationDecision> {
@@ -35,6 +37,7 @@ export async function decideVerification(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {

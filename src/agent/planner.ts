@@ -7,6 +7,7 @@ import { createEnvelope } from '../events/emit';
 import { fetchLinearTicket } from '../linear/linear';
 import { hashString } from '../utils/hash';
 import { type Plan, planSchema } from './schemas';
+import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 export type PlannerInput = {
@@ -14,6 +15,7 @@ export type PlannerInput = {
   worktreeName?: string;
   repoRoot: string;
   model: string;
+  session?: ClaudeSession;
   bus?: EventBus;
   context: EmitContext;
 };
@@ -70,6 +72,7 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {

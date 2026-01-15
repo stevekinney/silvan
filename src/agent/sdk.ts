@@ -1,6 +1,7 @@
 import type {
   HookCallbackMatcher,
   SDKResultMessage,
+  SDKSession,
   SDKSessionOptions,
 } from '@anthropic-ai/claude-agent-sdk';
 import { unstable_v2_createSession } from '@anthropic-ai/claude-agent-sdk';
@@ -13,6 +14,7 @@ import { hashString } from '../utils/hash';
 export type ClaudeRunOptions = {
   message: string;
   model: string;
+  session?: ClaudeSession;
   mcpServers?: Record<string, unknown>;
   permissionMode?: SDKSessionOptions['permissionMode'];
   allowedTools?: string[];
@@ -24,15 +26,23 @@ export type ClaudeRunOptions = {
   maxThinkingTokens?: number;
 };
 
+export type ClaudeSession = SDKSession;
+
+export type ClaudeSessionOptions = SDKSessionOptions & {
+  mcpServers?: Record<string, unknown>;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  maxThinkingTokens?: number;
+};
+
+export function createClaudeSession(options: ClaudeSessionOptions): ClaudeSession {
+  return unstable_v2_createSession(options);
+}
+
 export async function runClaudePrompt(
   options: ClaudeRunOptions,
 ): Promise<SDKResultMessage> {
-  const sessionOptions: SDKSessionOptions & {
-    mcpServers?: Record<string, unknown>;
-    maxTurns?: number;
-    maxBudgetUsd?: number;
-    maxThinkingTokens?: number;
-  } = {
+  const sessionOptions: ClaudeSessionOptions = {
     model: options.model,
     ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
     ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
@@ -49,7 +59,8 @@ export async function runClaudePrompt(
       : {}),
   };
 
-  const session = unstable_v2_createSession(sessionOptions);
+  const session = options.session ?? createClaudeSession(sessionOptions);
+  const shouldClose = !options.session;
   try {
     await session.send(options.message);
     for await (const message of session.stream()) {
@@ -58,7 +69,9 @@ export async function runClaudePrompt(
       }
     }
   } finally {
-    session.close();
+    if (shouldClose) {
+      session.close();
+    }
   }
   throw new Error('Claude session ended without a result');
 }

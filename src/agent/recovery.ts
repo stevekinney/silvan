@@ -3,11 +3,13 @@ import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import { hashString } from '../utils/hash';
 import { type RecoveryPlan, recoveryPlanSchema } from './schemas';
+import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 export async function generateRecoveryPlan(input: {
   model: string;
   runState: Record<string, unknown>;
+  session?: ClaudeSession;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<RecoveryPlan> {
@@ -24,6 +26,7 @@ export async function generateRecoveryPlan(input: {
     message: prompt,
     model: input.model,
     permissionMode: 'plan',
+    ...(input.session ? { session: input.session } : {}),
   });
 
   if (result.type !== 'result' || result.subtype !== 'success') {

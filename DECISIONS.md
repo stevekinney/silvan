@@ -46,9 +46,6 @@ Why:
 
 Non-goals:
 
-- Supporting legacy Node versions.
-- Dual Node/Bun compatibility in v1.
-
 ---
 
 ## CLI structure

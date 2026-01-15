@@ -2,6 +2,7 @@ import { basename, join } from 'node:path';
 
 import { cac } from 'cac';
 
+import { createSessionPool } from '../agent/session';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
@@ -523,63 +524,72 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
 });
 
 cli.command('task start [ticket]', 'Start a task').action((ticket: string | undefined) =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
-    const mode = ctx.events.mode;
-    const inferredFromRepo = await inferTicketFromRepo({
-      repoRoot: ctx.repo.repoRoot,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
-    const inferred = ticket ?? inferredFromRepo?.ticketId;
+  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
+    withAgentSessions(async (sessions) => {
+      const mode = ctx.events.mode;
+      const inferredFromRepo = await inferTicketFromRepo({
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+      const inferred = ticket ?? inferredFromRepo?.ticketId;
 
-    if (!inferred) {
-      throw new Error(
-        'Ticket ID required. Provide a ticket or use a branch with a ticket ID.',
+      if (!inferred) {
+        throw new Error(
+          'Ticket ID required. Provide a ticket or use a branch with a ticket ID.',
+        );
+      }
+
+      const safeName = sanitizeName(inferred);
+      const worktree = await runStep(
+        ctx,
+        'git.worktree.create',
+        'Create worktree',
+        async () =>
+          createWorktree({
+            repoRoot: ctx.repo.repoRoot,
+            name: safeName,
+            config: ctx.config,
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          }),
       );
-    }
 
-    const safeName = sanitizeName(inferred);
-    const worktree = await runStep(
-      ctx,
-      'git.worktree.create',
-      'Create worktree',
-      async () =>
-        createWorktree({
-          repoRoot: ctx.repo.repoRoot,
-          name: safeName,
-          config: ctx.config,
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        }),
-    );
+      await normalizeClaudeSettings({ worktreePath: worktree.path });
+      await ensureArtifactsIgnored({
+        worktreePath: worktree.path,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
 
-    await normalizeClaudeSettings({ worktreePath: worktree.path });
-    await ensureArtifactsIgnored({
-      worktreePath: worktree.path,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
+      const installResult = await installDependencies({ worktreePath: worktree.path });
+      if (!installResult.ok) {
+        console.warn(
+          `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+        );
+      }
 
-    const installResult = await installDependencies({ worktreePath: worktree.path });
-    if (!installResult.ok) {
-      console.warn(
-        `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
-      );
-    }
-
-    await runPlanner(ctx, { ticketId: inferred, worktreeName: safeName });
-  }),
+      await runPlanner(ctx, {
+        ticketId: inferred,
+        worktreeName: safeName,
+        sessions,
+      });
+    }),
+  ),
 );
 
 cli
   .command('agent plan', 'Generate plan')
   .option('--ticket <ticket>', 'Linear ticket ID')
   .action((options: CliOptions) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
-      await runPlanner(ctx, {
-        ...(options.ticket ? { ticketId: options.ticket } : {}),
-      });
-    }),
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
+      withAgentSessions((sessions) =>
+        runPlanner(ctx, {
+          ...(options.ticket ? { ticketId: options.ticket } : {}),
+          sessions,
+        }),
+      ),
+    ),
   );
 
 cli
@@ -588,22 +598,27 @@ cli
   .option('--apply', 'Allow mutating tools')
   .option('--dangerous', 'Allow dangerous tools (requires --apply)')
   .action((options: CliOptions) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
-      const runOptions = {
-        ...(options.dryRun ? { dryRun: true } : {}),
-        ...(options.apply ? { apply: true } : {}),
-        ...(options.dangerous ? { dangerous: true } : {}),
-      };
-      await runImplementation(ctx, runOptions);
-      await runReviewLoop(ctx, runOptions);
-    }),
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
+      withAgentSessions(async (sessions) => {
+        const runOptions = {
+          ...(options.dryRun ? { dryRun: true } : {}),
+          ...(options.apply ? { apply: true } : {}),
+          ...(options.dangerous ? { dangerous: true } : {}),
+          sessions,
+        };
+        await runImplementation(ctx, runOptions);
+        await runReviewLoop(ctx, runOptions);
+      }),
+    ),
   );
 
-cli.command('agent resume', 'Resume agent').action(() =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
-    await runRecovery(ctx);
-  }),
-);
+cli
+  .command('agent resume', 'Resume agent')
+  .action(() =>
+    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
+      withAgentSessions((sessions) => runRecovery(ctx, { sessions })),
+    ),
+  );
 
 cli
   .command('doctor', 'Check environment and configuration')
@@ -811,4 +826,16 @@ async function persistRunState(
       },
     }),
   );
+}
+
+async function withAgentSessions<T>(
+  fn: (sessions: ReturnType<typeof createSessionPool>) => Promise<T>,
+): Promise<T> {
+  const enabled = Bun.env['SILVAN_PERSIST_SESSIONS'] === '1';
+  const sessions = createSessionPool(enabled);
+  try {
+    return await fn(sessions);
+  } finally {
+    sessions.close();
+  }
 }
