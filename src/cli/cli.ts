@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { cac } from 'cac';
 
@@ -207,8 +207,9 @@ cli
           level: 'info',
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
           payload: {
-            path: ctx.state.runsDir,
+            path: join(ctx.state.runsDir, `${ctx.runId}.json`),
             snapshotId,
+            stateVersion: ctx.state.stateVersion,
           },
         }),
       );
@@ -216,7 +217,7 @@ cli
   });
 
 cli.command('ui', 'Launch the Ink dashboard').action(async () => {
-  await withRunContext({ cwd: process.cwd(), mode: 'ui' }, async (ctx) => {
+  await withRunContext({ cwd: process.cwd(), mode: 'ui', lock: false }, async (ctx) => {
     await mountDashboard(ctx.events.bus, ctx.state);
   });
 });

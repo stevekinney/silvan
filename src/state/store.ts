@@ -9,6 +9,7 @@ export type StateStore = {
   root: string;
   runsDir: string;
   auditDir: string;
+  stateVersion: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: RunStateData) => Promise<string>;
   readRunState: (runId: string) => Promise<RunStateEnvelope | null>;
@@ -28,7 +29,10 @@ export type RunStateEnvelope = {
 
 const stateVersion = '1.0.0';
 
-export async function initStateStore(repoRoot: string): Promise<StateStore> {
+export async function initStateStore(
+  repoRoot: string,
+  options?: { lock?: boolean },
+): Promise<StateStore> {
   const root = join(repoRoot, '.silvan');
   const runsDir = join(root, 'runs');
   const auditDir = join(root, 'audit');
@@ -36,9 +40,12 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
   await mkdir(runsDir, { recursive: true });
   await mkdir(auditDir, { recursive: true });
 
-  const lockRelease = (await lockfile.lock(root, {
-    retries: { retries: 2, factor: 2, minTimeout: 100, maxTimeout: 1000 },
-  })) as () => Promise<void>;
+  const lockRelease =
+    options?.lock === false
+      ? async () => {}
+      : ((await lockfile.lock(root, {
+          retries: { retries: 2, factor: 2, minTimeout: 100, maxTimeout: 1000 },
+        })) as () => Promise<void>);
 
   async function writeRunState(runId: string, data: RunStateData): Promise<string> {
     const envelope: RunStateEnvelope = {
@@ -86,6 +93,7 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
     root,
     runsDir,
     auditDir,
+    stateVersion,
     lockRelease,
     writeRunState,
     readRunState,

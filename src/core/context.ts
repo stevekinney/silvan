@@ -16,11 +16,14 @@ export type RunContext = {
 export async function createRunContext(options: {
   cwd: string;
   mode: EventMode;
+  lock?: boolean;
 }): Promise<RunContext> {
   const runId = crypto.randomUUID();
   const repo = await detectRepoContext({ cwd: options.cwd });
   const configResult = await loadConfig();
-  const state = await initStateStore(repo.repoRoot);
+  const state = await initStateStore(repo.repoRoot, {
+    ...(options.lock !== undefined ? { lock: options.lock } : {}),
+  });
   const events = initEvents(state, options.mode);
 
   const emitContext = {
@@ -56,12 +59,14 @@ export async function createRunContext(options: {
 }
 
 export async function withRunContext<T>(
-  options: { cwd: string; mode: EventMode },
+  options: { cwd: string; mode: EventMode; lock?: boolean },
   fn: (ctx: RunContext) => Promise<T>,
 ): Promise<T> {
   const start = Date.now();
   const ctx = await createRunContext(options);
   let finished = false;
+  let cancelRequested = false;
+  let cancel: ((reason: RunCanceledError) => void) | undefined;
   const emitContext = {
     runId: ctx.runId,
     repoRoot: ctx.repo.repoRoot,
@@ -88,30 +93,42 @@ export async function withRunContext<T>(
     );
   };
 
+  const cancelPromise = new Promise<never>((_resolve, reject) => {
+    cancel = reject as (reason: RunCanceledError) => void;
+  });
+
   const onSigint = (): void => {
-    void (async () => {
-      if (finished) return;
-      finished = true;
-      await emitRunFinished('canceled');
-      await ctx.state.lockRelease();
-      process.exitCode = 130;
-      process.exit();
-    })();
+    if (finished || cancelRequested) return;
+    cancelRequested = true;
+    cancel?.(new RunCanceledError());
   };
 
   process.once('SIGINT', onSigint);
 
   try {
-    const result = await fn(ctx);
+    const result = await Promise.race([fn(ctx), cancelPromise]);
     finished = true;
     await emitRunFinished('success');
     return result;
   } catch (error) {
     finished = true;
-    await emitRunFinished('failed', error);
+    const isCanceled = cancelRequested || error instanceof RunCanceledError;
+    await emitRunFinished(isCanceled ? 'canceled' : 'failed', error);
+    if (isCanceled) {
+      process.exitCode = 130;
+    }
     throw error;
   } finally {
     process.off('SIGINT', onSigint);
-    await ctx.state.lockRelease();
+    if (options.lock !== false) {
+      await ctx.state.lockRelease();
+    }
+  }
+}
+
+export class RunCanceledError extends Error {
+  constructor() {
+    super('Run canceled');
+    this.name = 'RunCanceledError';
   }
 }

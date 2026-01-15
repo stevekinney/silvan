@@ -94,6 +94,7 @@ export type RunStep = {
 export type RunPersisted = {
   path: string;
   snapshotId: string;
+  stateVersion?: string;
 };
 
 export type RunFinished = {
