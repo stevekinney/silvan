@@ -62,3 +62,21 @@ export function createEnvelope<TType extends string, TPayload>(options: {
 
   return envelope;
 }
+
+export function toEventError(error: unknown): EventEnvelope<string, unknown>['error'] {
+  if (error instanceof Error) {
+    const err = error as Error & { code?: string };
+    return {
+      name: err.name,
+      message: err.message,
+      ...(err.stack ? { stack: err.stack } : {}),
+      ...(err.code ? { code: String(err.code) } : {}),
+    };
+  }
+
+  if (typeof error === 'string') {
+    return { name: 'Error', message: error };
+  }
+
+  return { name: 'UnknownError', message: 'Unknown error' };
+}

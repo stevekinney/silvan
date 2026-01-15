@@ -18,7 +18,7 @@ export async function createRunContext(options: {
   mode: EventMode;
 }): Promise<RunContext> {
   const runId = crypto.randomUUID();
-  const repo = await detectRepoContext({ cwd: options.cwd, runId });
+  const repo = await detectRepoContext({ cwd: options.cwd });
   const configResult = await loadConfig();
   const state = await initStateStore(repo.repoRoot);
   const events = initEvents(state, options.mode);

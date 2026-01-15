@@ -1,11 +1,12 @@
 import { cac } from 'cac';
 
+import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { createRunContext } from '../core/context';
 import type { EventMode } from '../events/schema';
 import { runGit } from '../git/exec';
 import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
 import { waitForCi } from '../github/ci';
-import { loadGitHubConfig, openOrUpdatePr, requestReviewers } from '../github/pr';
+import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { mountDashboard } from '../ui';
 import { confirmAction } from '../utils/confirm';
@@ -121,7 +122,8 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     const ctx = await createRunContext({ cwd: process.cwd(), mode });
-    const { owner, repo } = loadGitHubConfig(ctx.config);
+    requireGitHubAuth();
+    const { owner, repo } = requireGitHubConfig(ctx.config);
 
     const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: ctx.repo.repoRoot,
@@ -151,7 +153,8 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     const ctx = await createRunContext({ cwd: process.cwd(), mode });
-    const { owner, repo } = loadGitHubConfig(ctx.config);
+    requireGitHubAuth();
+    const { owner, repo } = requireGitHubConfig(ctx.config);
 
     const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: ctx.repo.repoRoot,
@@ -205,7 +208,8 @@ export function run(argv: string[]): void {
 async function handlePrOpen(options: CliOptions): Promise<void> {
   const mode: EventMode = options.json ? 'json' : 'headless';
   const ctx = await createRunContext({ cwd: process.cwd(), mode });
-  const { owner, repo } = loadGitHubConfig(ctx.config);
+  requireGitHubAuth();
+  const { owner, repo } = requireGitHubConfig(ctx.config);
 
   const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
     cwd: ctx.repo.repoRoot,

@@ -1,9 +1,9 @@
-import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import type { PrIdent } from '../events/schema';
 import { createOctokit } from './client';
+import { emitGitHubError } from './errors';
 
 export type PrResult = {
   pr: PrIdent;
@@ -26,23 +26,52 @@ export async function openOrUpdatePr(options: {
   const octokit = createOctokit();
   const head = `${options.owner}:${options.headBranch}`;
 
-  const existing = await octokit.rest.pulls.list({
-    owner: options.owner,
-    repo: options.repo,
-    head,
-    state: 'open',
-  });
+  let existing;
+  try {
+    existing = await octokit.rest.pulls.list({
+      owner: options.owner,
+      repo: options.repo,
+      head,
+      state: 'open',
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'find_pr',
+      error,
+      details: `Failed to find PR for ${head}`,
+    });
+    throw error;
+  }
 
   if (existing.data.length > 0) {
     const pr = existing.data[0]!;
-    await octokit.rest.pulls.update({
-      owner: options.owner,
-      repo: options.repo,
-      pull_number: pr.number,
-      title: options.title,
-      body: options.body,
-      base: options.baseBranch,
-    });
+    try {
+      await octokit.rest.pulls.update({
+        owner: options.owner,
+        repo: options.repo,
+        pull_number: pr.number,
+        title: options.title,
+        body: options.body,
+        base: options.baseBranch,
+      });
+    } catch (error) {
+      await emitGitHubError({
+        ...(options.bus ? { bus: options.bus } : {}),
+        context: options.context,
+        operation: 'update_pr',
+        error,
+        pr: {
+          owner: options.owner,
+          repo: options.repo,
+          number: pr.number,
+          url: pr.html_url ?? undefined,
+        },
+        details: 'Failed to update PR',
+      });
+      throw error;
+    }
 
     const prInfo: PrIdent = {
       owner: options.owner,
@@ -82,14 +111,26 @@ export async function openOrUpdatePr(options: {
     };
   }
 
-  const created = await octokit.rest.pulls.create({
-    owner: options.owner,
-    repo: options.repo,
-    title: options.title,
-    head: options.headBranch,
-    base: options.baseBranch,
-    body: options.body,
-  });
+  let created;
+  try {
+    created = await octokit.rest.pulls.create({
+      owner: options.owner,
+      repo: options.repo,
+      title: options.title,
+      head: options.headBranch,
+      base: options.baseBranch,
+      body: options.body,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'open_pr',
+      error,
+      details: `Failed to open PR for ${options.headBranch}`,
+    });
+    throw error;
+  }
 
   const prInfo: PrIdent = {
     owner: options.owner,
@@ -142,12 +183,24 @@ export async function requestReviewers(options: {
   const reviewers = options.reviewers.filter((reviewer) => reviewer.length > 0);
 
   if (reviewers.length > 0) {
-    await octokit.rest.pulls.requestReviewers({
-      owner: options.pr.owner,
-      repo: options.pr.repo,
-      pull_number: options.pr.number,
-      reviewers,
-    });
+    try {
+      await octokit.rest.pulls.requestReviewers({
+        owner: options.pr.owner,
+        repo: options.pr.repo,
+        pull_number: options.pr.number,
+        reviewers,
+      });
+    } catch (error) {
+      await emitGitHubError({
+        ...(options.bus ? { bus: options.bus } : {}),
+        context: options.context,
+        operation: 'request_review',
+        error,
+        pr: options.pr,
+        details: 'Failed to request reviewers',
+      });
+      throw error;
+    }
   }
 
   if (options.requestCopilot) {
@@ -161,7 +214,15 @@ export async function requestReviewers(options: {
           reviewers: ['github-copilot'],
         },
       );
-    } catch {
+    } catch (error) {
+      await emitGitHubError({
+        ...(options.bus ? { bus: options.bus } : {}),
+        context: options.context,
+        operation: 'request_review',
+        error,
+        pr: options.pr,
+        details: 'Failed to request Copilot review',
+      });
       // Ignore Copilot request errors to keep flow alive.
     }
   }
@@ -184,12 +245,4 @@ export async function requestReviewers(options: {
       }),
     );
   }
-}
-
-export function loadGitHubConfig(config: Config): { owner: string; repo: string } {
-  if (config.github.owner && config.github.repo) {
-    return { owner: config.github.owner, repo: config.github.repo };
-  }
-
-  throw new Error('GitHub owner/repo must be configured');
 }

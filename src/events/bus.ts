@@ -13,8 +13,17 @@ export class EventBus {
   }
 
   async emit(event: Event): Promise<void> {
-    for (const handler of this.handlers) {
-      await handler(event);
+    const results = await Promise.allSettled(
+      Array.from(this.handlers, (handler) => Promise.resolve(handler(event))),
+    );
+    const errors: unknown[] = [];
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        errors.push(result.reason);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Event handler failures');
     }
   }
 }

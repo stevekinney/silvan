@@ -11,8 +11,16 @@ export type StateStore = {
   auditDir: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: unknown) => Promise<string>;
-  readRunState: (runId: string) => Promise<Record<string, unknown> | null>;
+  readRunState: (runId: string) => Promise<RunStateEnvelope | null>;
 };
+
+export type RunStateEnvelope = {
+  version: string;
+  runId: string;
+  data: unknown;
+};
+
+const stateVersion = '1.0.0';
 
 export async function initStateStore(repoRoot: string): Promise<StateStore> {
   const root = join(repoRoot, '.silvan');
@@ -27,7 +35,12 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
   })) as () => Promise<void>;
 
   async function writeRunState(runId: string, data: unknown): Promise<string> {
-    const payload = JSON.stringify(data, null, 2);
+    const envelope: RunStateEnvelope = {
+      version: stateVersion,
+      runId,
+      data,
+    };
+    const payload = JSON.stringify(envelope, null, 2);
     const target = join(runsDir, `${runId}.json`);
     const temp = join(runsDir, `${runId}.${crypto.randomUUID()}.tmp`);
 
@@ -37,10 +50,18 @@ export async function initStateStore(repoRoot: string): Promise<StateStore> {
     return hashString(payload);
   }
 
-  async function readRunState(runId: string): Promise<Record<string, unknown> | null> {
+  async function readRunState(runId: string): Promise<RunStateEnvelope | null> {
     const path = join(runsDir, `${runId}.json`);
     try {
-      return JSON.parse(await Bun.file(path).text()) as Record<string, unknown>;
+      const parsed = JSON.parse(await Bun.file(path).text()) as RunStateEnvelope;
+      if (parsed && parsed.version && parsed.runId && 'data' in parsed) {
+        return parsed;
+      }
+      return {
+        version: '0.0.0',
+        runId,
+        data: parsed,
+      };
     } catch {
       return null;
     }

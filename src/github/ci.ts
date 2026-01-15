@@ -3,6 +3,7 @@ import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import type { CiState, PrIdent } from '../events/schema';
 import { createOctokit } from './client';
+import { emitGitHubError } from './errors';
 
 export type CiResult = {
   pr: PrIdent;
@@ -15,17 +16,39 @@ async function findPrForBranch(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  bus?: EventBus;
+  context: EmitContext;
 }): Promise<PrIdent> {
   const octokit = createOctokit();
-  const response = await octokit.rest.pulls.list({
-    owner: options.owner,
-    repo: options.repo,
-    head: `${options.owner}:${options.headBranch}`,
-    state: 'open',
-  });
+  let response;
+  try {
+    response = await octokit.rest.pulls.list({
+      owner: options.owner,
+      repo: options.repo,
+      head: `${options.owner}:${options.headBranch}`,
+      state: 'open',
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'find_pr',
+      error,
+      details: `Failed to find PR for ${options.headBranch}`,
+    });
+    throw error;
+  }
 
   if (response.data.length === 0) {
-    throw new Error('No open PR found for branch');
+    const error = new Error('No open PR found for branch');
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'find_pr',
+      error,
+      details: `No open PR found for ${options.headBranch}`,
+    });
+    throw error;
   }
 
   const pr = response.data[0]!;
@@ -78,11 +101,24 @@ export async function waitForCi(options: {
   }
 
   while (Date.now() - start < options.timeoutMs) {
-    const checks = await octokit.rest.checks.listForRef({
-      owner: options.owner,
-      repo: options.repo,
-      ref: options.headBranch,
-    });
+    let checks;
+    try {
+      checks = await octokit.rest.checks.listForRef({
+        owner: options.owner,
+        repo: options.repo,
+        ref: options.headBranch,
+      });
+    } catch (error) {
+      await emitGitHubError({
+        ...(options.bus ? { bus: options.bus } : {}),
+        context: options.context,
+        operation: 'fetch_checks',
+        error,
+        pr,
+        details: 'Failed to fetch CI checks',
+      });
+      throw error;
+    }
 
     const checkRuns = checks.data.check_runs;
     const state = normalizeCiState(checkRuns.map((run) => run.conclusion));
@@ -143,5 +179,14 @@ export async function waitForCi(options: {
     await Bun.sleep(options.pollIntervalMs);
   }
 
-  throw new Error('Timed out waiting for CI');
+  const timeoutError = new Error('Timed out waiting for CI');
+  await emitGitHubError({
+    ...(options.bus ? { bus: options.bus } : {}),
+    context: options.context,
+    operation: 'fetch_checks',
+    error: timeoutError,
+    pr,
+    details: 'Timed out waiting for CI',
+  });
+  throw timeoutError;
 }
