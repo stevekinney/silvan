@@ -6,6 +6,8 @@ import { createArmorer, createTool } from 'armorer';
 import { z } from 'zod';
 
 import type { Config } from '../config/schema';
+import type { EventBus } from '../events/bus';
+import type { EmitContext } from '../events/emit';
 import { runGit } from '../git/exec';
 import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
 import { waitForCi } from '../github/ci';
@@ -19,6 +21,8 @@ export type ToolPolicy = {
   worktreePath?: string;
   dryRun: boolean;
   allowDestructive: boolean;
+  emitContext: EmitContext;
+  bus?: EventBus;
 };
 
 export type ToolContext = ToolPolicy & {
@@ -160,7 +164,8 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ cwd }, ctx) {
       const result = await runGit(['status', '--porcelain'], {
         cwd: cwd ? ensureRepoPath(cwd, ctx.repoRoot) : ctx.repoRoot,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       return { porcelain: result.stdout.trim() };
     },
@@ -173,7 +178,8 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ cwd }, ctx) {
       const result = await runGit(['diff'], {
         cwd: cwd ? ensureRepoPath(cwd, ctx.repoRoot) : ctx.repoRoot,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       return { diff: result.stdout };
     },
@@ -187,11 +193,13 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ message }, ctx) {
       await runGit(['add', '-A'], {
         cwd: ctx.repoRoot,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       const result = await runGit(['commit', '-m', message], {
         cwd: ctx.repoRoot,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       if (result.exitCode !== 0) {
         throw new Error(result.stderr || 'Failed to commit');
@@ -210,7 +218,8 @@ export function createToolRegistry(context: ToolContext) {
       if (branch) args.push(branch);
       const result = await runGit(args, {
         cwd: ctx.repoRoot,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       if (result.exitCode !== 0) {
         throw new Error(result.stderr || 'Failed to push');
@@ -227,7 +236,8 @@ export function createToolRegistry(context: ToolContext) {
       return await listWorktrees({
         repoRoot: ctx.repoRoot,
         includeStatus: Boolean(includeStatus),
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
     },
   });
@@ -242,7 +252,8 @@ export function createToolRegistry(context: ToolContext) {
         repoRoot: ctx.repoRoot,
         name,
         config: ctx.config,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
     },
   });
@@ -257,7 +268,8 @@ export function createToolRegistry(context: ToolContext) {
         repoRoot: ctx.repoRoot,
         path: ensureRepoPath(path, ctx.repoRoot),
         force: Boolean(force),
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
       return { ok: true };
     },
@@ -283,7 +295,8 @@ export function createToolRegistry(context: ToolContext) {
         baseBranch,
         title,
         body,
-        context: { runId: 'tool', repoRoot: context.repoRoot },
+        ...(context.bus ? { bus: context.bus } : {}),
+        context: context.emitContext,
       });
     },
   });
@@ -304,7 +317,8 @@ export function createToolRegistry(context: ToolContext) {
         pr: { owner, repo, number },
         reviewers,
         requestCopilot: requestCopilot ?? true,
-        context: { runId: 'tool', repoRoot: context.repoRoot },
+        ...(context.bus ? { bus: context.bus } : {}),
+        context: context.emitContext,
       });
       return { ok: true };
     },
@@ -319,7 +333,8 @@ export function createToolRegistry(context: ToolContext) {
         owner,
         repo,
         headBranch,
-        context: { runId: 'tool', repoRoot: context.repoRoot },
+        ...(context.bus ? { bus: context.bus } : {}),
+        context: context.emitContext,
       });
     },
   });
@@ -332,7 +347,8 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ threadId }) {
       return await resolveReviewThread({
         threadId,
-        context: { runId: 'tool', repoRoot: context.repoRoot },
+        ...(context.bus ? { bus: context.bus } : {}),
+        context: context.emitContext,
       });
     },
   });
@@ -354,7 +370,8 @@ export function createToolRegistry(context: ToolContext) {
         headBranch,
         pollIntervalMs: pollIntervalMs ?? 15000,
         timeoutMs: timeoutMs ?? 900000,
-        context: { runId: 'tool', repoRoot: ctx.repoRoot },
+        ...(ctx.bus ? { bus: ctx.bus } : {}),
+        context: ctx.emitContext,
       });
     },
   });

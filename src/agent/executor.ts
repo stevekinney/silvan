@@ -31,6 +31,8 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     config: input.config,
     dryRun: input.dryRun,
     allowDestructive: input.allowDestructive,
+    emitContext: input.context,
+    ...(input.bus ? { bus: input.bus } : {}),
   });
 
   const allowedTools = input.dryRun

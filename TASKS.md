@@ -32,3 +32,32 @@
 - [x] Add PR drafting output to GitHub adapter (title/body/checklist) after verification passes.
 - [x] Add review loop execution (apply fixes, re-run verification, push, resolve threads).
 - [x] Add resume flow for interrupted runs with safe next-step selection.
+
+## Observability and correctness
+
+- [x] Correlate tool-executed events with the real run (pass EmitContext into tool registry; remove runId: 'tool' placeholders).
+- [x] Track accurate phase transitions (persist/read phase in run state; emit from/to).
+- [x] Standardize run.step events for run-controller operations (plan, execute, verify, PR, review, recovery).
+
+## AI event consistency
+
+- [ ] Emit ai.plan_generated/ai.plan_validated for PR drafts, review fix plans, recovery plans, and verification decisions.
+- [ ] Add ai.session_started/ai.session_finished for execution runs (model + budgets + allowed tools).
+
+## Safety and guardrails
+
+- [ ] Enforce read-before-write (block fs.write/fs.patch on existing files unless read in session).
+- [ ] Add mutation risk tiers (safe vs dangerous) with stricter flag gating.
+- [ ] Harden repo path boundary checks (realpath + separator-safe prefix checks).
+
+## Workflow completeness
+
+- [ ] Persist verification decisions and surface next steps (don’t discard decideVerification output).
+- [ ] Complete review loop (CI wait, re-request review, stop conditions for CI failure/unresolved threads).
+- [ ] Apply recovery plan actions (dispatch nextAction instead of just persisting).
+
+## DX and quality
+
+- [ ] Add `silvan doctor` command (git/remote/config/token checks).
+- [ ] Fix verification command execution to avoid `cmd.split(' ')` (support args or shell).
+- [ ] Update README to reflect current agent behavior and flags.
