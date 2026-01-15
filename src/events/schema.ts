@@ -231,7 +231,12 @@ export type AiModelInfo = {
 
 export type AiPlanGenerated = {
   model: AiModelInfo;
-  planKind: 'ticket_plan' | 'review_fix_plan' | 'recovery_plan' | 'pr_draft';
+  planKind:
+    | 'ticket_plan'
+    | 'review_fix_plan'
+    | 'recovery_plan'
+    | 'pr_draft'
+    | 'verification_decision';
   tokens?: { input?: number; output?: number };
   planDigest: string;
 };
@@ -255,9 +260,30 @@ export type AiToolCallResult = {
   error?: { message: string; code?: string };
 };
 
+export type AiSessionStarted = {
+  model: AiModelInfo;
+  allowedTools?: number;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  maxThinkingTokens?: number;
+};
+
+export type AiSessionFinished = {
+  model: AiModelInfo;
+  ok: boolean;
+  durationMs: number;
+  toolCalls?: number;
+};
+
 export type AiError = {
   model: AiModelInfo;
-  operation: 'plan' | 'tool_call' | 'review_plan' | 'recover' | 'pr_draft';
+  operation:
+    | 'plan'
+    | 'tool_call'
+    | 'review_plan'
+    | 'recover'
+    | 'pr_draft'
+    | 'verification_decision';
   details?: string;
 };
 
@@ -286,6 +312,8 @@ export type Event =
   | EventEnvelope<'ci.wait_finished', CiWaitFinished>
   | EventEnvelope<'ai.plan_generated', AiPlanGenerated>
   | EventEnvelope<'ai.plan_validated', AiPlanValidated>
+  | EventEnvelope<'ai.session_started', AiSessionStarted>
+  | EventEnvelope<'ai.session_finished', AiSessionFinished>
   | EventEnvelope<'ai.tool_call_started', AiToolCall>
   | EventEnvelope<'ai.tool_call_finished', AiToolCallResult>
   | EventEnvelope<'ai.error', AiError>;

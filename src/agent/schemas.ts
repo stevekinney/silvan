@@ -27,17 +27,6 @@ export const planSchema = z.object({
 
 export type Plan = z.infer<typeof planSchema>;
 
-export const clarificationSchema = z.object({
-  answers: z.array(
-    z.object({
-      id: z.string().min(1),
-      answer: z.string().min(1),
-    }),
-  ),
-});
-
-export type Clarifications = z.infer<typeof clarificationSchema>;
-
 export const prDraftSchema = z.object({
   title: z.string().min(1),
   body: z.string().min(1),
@@ -69,7 +58,12 @@ export const reviewFixPlanSchema = z.object({
 export type ReviewFixPlan = z.infer<typeof reviewFixPlanSchema>;
 
 export const recoveryPlanSchema = z.object({
-  nextAction: z.string().min(1),
+  nextAction: z.enum([
+    'rerun_verification',
+    'refetch_reviews',
+    'restart_review_loop',
+    'ask_user',
+  ]),
   reason: z.string().min(1),
   steps: z.array(z.string()).optional(),
 });

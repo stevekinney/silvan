@@ -187,13 +187,6 @@ Auth:
 
 - LINEAR_API_KEY
 
-Fallback:
-
-- If Linear slows initial progress, adapter may be stubbed with TODOs,
-  but the interface must be real.
-
----
-
 ## AI provider
 
 Decision: Start with Anthropic.

@@ -3,7 +3,7 @@ import type {
   SDKResultMessage,
   SDKSessionOptions,
 } from '@anthropic-ai/claude-agent-sdk';
-import { unstable_v2_prompt } from '@anthropic-ai/claude-agent-sdk';
+import { unstable_v2_createSession } from '@anthropic-ai/claude-agent-sdk';
 
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
@@ -17,6 +17,7 @@ export type ClaudeRunOptions = {
   permissionMode?: SDKSessionOptions['permissionMode'];
   allowedTools?: string[];
   disallowedTools?: string[];
+  canUseTool?: SDKSessionOptions['canUseTool'];
   hooks?: SDKSessionOptions['hooks'];
   maxTurns?: number;
   maxBudgetUsd?: number;
@@ -26,7 +27,7 @@ export type ClaudeRunOptions = {
 export async function runClaudePrompt(
   options: ClaudeRunOptions,
 ): Promise<SDKResultMessage> {
-  const promptOptions: SDKSessionOptions & {
+  const sessionOptions: SDKSessionOptions & {
     mcpServers?: Record<string, unknown>;
     maxTurns?: number;
     maxBudgetUsd?: number;
@@ -36,6 +37,7 @@ export async function runClaudePrompt(
     ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
     ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
     ...(options.disallowedTools ? { disallowedTools: options.disallowedTools } : {}),
+    ...(options.canUseTool ? { canUseTool: options.canUseTool } : {}),
     ...(options.hooks ? { hooks: options.hooks } : {}),
     ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
     ...(typeof options.maxTurns === 'number' ? { maxTurns: options.maxTurns } : {}),
@@ -47,7 +49,18 @@ export async function runClaudePrompt(
       : {}),
   };
 
-  return unstable_v2_prompt(options.message, promptOptions);
+  const session = unstable_v2_createSession(sessionOptions);
+  try {
+    await session.send(options.message);
+    for await (const message of session.stream()) {
+      if (message.type === 'result') {
+        return message;
+      }
+    }
+  } finally {
+    session.close();
+  }
+  throw new Error('Claude session ended without a result');
 }
 
 export function createToolHooks(options: {

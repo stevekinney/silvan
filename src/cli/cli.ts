@@ -34,6 +34,7 @@ type CliOptions = {
   noUi?: boolean;
   dryRun?: boolean;
   apply?: boolean;
+  dangerous?: boolean;
   ticket?: string;
 };
 
@@ -321,11 +322,13 @@ cli
   .command('agent run', 'Run agent')
   .option('--dry-run', 'Allow only read-only tools')
   .option('--apply', 'Allow mutating tools')
+  .option('--dangerous', 'Allow dangerous tools (requires --apply)')
   .action((options: CliOptions) =>
     withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
       const runOptions = {
         ...(options.dryRun ? { dryRun: true } : {}),
         ...(options.apply ? { apply: true } : {}),
+        ...(options.dangerous ? { dangerous: true } : {}),
       };
       await runImplementation(ctx, runOptions);
       await runReviewLoop(ctx, runOptions);
@@ -337,6 +340,76 @@ cli.command('agent resume', 'Resume agent').action(() =>
     await runRecovery(ctx);
   }),
 );
+
+cli
+  .command('doctor', 'Check environment and configuration')
+  .action(async (options: CliOptions) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      const results: Array<{ name: string; ok: boolean; detail: string }> = [];
+
+      const gitVersion = await runGit(['--version'], {
+        cwd: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+      results.push({
+        name: 'git.version',
+        ok: gitVersion.exitCode === 0,
+        detail: gitVersion.stdout.trim() || gitVersion.stderr.trim(),
+      });
+
+      try {
+        const github = await requireGitHubConfig({
+          config: ctx.config,
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        });
+        results.push({
+          name: 'github.remote',
+          ok: true,
+          detail: `${github.owner}/${github.repo} (${github.source})`,
+        });
+      } catch (error) {
+        results.push({
+          name: 'github.remote',
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const ghTokenPresent = Boolean(Bun.env['GITHUB_TOKEN'] || Bun.env['GH_TOKEN']);
+      results.push({
+        name: 'github.token',
+        ok: ghTokenPresent,
+        detail: ghTokenPresent ? 'Found' : 'Missing GITHUB_TOKEN or GH_TOKEN',
+      });
+
+      if (ctx.config.linear.enabled) {
+        const linearTokenPresent = Boolean(Bun.env['LINEAR_API_KEY']);
+        results.push({
+          name: 'linear.token',
+          ok: linearTokenPresent,
+          detail: linearTokenPresent ? 'Found' : 'Missing LINEAR_API_KEY',
+        });
+      }
+
+      const verifyConfigured = ctx.config.verify.commands.length > 0;
+      results.push({
+        name: 'verify.commands',
+        ok: verifyConfigured,
+        detail: verifyConfigured
+          ? `${ctx.config.verify.commands.length} command(s)`
+          : 'No verification commands configured',
+      });
+
+      for (const result of results) {
+        const prefix = result.ok ? 'ok' : 'fail';
+        console.log(`${prefix} ${result.name} ${result.detail}`);
+      }
+    });
+  });
 
 export function run(argv: string[]): void {
   cli.parse(argv, { run: false });

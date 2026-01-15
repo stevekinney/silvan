@@ -12,7 +12,7 @@
 ## Agent roles
 
 - [x] Planner agent (ticket/worktree → plan + questions) using Claude Agent SDK, validate Plan schema, persist to run state.
-- [x] Clarifier agent (questions → answers) for ambiguous tickets.
+- [ ] Clarifier agent (questions → answers) for ambiguous tickets.
 - [x] Implementation agent (plan → tool calls) with progress `run.step` events + working memory.
 - [x] Verification agent (decide which commands to run, interpret failures, suggest fixes).
 - [x] PR writer agent (draft PR title/body/checklist) with schema validation.
@@ -41,23 +41,22 @@
 
 ## AI event consistency
 
-- [ ] Emit ai.plan_generated/ai.plan_validated for PR drafts, review fix plans, recovery plans, and verification decisions.
-- [ ] Add ai.session_started/ai.session_finished for execution runs (model + budgets + allowed tools).
+- [x] Emit ai.plan_generated/ai.plan_validated for PR drafts, review fix plans, recovery plans, and verification decisions.
+- [x] Add ai.session_started/ai.session_finished for execution runs (model + budgets + allowed tools).
 
 ## Safety and guardrails
 
-- [ ] Enforce read-before-write (block fs.write/fs.patch on existing files unless read in session).
-- [ ] Add mutation risk tiers (safe vs dangerous) with stricter flag gating.
-- [ ] Harden repo path boundary checks (realpath + separator-safe prefix checks).
+- [x] Add mutation risk tiers (safe vs dangerous) with stricter flag gating.
+- [x] Harden repo path boundary checks (realpath + separator-safe prefix checks).
 
 ## Workflow completeness
 
-- [ ] Persist verification decisions and surface next steps (don’t discard decideVerification output).
-- [ ] Complete review loop (CI wait, re-request review, stop conditions for CI failure/unresolved threads).
-- [ ] Apply recovery plan actions (dispatch nextAction instead of just persisting).
+- [x] Persist verification decisions and surface next steps (don’t discard decideVerification output).
+- [x] Complete review loop (CI wait, re-request review, stop conditions for CI failure/unresolved threads).
+- [x] Apply recovery plan actions (dispatch nextAction instead of just persisting).
 
 ## DX and quality
 
-- [ ] Add `silvan doctor` command (git/remote/config/token checks).
-- [ ] Fix verification command execution to avoid `cmd.split(' ')` (support args or shell).
-- [ ] Update README to reflect current agent behavior and flags.
+- [x] Add `silvan doctor` command (git/remote/config/token checks).
+- [x] Fix verification command execution to avoid `cmd.split(' ')` (support args or shell).
+- [x] Update README to reflect current agent behavior and flags.

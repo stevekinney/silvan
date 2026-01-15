@@ -1,3 +1,7 @@
+import type { EventBus } from '../events/bus';
+import type { EmitContext } from '../events/emit';
+import { createEnvelope } from '../events/emit';
+import { hashString } from '../utils/hash';
 import { type ReviewFixPlan, reviewFixPlanSchema } from './schemas';
 import { runClaudePrompt } from './sdk';
 
@@ -14,6 +18,8 @@ export async function generateReviewFixPlan(input: {
     isOutdated: boolean;
   }>;
   diffContext?: string;
+  bus?: EventBus;
+  context?: EmitContext;
 }): Promise<ReviewFixPlan> {
   const prompt = [
     'You are the review response agent for Silvan.',
@@ -44,8 +50,56 @@ export async function generateReviewFixPlan(input: {
   const parsed = reviewFixPlanSchema.safeParse(
     typeof raw === 'string' ? JSON.parse(raw) : raw,
   );
+  const planDigest = hashString(JSON.stringify(raw));
+  if (input.bus && input.context) {
+    await input.bus.emit(
+      createEnvelope({
+        type: 'ai.plan_generated',
+        source: 'ai',
+        level: 'info',
+        context: input.context,
+        payload: {
+          model: { provider: 'anthropic', model: input.model },
+          planKind: 'review_fix_plan' as const,
+          planDigest,
+        },
+      }),
+    );
+  }
   if (!parsed.success) {
+    if (input.bus && input.context) {
+      await input.bus.emit(
+        createEnvelope({
+          type: 'ai.plan_validated',
+          source: 'ai',
+          level: 'error',
+          context: input.context,
+          payload: {
+            planDigest,
+            valid: false,
+            errors: parsed.error.issues.map((issue) => ({
+              path: issue.path.join('.') || 'review_fix_plan',
+              message: issue.message,
+            })),
+          },
+        }),
+      );
+    }
     throw new Error('Review fix plan validation failed');
+  }
+  if (input.bus && input.context) {
+    await input.bus.emit(
+      createEnvelope({
+        type: 'ai.plan_validated',
+        source: 'ai',
+        level: 'info',
+        context: input.context,
+        payload: {
+          planDigest,
+          valid: true,
+        },
+      }),
+    );
   }
   return parsed.data;
 }

@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const verificationCommandSchema = z.object({
   name: z.string().min(1),
   cmd: z.string().min(1),
+  args: z.array(z.string()).optional(),
 });
 
 export const configSchema = z.object({

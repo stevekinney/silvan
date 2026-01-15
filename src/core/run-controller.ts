@@ -9,6 +9,7 @@ import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { createEnvelope } from '../events/emit';
 import type { Phase, RunPhaseChanged, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
+import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments, resolveReviewThread } from '../github/review';
 import { fetchLinearTicket, type LinearTicket } from '../linear/linear';
@@ -21,6 +22,7 @@ type RunControllerOptions = {
   worktreeName?: string;
   dryRun?: boolean;
   apply?: boolean;
+  dangerous?: boolean;
 };
 
 function getModel(): string {
@@ -169,6 +171,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       config: ctx.config,
       dryRun: Boolean(options.dryRun),
       allowDestructive: Boolean(options.apply),
+      allowDangerous: Boolean(options.dangerous),
       bus: ctx.events.bus,
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       maxTurns: Number(Bun.env['SILVAN_MAX_TURNS'] ?? 12),
@@ -195,7 +198,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   await updateState(ctx, (data) => ({ ...data, verifyReport }));
 
   if (!verifyReport.ok) {
-    await decideVerification({
+    const decision = await decideVerification({
       model,
       report: {
         ok: verifyReport.ok,
@@ -208,6 +211,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
       context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     });
+    await updateState(ctx, (data) => ({ ...data, verificationDecision: decision }));
     throw new Error('Verification failed');
   }
 
@@ -226,6 +230,8 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       planSummary,
       changesSummary: summary,
       ...(ticketUrl ? { ticketUrl } : {}),
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
     }),
   );
 
@@ -331,6 +337,8 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       generateReviewFixPlan({
         model,
         threads: Object.values(threads),
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
     );
 
@@ -358,6 +366,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         config: ctx.config,
         dryRun: Boolean(options.dryRun),
         allowDestructive: Boolean(options.apply),
+        allowDangerous: Boolean(options.dangerous),
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
@@ -378,6 +387,31 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       runGit(['push', 'origin', headBranch], {
         cwd: ctx.repo.repoRoot,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
+      }),
+    );
+
+    const ciResult = await runStep(ctx, 'ci.wait', 'Wait for CI', () =>
+      waitForCi({
+        owner,
+        repo,
+        headBranch,
+        pollIntervalMs: 15000,
+        timeoutMs: 900000,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      }),
+    );
+    if (ciResult.state === 'failing') {
+      throw new Error('CI failed during review loop');
+    }
+
+    await runStep(ctx, 'github.review.request', 'Re-request reviewers', () =>
+      requestReviewers({
+        pr: review.pr,
+        reviewers: ctx.config.github.reviewers,
+        requestCopilot: ctx.config.github.requestCopilot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
     );
 
@@ -404,7 +438,82 @@ export async function runRecovery(ctx: RunContext): Promise<void> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = (state?.data as Record<string, unknown>) ?? {};
   const plan = await runStep(ctx, 'agent.recovery.plan', 'Plan recovery', () =>
-    generateRecoveryPlan({ model: getModel(), runState: data }),
+    generateRecoveryPlan({
+      model: getModel(),
+      runState: data,
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+    }),
   );
   await updateState(ctx, (prev) => ({ ...prev, recovery: plan }));
+
+  switch (plan.nextAction) {
+    case 'rerun_verification': {
+      await changePhase(ctx, 'verify', 'recovery');
+      const verifyReport = await runStep(
+        ctx,
+        'recovery.verify',
+        'Rerun verification',
+        () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+      );
+      await updateState(ctx, (prev) => ({
+        ...prev,
+        recoveryResult: { action: plan.nextAction, verifyReport },
+      }));
+      if (!verifyReport.ok) {
+        throw new Error('Verification failed during recovery');
+      }
+      return;
+    }
+    case 'refetch_reviews': {
+      await changePhase(ctx, 'review', 'recovery');
+      requireGitHubAuth();
+      const github = await requireGitHubConfig({
+        config: ctx.config,
+        repoRoot: ctx.repo.repoRoot,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+        bus: ctx.events.bus,
+      });
+      const review = await runStep(
+        ctx,
+        'recovery.review.fetch',
+        'Refetch review comments',
+        () =>
+          fetchUnresolvedReviewComments({
+            owner: github.owner,
+            repo: github.repo,
+            headBranch: ctx.repo.branch,
+            bus: ctx.events.bus,
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
+          }),
+      );
+      await updateState(ctx, (prev) => ({
+        ...prev,
+        recoveryResult: {
+          action: plan.nextAction,
+          reviewSummary: {
+            pr: review.pr,
+            unresolvedCount: review.comments.length,
+          },
+        },
+      }));
+      return;
+    }
+    case 'restart_review_loop': {
+      if (!ctx.config.features.autoMode) {
+        throw new Error(
+          'Recovery suggests restarting the review loop. Re-run with auto mode.',
+        );
+      }
+      await runReviewLoop(ctx, { apply: true });
+      return;
+    }
+    case 'ask_user':
+    default:
+      throw new Error('Recovery requires user input before continuing');
+  }
 }

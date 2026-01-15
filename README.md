@@ -81,6 +81,8 @@ export default config;
 ## Environment Variables
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access for PR and CI commands.
+- `LINEAR_API_KEY`: Linear ticket access for planning.
+- `CLAUDE_MODEL`: override the default Claude model.
 
 ## Commands
 
@@ -107,12 +109,19 @@ export default config;
 
 - `ui` - launch the live Ink dashboard
 
-### Agent stubs
+### Agent workflows
 
-- `task start <ticket>`
-- `agent plan`
-- `agent run`
-- `agent resume`
+- `task start <ticket>` - create worktree + generate plan from Linear ticket
+- `agent plan` - generate and persist a structured plan
+- `agent run` - execute the plan and open/update PRs
+  - `--dry-run` (read-only tools only)
+  - `--apply` (allow safe mutations)
+  - `--dangerous` (allow dangerous mutations; requires `--apply`)
+- `agent resume` - generate recovery plan and execute recommended next action
+
+### Diagnostics
+
+- `doctor` - validate git, config, tokens, and verification command setup
 
 ## Output Modes
 
@@ -148,10 +157,9 @@ bun test
 
 ## Roadmap
 
-- Planning and execution phases for AI-driven changes
-- Verification command runner and gating
-- Review loop automation
-- Linear integration
+- Review loop polish and CI gating improvements
+- Recovery actions that can safely auto-resume more cases
+- Interactive clarification prompt support
 
 ## License
 
