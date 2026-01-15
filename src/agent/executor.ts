@@ -18,6 +18,7 @@ export type ExecutorInput = {
   maxTurns?: number;
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
+  toolBudget?: { maxCalls?: number; maxDurationMs?: number };
   toolCallLog?: Array<{
     toolCallId: string;
     toolName: string;
@@ -34,6 +35,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     dryRun: input.dryRun,
     allowDestructive: input.allowDestructive,
     allowDangerous: input.allowDangerous,
+    ...(input.toolBudget ? { toolBudget: input.toolBudget } : {}),
     emitContext: input.context,
     ...(input.bus ? { bus: input.bus } : {}),
   });
@@ -45,8 +47,12 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     'glob',
   ]);
   const writeBuiltinTools = new Set(['write_file', 'edit_file', 'create_file']);
+  const execBuiltinTools = new Set(['bash']);
   const allowedToolCount =
-    registry.toolNames.length + readOnlyBuiltinTools.size + writeBuiltinTools.size;
+    registry.toolNames.length +
+    readOnlyBuiltinTools.size +
+    writeBuiltinTools.size +
+    execBuiltinTools.size;
 
   const prompt = [
     'You are the implementation agent for Silvan.',
@@ -113,6 +119,15 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
             return Promise.resolve({
               behavior: 'deny',
               message: 'Use --apply to allow file edits.',
+            });
+          }
+          return Promise.resolve({ behavior: 'allow' });
+        }
+        if (execBuiltinTools.has(toolName)) {
+          if (input.dryRun || !input.allowDestructive || !input.allowDangerous) {
+            return Promise.resolve({
+              behavior: 'deny',
+              message: 'Use --apply and --dangerous to allow command execution.',
             });
           }
           return Promise.resolve({ behavior: 'allow' });

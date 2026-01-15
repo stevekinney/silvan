@@ -13,6 +13,15 @@ export type PrResult = {
   title: string;
 };
 
+export type MergedPrInfo = {
+  number: number;
+  title: string;
+  url?: string;
+  headBranch: string;
+  baseBranch: string;
+  mergedAt: string;
+};
+
 export async function openOrUpdatePr(options: {
   owner: string;
   repo: string;
@@ -245,4 +254,49 @@ export async function requestReviewers(options: {
       }),
     );
   }
+}
+
+export async function findMergedPr(options: {
+  owner: string;
+  repo: string;
+  headBranch: string;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<MergedPrInfo | null> {
+  const octokit = createOctokit();
+  const head = `${options.owner}:${options.headBranch}`;
+
+  let closed;
+  try {
+    closed = await octokit.rest.pulls.list({
+      owner: options.owner,
+      repo: options.repo,
+      head,
+      state: 'closed',
+      per_page: 10,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'find_pr',
+      error,
+      details: `Failed to find merged PR for ${head}`,
+    });
+    throw error;
+  }
+
+  const merged = closed.data.find((pr) => pr.merged_at);
+  if (!merged || !merged.merged_at) {
+    return null;
+  }
+
+  return {
+    number: merged.number,
+    title: merged.title,
+    url: merged.html_url ?? undefined,
+    headBranch: merged.head.ref,
+    baseBranch: merged.base.ref,
+    mergedAt: merged.merged_at,
+  };
 }

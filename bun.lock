@@ -7,7 +7,7 @@
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.7",
         "@linear/sdk": "^70.0.0",
-        "armorer": "^0.2.0",
+        "armorer": "^0.4.0",
         "cac": "^6.7.14",
         "change-case": "^5.4.4",
         "cosmiconfig": "^9.0.0",
@@ -297,7 +297,7 @@
 
     "argparse": ["argparse@2.0.1", "", {}, "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q=="],
 
-    "armorer": ["armorer@0.2.0", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.25.2", "event-emission": "0.2.0" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-muZvlRdbWDoDka/jaCeqOu+Xlpgdty8Fi3pyv2f767SUsuhsjHhVEtOySf07Zz8olZFRj3LPaFVMET8ilvJvxQ=="],
+    "armorer": ["armorer@0.4.0", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.25.2", "event-emission": "0.2.0" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-CRO6qipM5QXqFHxXqY0YQ6Gi0Osx/RGT1j4bXi4AOeF9LkMfQA3IUk1sHX9I8ScbAsSLWhQy39FTSyvra1qm9Q=="],
 
     "array-buffer-byte-length": ["array-buffer-byte-length@1.0.2", "", { "dependencies": { "call-bound": "^1.0.3", "is-array-buffer": "^3.0.5" } }, "sha512-LHE+8BuR7RYGDKvnrmcuSq3tDcKv9OFEXQt/HpbZhY7V6h0zlUXutnAD82GiFx9rdieCMjkvtcsPqBwgUl1Iiw=="],
 

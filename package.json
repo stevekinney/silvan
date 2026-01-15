@@ -46,7 +46,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.7",
     "@linear/sdk": "^70.0.0",
-    "armorer": "^0.2.0",
+    "armorer": "^0.4.0",
     "cac": "^6.7.14",
     "change-case": "^5.4.4",
     "cosmiconfig": "^9.0.0",

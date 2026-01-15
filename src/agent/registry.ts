@@ -1,21 +1,20 @@
-import { realpathSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
-
 import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type {
+  ToolContext as ArmorerToolContext,
+  ToolMetadata,
+  ToolPolicyDecision,
+} from 'armorer';
 import { createArmorer, createTool } from 'armorer';
 import { z } from 'zod';
 
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
-import { runGit } from '../git/exec';
-import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
 import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments, resolveReviewThread } from '../github/review';
 import { fetchLinearTicket, moveLinearTicket } from '../linear/linear';
-import { runVerifyCommands } from '../verify/run';
 
 export type ToolPolicy = {
   repoRoot: string;
@@ -23,6 +22,7 @@ export type ToolPolicy = {
   dryRun: boolean;
   allowDestructive: boolean;
   allowDangerous: boolean;
+  toolBudget?: { maxCalls?: number; maxDurationMs?: number };
   emitContext: EmitContext;
   bus?: EventBus;
 };
@@ -35,50 +35,36 @@ type ToolDefinition<TSchema extends z.ZodObject<z.ZodRawShape>> = {
   name: string;
   description: string;
   schema: TSchema;
-  mutationLevel?: 'safe' | 'dangerous';
+  metadata?: ToolMetadata & { dangerous?: boolean };
   execute: (params: z.infer<TSchema>, ctx: ToolContext) => Promise<unknown>;
 };
 
-const readOnlyHint = { mcp: { annotations: { readOnlyHint: true } } };
+const readOnlyHint = { readOnly: true, mcp: { annotations: { readOnlyHint: true } } };
 
-function ensureRepoPath(path: string, repoRoot: string): string {
-  const repoRootReal = realpathSync(repoRoot);
-  const resolved = resolve(repoRootReal, path);
-  const rootPrefix = repoRootReal.endsWith(sep) ? repoRootReal : `${repoRootReal}${sep}`;
-  let targetReal: string | undefined;
-  try {
-    targetReal = realpathSync(resolved);
-  } catch {
-    const parentReal = realpathSync(dirname(resolved));
-    if (!parentReal.startsWith(rootPrefix) && parentReal !== repoRootReal) {
-      throw new Error(`Path is outside allowed repo root: ${path}`);
-    }
-    return resolved;
-  }
-  if (!targetReal.startsWith(rootPrefix) && targetReal !== repoRootReal) {
-    throw new Error(`Path is outside allowed repo root: ${path}`);
-  }
-  return targetReal;
+function withReadOnlyHint(metadata?: ToolMetadata): ToolMetadata {
+  return {
+    ...readOnlyHint,
+    ...(metadata ?? {}),
+  };
 }
 
 // File operations are provided by Claude Code; the registry focuses on repo/API tools.
-async function guardTool<TSchema extends z.ZodObject<z.ZodRawShape>>(
-  toolDef: ToolDefinition<TSchema>,
-  params: z.infer<TSchema>,
+function enforcePolicy(
+  toolDef: ToolDefinition<z.ZodObject<z.ZodRawShape>>,
   ctx: ToolContext,
-): Promise<unknown> {
-  if (toolDef.mutationLevel) {
+): ToolPolicyDecision | void {
+  const metadata = toolDef.metadata;
+  if (metadata?.mutates) {
     if (ctx.dryRun) {
-      throw new Error(`Tool ${toolDef.name} is not allowed in dry-run mode`);
+      return { allow: false, reason: 'Dry-run mode: mutating tools disabled.' };
     }
     if (!ctx.allowDestructive) {
-      throw new Error(`Tool ${toolDef.name} is not allowed without --apply`);
+      return { allow: false, reason: 'Use --apply to allow mutating tools.' };
     }
-    if (toolDef.mutationLevel === 'dangerous' && !ctx.allowDangerous) {
-      throw new Error(`Tool ${toolDef.name} requires --dangerous`);
+    if (metadata.dangerous && !ctx.allowDangerous) {
+      return { allow: false, reason: 'Use --dangerous to allow this tool.' };
     }
   }
-  return toolDef.execute(params, ctx);
 }
 
 function toStructuredContent(result: unknown): Record<string, unknown> | undefined {
@@ -88,7 +74,31 @@ function toStructuredContent(result: unknown): Record<string, unknown> | undefin
 }
 
 export function createToolRegistry(context: ToolContext) {
-  const armorer = createArmorer([], { context });
+  const toolsByName = new Map<string, ToolDefinition<z.ZodObject<z.ZodRawShape>>>();
+  const armorer = createArmorer([], {
+    context,
+    telemetry: true,
+    digests: { input: true, output: true },
+    outputValidationMode: 'report',
+    readOnly: context.dryRun,
+    allowMutation: context.allowDestructive,
+    ...(context.toolBudget ? { budget: context.toolBudget } : {}),
+    policy: {
+      beforeExecute(policyContext) {
+        const tool = toolsByName.get(policyContext.toolName);
+        if (!tool) return;
+        return enforcePolicy(tool, context);
+      },
+    },
+    policyContext: (policyContext) => ({
+      runId: context.emitContext.runId,
+      repoRoot: context.repoRoot,
+      worktreePath: context.worktreePath,
+      ticketId: context.emitContext.ticketId,
+      toolCallId: policyContext.toolCall.id,
+      inputDigest: policyContext.inputDigest,
+    }),
+  });
   const sdkTools: Array<ReturnType<typeof sdkTool>> = [];
   const toolNames: string[] = [];
   const mutatingToolNames: string[] = [];
@@ -99,10 +109,10 @@ export function createToolRegistry(context: ToolContext) {
     const toolConfig = {
       name: definition.name,
       description: definition.description,
-      schema: definition.schema.shape,
-      metadata: definition.mutationLevel ? {} : readOnlyHint,
-      async execute(params: Record<string, unknown>) {
-        return guardTool(definition, params as z.infer<TSchema>, context);
+      schema: definition.schema,
+      metadata: definition.metadata ?? readOnlyHint,
+      async execute(params: object, _toolContext: ArmorerToolContext) {
+        return definition.execute(params as z.infer<TSchema>, context);
       },
     } satisfies Parameters<typeof createTool>[0];
 
@@ -125,128 +135,11 @@ export function createToolRegistry(context: ToolContext) {
     );
 
     toolNames.push(definition.name);
-    if (definition.mutationLevel) {
+    toolsByName.set(definition.name, definition);
+    if (definition.metadata?.mutates) {
       mutatingToolNames.push(definition.name);
     }
   };
-
-  register({
-    name: 'git.status',
-    description: 'Get git status for the worktree',
-    schema: z.object({ cwd: z.string().optional() }),
-    async execute({ cwd }, ctx) {
-      const result = await runGit(['status', '--porcelain'], {
-        cwd: cwd ? ensureRepoPath(cwd, ctx.repoRoot) : ctx.repoRoot,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      return { porcelain: result.stdout.trim() };
-    },
-  });
-
-  register({
-    name: 'git.diff',
-    description: 'Get git diff for the worktree',
-    schema: z.object({ cwd: z.string().optional() }),
-    async execute({ cwd }, ctx) {
-      const result = await runGit(['diff'], {
-        cwd: cwd ? ensureRepoPath(cwd, ctx.repoRoot) : ctx.repoRoot,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      return { diff: result.stdout };
-    },
-  });
-
-  register({
-    name: 'git.commit',
-    description: 'Commit staged changes',
-    schema: z.object({ message: z.string() }),
-    mutationLevel: 'safe',
-    async execute({ message }, ctx) {
-      await runGit(['add', '-A'], {
-        cwd: ctx.repoRoot,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      const result = await runGit(['commit', '-m', message], {
-        cwd: ctx.repoRoot,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || 'Failed to commit');
-      }
-      return { ok: true };
-    },
-  });
-
-  register({
-    name: 'git.push',
-    description: 'Push current branch to origin',
-    schema: z.object({ remote: z.string().optional(), branch: z.string().optional() }),
-    mutationLevel: 'safe',
-    async execute({ remote, branch }, ctx) {
-      const args = ['push', remote ?? 'origin'];
-      if (branch) args.push(branch);
-      const result = await runGit(args, {
-        cwd: ctx.repoRoot,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || 'Failed to push');
-      }
-      return { ok: true };
-    },
-  });
-
-  register({
-    name: 'git.worktree.list',
-    description: 'List worktrees',
-    schema: z.object({ includeStatus: z.boolean().optional() }),
-    async execute({ includeStatus }, ctx) {
-      return await listWorktrees({
-        repoRoot: ctx.repoRoot,
-        includeStatus: Boolean(includeStatus),
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'git.worktree.create',
-    description: 'Create a worktree and branch',
-    schema: z.object({ name: z.string() }),
-    mutationLevel: 'safe',
-    async execute({ name }, ctx) {
-      return await createWorktree({
-        repoRoot: ctx.repoRoot,
-        name,
-        config: ctx.config,
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'git.worktree.remove',
-    description: 'Remove a worktree',
-    schema: z.object({ path: z.string(), force: z.boolean().optional() }),
-    mutationLevel: 'dangerous',
-    async execute({ path, force }, ctx) {
-      await removeWorktree({
-        repoRoot: ctx.repoRoot,
-        path: ensureRepoPath(path, ctx.repoRoot),
-        force: Boolean(force),
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-      return { ok: true };
-    },
-  });
 
   register({
     name: 'github.pr.open',
@@ -259,7 +152,7 @@ export function createToolRegistry(context: ToolContext) {
       title: z.string(),
       body: z.string(),
     }),
-    mutationLevel: 'safe',
+    metadata: { mutates: true },
     async execute({ owner, repo, headBranch, baseBranch, title, body }) {
       return await openOrUpdatePr({
         owner,
@@ -284,7 +177,7 @@ export function createToolRegistry(context: ToolContext) {
       reviewers: z.array(z.string()),
       requestCopilot: z.boolean().optional(),
     }),
-    mutationLevel: 'safe',
+    metadata: { mutates: true },
     async execute({ owner, repo, number, reviewers, requestCopilot }) {
       await requestReviewers({
         pr: { owner, repo, number },
@@ -301,6 +194,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'github.review.fetch',
     description: 'Fetch unresolved review threads',
     schema: z.object({ owner: z.string(), repo: z.string(), headBranch: z.string() }),
+    metadata: withReadOnlyHint(),
     async execute({ owner, repo, headBranch }) {
       return await fetchUnresolvedReviewComments({
         owner,
@@ -316,7 +210,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'github.review.resolve',
     description: 'Resolve a review thread',
     schema: z.object({ threadId: z.string() }),
-    mutationLevel: 'safe',
+    metadata: { mutates: true },
     async execute({ threadId }) {
       return await resolveReviewThread({
         threadId,
@@ -336,6 +230,7 @@ export function createToolRegistry(context: ToolContext) {
       pollIntervalMs: z.number().optional(),
       timeoutMs: z.number().optional(),
     }),
+    metadata: withReadOnlyHint(),
     async execute({ owner, repo, headBranch, pollIntervalMs, timeoutMs }, ctx) {
       return await waitForCi({
         owner,
@@ -350,22 +245,10 @@ export function createToolRegistry(context: ToolContext) {
   });
 
   register({
-    name: 'verify.run',
-    description: 'Run configured verification commands',
-    schema: z.object({ names: z.array(z.string()).optional() }),
-    mutationLevel: 'safe',
-    async execute({ names }, ctx) {
-      return await runVerifyCommands(ctx.config, {
-        ...(names ? { names } : {}),
-        cwd: ctx.repoRoot,
-      });
-    },
-  });
-
-  register({
     name: 'linear.ticket.fetch',
     description: 'Fetch a Linear ticket',
     schema: z.object({ id: z.string() }),
+    metadata: withReadOnlyHint(),
     async execute({ id }) {
       return await fetchLinearTicket(id);
     },
@@ -375,7 +258,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'linear.ticket.move',
     description: 'Move a Linear ticket to a new state',
     schema: z.object({ id: z.string(), state: z.string() }),
-    mutationLevel: 'safe',
+    metadata: { mutates: true },
     async execute({ id, state }) {
       return await moveLinearTicket(id, state);
     },

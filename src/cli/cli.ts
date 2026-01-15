@@ -14,14 +14,27 @@ import {
 import { createEnvelope } from '../events/emit';
 import type { EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
-import { createWorktree, listWorktrees, removeWorktree } from '../git/worktree';
+import {
+  createWorktree,
+  ensureArtifactsIgnored,
+  hasUncommittedChanges,
+  installDependencies,
+  listWorktrees,
+  lockWorktree,
+  normalizeClaudeSettings,
+  pruneWorktrees,
+  rebaseOntoBase,
+  removeWorktree,
+  unlockWorktree,
+} from '../git/worktree';
 import { waitForCi } from '../github/ci';
-import { openOrUpdatePr, requestReviewers } from '../github/pr';
+import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { mountDashboard } from '../ui';
 import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
+import { inferTicketFromRepo } from '../utils/ticket';
 
 const cli = cac('silvan');
 
@@ -29,6 +42,7 @@ type CliOptions = {
   json?: boolean;
   yes?: boolean;
   force?: boolean;
+  all?: boolean;
   interval?: string;
   timeout?: string;
   noUi?: boolean;
@@ -63,24 +77,49 @@ cli
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
       const safeName = sanitizeName(name);
 
-      await runStep(ctx, 'git.worktree.create', 'Create worktree', async () =>
-        createWorktree({
-          repoRoot: ctx.repo.repoRoot,
-          name: safeName,
-          config: ctx.config,
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        }),
+      const worktree = await runStep(
+        ctx,
+        'git.worktree.create',
+        'Create worktree',
+        async () =>
+          createWorktree({
+            repoRoot: ctx.repo.repoRoot,
+            name: safeName,
+            config: ctx.config,
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          }),
       );
+
+      await normalizeClaudeSettings({ worktreePath: worktree.path });
+      await ensureArtifactsIgnored({
+        worktreePath: worktree.path,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+
+      const installResult = await installDependencies({ worktreePath: worktree.path });
+      if (!installResult.ok) {
+        console.warn(
+          `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+        );
+      }
     });
   });
 
 cli
-  .command('wt remove <name>', 'Remove a worktree')
+  .command('wt remove [name]', 'Remove a worktree')
   .option('--force', 'Force removal even if dirty')
-  .action(async (name: string, options: CliOptions) => {
+  .option('--ticket <ticket>', 'Remove worktree for a Linear ticket ID')
+  .action(async (name: string | undefined, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      const ticket = options.ticket ? sanitizeName(options.ticket) : undefined;
+      const targetName = name ? sanitizeName(name) : undefined;
+      if (!ticket && !targetName) {
+        throw new Error('Worktree name or --ticket is required.');
+      }
+
       const worktrees = await runStep(
         ctx,
         'git.worktree.list',
@@ -94,16 +133,24 @@ cli
           }),
       );
 
-      const targets = worktrees.filter(
-        (worktree) => worktree.branch === name || basename(worktree.path) === name,
-      );
+      const expectedPath = ticket
+        ? join(ctx.repo.repoRoot, ctx.config.naming.worktreeDir, ticket)
+        : null;
+      const expectedBranch = ticket ? `${ctx.config.naming.branchPrefix}${ticket}` : null;
+      const targets = worktrees.filter((worktree) => {
+        if (expectedPath && worktree.path === expectedPath) return true;
+        if (expectedBranch && worktree.branch === expectedBranch) return true;
+        if (targetName && worktree.branch === targetName) return true;
+        if (targetName && basename(worktree.path) === targetName) return true;
+        return false;
+      });
 
       if (targets.length === 0) {
-        throw new Error(`Worktree not found: ${name}`);
+        throw new Error(`Worktree not found: ${ticket ?? targetName}`);
       }
       if (targets.length > 1) {
         const paths = targets.map((target) => target.path).join(', ');
-        throw new Error(`Worktree name is ambiguous: ${name} (${paths})`);
+        throw new Error(`Worktree name is ambiguous: ${ticket ?? targetName} (${paths})`);
       }
 
       const target = targets[0]!;
@@ -129,6 +176,190 @@ cli
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         }),
       );
+    });
+  });
+
+cli
+  .command('wt clean', 'Remove worktrees with merged PRs')
+  .option('--force', 'Force removal even if dirty')
+  .option('--all', 'Remove all merged worktrees without prompting')
+  .action(async (options: CliOptions) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      requireGitHubAuth();
+      const github = await requireGitHubConfig({
+        config: ctx.config,
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+
+      const worktrees = await runStep(
+        ctx,
+        'git.worktree.list',
+        'List worktrees',
+        async () =>
+          listWorktrees({
+            repoRoot: ctx.repo.repoRoot,
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          }),
+      );
+
+      const defaultBranch = ctx.config.repo.defaultBranch;
+      const candidates = worktrees.filter((worktree) => {
+        if (worktree.path === ctx.repo.repoRoot) return false;
+        if (!worktree.branch || worktree.branch === '(detached)') return false;
+        if (worktree.branch === defaultBranch) return false;
+        return true;
+      });
+
+      const merged: Array<{
+        worktree: (typeof candidates)[number];
+        pr: NonNullable<Awaited<ReturnType<typeof findMergedPr>>>;
+      }> = [];
+      for (const worktree of candidates) {
+        if (!worktree.branch) continue;
+        const pr = await findMergedPr({
+          owner: github.owner,
+          repo: github.repo,
+          headBranch: worktree.branch,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        });
+        if (pr) {
+          merged.push({ worktree, pr });
+        }
+      }
+
+      if (merged.length === 0) {
+        console.log('No merged worktrees found.');
+        return;
+      }
+
+      for (const candidate of merged) {
+        const isDirty = await hasUncommittedChanges({
+          worktreePath: candidate.worktree.path,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        });
+        if (isDirty && !options.force) {
+          console.log(`Skipping dirty worktree: ${candidate.worktree.path}`);
+          continue;
+        }
+
+        let shouldRemove = Boolean(options.yes || options.all);
+        if (!shouldRemove) {
+          shouldRemove = await confirmAction(
+            `Remove worktree ${candidate.worktree.path} (PR #${candidate.pr.number})?`,
+          );
+        }
+
+        if (!shouldRemove) {
+          continue;
+        }
+
+        await runStep(ctx, 'git.worktree.remove', 'Remove worktree', async () =>
+          removeWorktree({
+            repoRoot: ctx.repo.repoRoot,
+            path: candidate.worktree.path,
+            force: Boolean(options.force),
+            bus: ctx.events.bus,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          }),
+        );
+      }
+    });
+  });
+
+cli
+  .command('wt prune', 'Prune stale worktree data')
+  .action(async (options: CliOptions) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      await runStep(ctx, 'git.worktree.prune', 'Prune worktrees', async () =>
+        pruneWorktrees({
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+    });
+  });
+
+cli
+  .command('wt lock <name>', 'Lock a worktree')
+  .option('--reason <reason>', 'Reason for locking')
+  .action(async (name: string, options: CliOptions & { reason?: string }) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      const worktrees = await listWorktrees({
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+      const target = worktrees.find(
+        (worktree) => worktree.branch === name || basename(worktree.path) === name,
+      );
+      if (!target) {
+        throw new Error(`Worktree not found: ${name}`);
+      }
+      await runStep(ctx, 'git.worktree.lock', 'Lock worktree', async () =>
+        lockWorktree({
+          repoRoot: ctx.repo.repoRoot,
+          path: target.path,
+          ...(options.reason ? { reason: options.reason } : {}),
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+    });
+  });
+
+cli
+  .command('wt unlock <name>', 'Unlock a worktree')
+  .action(async (name: string, options: CliOptions) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      const worktrees = await listWorktrees({
+        repoRoot: ctx.repo.repoRoot,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      });
+      const target = worktrees.find(
+        (worktree) => worktree.branch === name || basename(worktree.path) === name,
+      );
+      if (!target) {
+        throw new Error(`Worktree not found: ${name}`);
+      }
+      await runStep(ctx, 'git.worktree.unlock', 'Unlock worktree', async () =>
+        unlockWorktree({
+          repoRoot: ctx.repo.repoRoot,
+          path: target.path,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+    });
+  });
+
+cli
+  .command('wt rebase', 'Rebase current branch onto base')
+  .action(async (options: CliOptions) => {
+    const mode: EventMode = options.json ? 'json' : 'headless';
+    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+      const ok = await runStep(ctx, 'git.rebase', 'Rebase onto base', async () =>
+        rebaseOntoBase({
+          repoRoot: ctx.repo.repoRoot,
+          baseBranch: ctx.config.repo.defaultBranch,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+
+      if (!ok) {
+        throw new Error('Rebase failed; conflicts were aborted.');
+      }
     });
   });
 
@@ -291,19 +522,52 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
   });
 });
 
-cli.command('task start <ticket>', 'Start a task').action((ticket: string) =>
+cli.command('task start [ticket]', 'Start a task').action((ticket: string | undefined) =>
   withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) => {
-    const safeName = sanitizeName(ticket);
-    await runStep(ctx, 'git.worktree.create', 'Create worktree', async () =>
-      createWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        name: safeName,
-        config: ctx.config,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      }),
+    const mode = ctx.events.mode;
+    const inferredFromRepo = await inferTicketFromRepo({
+      repoRoot: ctx.repo.repoRoot,
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+    });
+    const inferred = ticket ?? inferredFromRepo?.ticketId;
+
+    if (!inferred) {
+      throw new Error(
+        'Ticket ID required. Provide a ticket or use a branch with a ticket ID.',
+      );
+    }
+
+    const safeName = sanitizeName(inferred);
+    const worktree = await runStep(
+      ctx,
+      'git.worktree.create',
+      'Create worktree',
+      async () =>
+        createWorktree({
+          repoRoot: ctx.repo.repoRoot,
+          name: safeName,
+          config: ctx.config,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
     );
-    await runPlanner(ctx, { ticketId: ticket, worktreeName: safeName });
+
+    await normalizeClaudeSettings({ worktreePath: worktree.path });
+    await ensureArtifactsIgnored({
+      worktreePath: worktree.path,
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+    });
+
+    const installResult = await installDependencies({ worktreePath: worktree.path });
+    if (!installResult.ok) {
+      console.warn(
+        `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+      );
+    }
+
+    await runPlanner(ctx, { ticketId: inferred, worktreeName: safeName });
   }),
 );
 

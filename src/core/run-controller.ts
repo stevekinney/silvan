@@ -181,6 +181,17 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       ...(Bun.env['SILVAN_MAX_THINKING_TOKENS']
         ? { maxThinkingTokens: Number(Bun.env['SILVAN_MAX_THINKING_TOKENS']) }
         : {}),
+      ...(() => {
+        const maxCalls = Bun.env['SILVAN_MAX_TOOL_CALLS'];
+        const maxDurationMs = Bun.env['SILVAN_MAX_TOOL_MS'];
+        if (!maxCalls && !maxDurationMs) return {};
+        return {
+          toolBudget: {
+            ...(maxCalls ? { maxCalls: Number(maxCalls) } : {}),
+            ...(maxDurationMs ? { maxDurationMs: Number(maxDurationMs) } : {}),
+          },
+        };
+      })(),
       toolCallLog,
     }),
   );

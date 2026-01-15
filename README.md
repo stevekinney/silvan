@@ -83,6 +83,8 @@ export default config;
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access for PR and CI commands.
 - `LINEAR_API_KEY`: Linear ticket access for planning.
 - `CLAUDE_MODEL`: override the default Claude model.
+- `SILVAN_MAX_TOOL_CALLS`: cap tool calls per agent execution.
+- `SILVAN_MAX_TOOL_MS`: cap tool execution duration per agent execution.
 
 ## Commands
 
@@ -91,6 +93,12 @@ export default config;
 - `wt list` - list worktrees and dirty status
 - `wt add <name>` - create a new worktree and branch
 - `wt remove <name>` - safely remove a worktree (`--force` to override dirty check)
+- `wt remove --ticket <ticket>` - remove a worktree by ticket ID
+- `wt clean` - remove worktrees with merged PRs (`--all` to skip prompts)
+- `wt prune` - prune stale worktree metadata
+- `wt lock <name>` - lock a worktree to prevent removal
+- `wt unlock <name>` - unlock a worktree
+- `wt rebase` - rebase current branch onto base
 
 ### Pull Requests
 
@@ -111,7 +119,7 @@ export default config;
 
 ### Agent workflows
 
-- `task start <ticket>` - create worktree + generate plan from Linear ticket
+- `task start [ticket]` - create worktree + generate plan (ticket inferred from branch if omitted)
 - `agent plan` - generate and persist a structured plan
 - `agent run` - execute the plan and open/update PRs
   - `--dry-run` (read-only tools only)

@@ -1,19 +1,21 @@
 # Armorer Wishlist
 
-## Desired features
+## Prompt for the Armorer team
 
-- Policy hooks to allow/deny tool calls with structured reasons and centralized guardrails.
-- First-class tool mutability metadata (read-only vs mutating) with enforcement helpers.
-- Strongly typed tool results so outputs can flow to MCP without casting.
+We’re using Armorer 0.4.0 in Silvan (a Bun + TS CLI that orchestrates Claude Agents SDK tools). This file tracks the remaining gaps we’d love to see addressed. Please review the “Current gaps” list below and let us know what’s feasible and any recommended patterns. We care most about: policy hook context injection (runId/worktree/ticket), built‑in input/output digests for audit logs, session‑level budgets, structured error taxonomy, and output schema validation surfaced in telemetry. We’re happy to provide real-world examples or patches if helpful.
+
+## Current gaps
+
+All wishlist items are resolved in Armorer 0.4.0 and adopted in Silvan.
+
+## Adopted in 0.3.0
+
+- Policy hooks for centralized guardrails.
+- Tool mutability metadata (read-only vs mutating) with enforcement helpers.
 - Concurrency controls per tool or registry.
-- Built-in execution tracing events (started/finished, duration, error).
-- Zod schema ergonomics that avoid casts under exactOptionalPropertyTypes.
+- Execution tracing/telemetry hooks.
+- Zod schema ergonomics without `.shape` casts under `exactOptionalPropertyTypes`.
 
-## What we'll do when these ship
+## Notes
 
-- Replace per-tool guard logic with registry-level policy hooks.
-- Swap custom read-only/mutating tracking for Armorer metadata and enforcement.
-- Remove output casting in MCP adapter and rely on typed tool results.
-- Throttle expensive tools (git status, verify) using Armorer concurrency limits.
-- Emit standardized tool telemetry directly from Armorer hooks.
-- Simplify tool definitions by passing Zod objects without shape or casts.
+- Silvan is on Armorer 0.4.0 and relies on the adopted features.
