@@ -105,6 +105,9 @@ const config = defineConfig({
       default: 'claude-sonnet-4-5-20250929',
       execute: 'claude-sonnet-4-5-20250929',
     },
+    cache: {
+      enabled: true,
+    },
     cognition: {
       provider: 'anthropic',
       modelByTask: {
@@ -280,6 +283,11 @@ Conversation pruning is configured under `ai.conversation.pruning`.
 
 - `review unresolved` - fetch unresolved review comments for the current branch PR
 
+### Conversations
+
+- `convo show <runId>` - show the last N conversation turns (default 20)
+- `convo export <runId> --format json|md` - export full conversation snapshot
+
 ### UI
 
 - `ui` - launch the live Ink dashboard
@@ -360,6 +368,7 @@ Silvan stores state in a global per-user location by default.
 - Verification failures are triaged deterministically; the verifier agent runs only when needed.
 - Local review gate runs deterministic checks before PR/review steps and can block unsafe changes.
 - Review loop waits for CI and re-requests reviewers after fixes.
+- Cognition outputs are cached by inputs digest to avoid repeat model calls.
 - Runs persist step cursors for resumability (`runs resume <runId>`).
 - Artifacts are stored outside the repo and indexed in run state (`runs inspect` or `silvan ui`).
 
@@ -443,8 +452,6 @@ bun test
 
 ## Roadmap
 
-- Two-stage review planning (fingerprints → fetch full threads on demand)
-- Context budgeter + cached agent outputs by digest
 - Deterministic PR drafting with optional AI polish
 
 ## License

@@ -9,6 +9,7 @@ import {
 import type { Config } from '../../config/schema';
 import type { EventBus } from '../../events/bus';
 import type { EmitContext } from '../../events/emit';
+import { hashInputs } from '../../prompts';
 import type { ConversationStore } from '../conversation/types';
 import { invokeCognition } from '../router';
 
@@ -26,6 +27,7 @@ export async function classifyReviewThreads(input: {
   }>;
   store: ConversationStore;
   config: Config;
+  cacheDir?: string;
   client?: {
     chat: (options: {
       messages: unknown;
@@ -69,11 +71,15 @@ export async function classifyReviewThreads(input: {
     },
   ]);
 
+  const inputsDigest = hashInputs({ threads: input.threads });
+
   const classification = await invokeCognition({
     snapshot,
     task: 'reviewClassify',
     schema: reviewClassificationSchema,
     config: input.config,
+    inputsDigest,
+    ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
     ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),

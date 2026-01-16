@@ -273,6 +273,9 @@
           "recovery": {}
         },
         "toolLimits": {},
+        "cache": {
+          "enabled": true
+        },
         "sessions": {
           "persist": false
         },
@@ -508,6 +511,20 @@
           },
           "additionalProperties": false
         },
+        "cache": {
+          "default": {
+            "enabled": true
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
+        },
         "sessions": {
           "default": {
             "persist": false
@@ -649,6 +666,7 @@
         "models",
         "budgets",
         "toolLimits",
+        "cache",
         "sessions",
         "cognition",
         "conversation"

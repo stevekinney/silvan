@@ -6,6 +6,7 @@ import type { Config } from '../../config/schema';
 import type { EventBus } from '../../events/bus';
 import type { EmitContext } from '../../events/emit';
 import { createEnvelope } from '../../events/emit';
+import { hashInputs } from '../../prompts';
 import { hashString } from '../../utils/hash';
 import type { ConversationStore } from '../conversation/types';
 import { invokeCognition } from '../router';
@@ -18,6 +19,7 @@ export async function draftPullRequest(input: {
   taskUrl?: string;
   store: ConversationStore;
   config: Config;
+  cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<PrDraft> {
@@ -44,11 +46,20 @@ export async function draftPullRequest(input: {
     },
   ]);
 
+  const inputsDigest = hashInputs({
+    planSummary: input.planSummary,
+    changesSummary: input.changesSummary,
+    taskId: input.taskId ?? null,
+    taskUrl: input.taskUrl ?? null,
+  });
+
   const draft = await invokeCognition({
     snapshot,
     task: 'prDraft',
     schema: prDraftSchema,
     config: input.config,
+    inputsDigest,
+    ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

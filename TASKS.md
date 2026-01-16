@@ -140,7 +140,7 @@
 
 ### Skip agent calls when inputs unchanged
 
-- [ ] Add input digests and cache outputs for plan/review/PR/verify to skip re-calls.
+- [x] Add input digests and cache outputs for plan/review/PR/verify to skip re-calls.
 
 ### Programmatic PR drafting
 
@@ -148,4 +148,4 @@
 
 ### Deterministic local review gates
 
-- [ ] Add deterministic checks before any local review agent call.
+- [x] Add deterministic checks before any local review agent call.

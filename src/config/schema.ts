@@ -163,6 +163,11 @@ export const configSchema = z.object({
           maxDurationMs: z.number().int().positive().optional(),
         })
         .default({}),
+      cache: z
+        .object({
+          enabled: z.boolean().default(true),
+        })
+        .default({ enabled: true }),
       sessions: z
         .object({
           persist: z.boolean().default(false),
@@ -232,6 +237,7 @@ export const configSchema = z.object({
         recovery: {},
       },
       toolLimits: {},
+      cache: { enabled: true },
       sessions: { persist: false },
       cognition: { provider: 'anthropic', fallbackProviders: [], modelByTask: {} },
       conversation: {

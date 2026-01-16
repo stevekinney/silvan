@@ -1,3 +1,9 @@
+export {
+  exportConversationSnapshot,
+  loadConversationSnapshot,
+  renderConversationSummary,
+  summarizeConversationSnapshot,
+} from './inspect';
 export { getConversationPruningPolicy } from './policy';
 export { renderConversationSnapshot } from './render';
 export { createConversationStore } from './store';

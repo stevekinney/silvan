@@ -9,6 +9,7 @@ import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
+import { readAiCache, writeAiCache } from './cache';
 import { getCognitionModel, resolveCognitionProvider } from './cognition/policy';
 import { renderConversationSnapshot } from './conversation';
 import type { ConversationSnapshot } from './conversation/types';
@@ -43,6 +44,8 @@ type CognitionOptions<T> = {
   task: CognitionTask;
   schema: ZodSchema<T>;
   config: Config;
+  inputsDigest?: string;
+  cacheDir?: string;
   client?: {
     chat: (options: {
       messages: unknown;
@@ -103,6 +106,39 @@ export async function invokeCognition<T>(options: CognitionOptions<T>): Promise<
     `Cognition snapshot consumed (${options.task})`,
   );
 
+  const cacheEnabled = options.config.ai?.cache?.enabled ?? true;
+  if (cacheEnabled && options.inputsDigest && options.cacheDir) {
+    const cached = await readAiCache({
+      cacheDir: options.cacheDir,
+      key: {
+        promptKind: options.task,
+        inputsDigest: options.inputsDigest,
+        provider: provider.provider,
+        model,
+      },
+      schema: options.schema,
+    });
+    if (cached !== null) {
+      if (options.bus && options.context) {
+        await options.bus.emit(
+          createEnvelope({
+            type: 'run.step',
+            source: 'ai',
+            level: 'info',
+            context: options.context,
+            message: `cache:${options.task}`,
+            payload: {
+              stepId: 'ai.cache.hit',
+              title: `AI cache hit (${options.task})`,
+              status: 'succeeded' as const,
+            },
+          }),
+        );
+      }
+      return cached;
+    }
+  }
+
   const start = performance.now();
   if (options.bus && options.context) {
     await options.bus.emit(
@@ -146,6 +182,19 @@ export async function invokeCognition<T>(options: CognitionOptions<T>): Promise<
         }),
       );
     }
+  }
+
+  if (cacheEnabled && options.inputsDigest && options.cacheDir) {
+    await writeAiCache({
+      cacheDir: options.cacheDir,
+      key: {
+        promptKind: options.task,
+        inputsDigest: options.inputsDigest,
+        provider: provider.provider,
+        model,
+      },
+      content: response.content,
+    });
   }
 
   return response.content;

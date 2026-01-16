@@ -6,6 +6,7 @@ import type { Config } from '../../config/schema';
 import type { EventBus } from '../../events/bus';
 import type { EmitContext } from '../../events/emit';
 import { createEnvelope } from '../../events/emit';
+import { hashInputs } from '../../prompts';
 import { hashString } from '../../utils/hash';
 import type { ConversationStore } from '../conversation/types';
 import { invokeCognition } from '../router';
@@ -15,6 +16,7 @@ export async function generateRecoveryPlan(input: {
   runState: Record<string, unknown>;
   store: ConversationStore;
   config: Config;
+  cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<RecoveryPlan> {
@@ -39,11 +41,15 @@ export async function generateRecoveryPlan(input: {
     },
   ]);
 
+  const inputsDigest = hashInputs({ runState: input.runState });
+
   const plan = await invokeCognition({
     snapshot,
     task: 'recovery',
     schema: recoveryPlanSchema,
     config: input.config,
+    inputsDigest,
+    ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

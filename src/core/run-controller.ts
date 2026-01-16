@@ -580,6 +580,7 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
       ...(options.clarifications ? { clarifications: options.clarifications } : {}),
       store: conversationStore,
       config: ctx.config,
+      cacheDir: ctx.state.cacheDir,
       bus: ctx.events.bus,
       context: {
         ...emitContext,
@@ -977,6 +978,7 @@ export async function runImplementation(
               ...(taskId ? { taskId } : {}),
               store: conversationStore,
               config: ctx.config,
+              cacheDir: ctx.state.cacheDir,
               bus: ctx.events.bus,
               context: emitContext,
             }),
@@ -1241,131 +1243,16 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
   const maxIterations = ctx.config.review.maxIterations ?? 3;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-    const ciResult = await runStep(ctx, 'ci.wait.review', 'Wait for CI', () =>
-      waitForCi({
-        owner,
-        repo,
-        headBranch,
-        token: githubToken,
-        pollIntervalMs: 15000,
-        timeoutMs: 900000,
-        onHeartbeat: () => heartbeatStep(ctx, 'ci.wait.review'),
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      }),
-    );
+    const iterationIndex = iteration + 1;
+    const iterationState = await ctx.state.readRunState(ctx.runId);
+    const iterationData = getRunState(iterationState?.data ?? {});
+    const priorCheckpoint =
+      typeof iterationData['lastReviewCheckpoint'] === 'string'
+        ? iterationData['lastReviewCheckpoint']
+        : undefined;
 
-    await updateState(ctx, (data) => ({
-      ...data,
-      summary: {
-        ...(typeof data['summary'] === 'object' && data['summary']
-          ? data['summary']
-          : {}),
-        ci: ciResult.state,
-      },
-    }));
-
-    if (ciResult.state === 'failing') {
-      const ciChecks = ciResult.checks ?? [];
-      const ciPlan = await runStep(
-        ctx,
-        'ci.fix.plan',
-        'Plan CI fixes',
-        () =>
-          generateCiFixPlan({
-            ci: {
-              state: ciResult.state,
-              ...(ciResult.summary ? { summary: ciResult.summary } : {}),
-              checks: ciChecks.map((check) => ({
-                name: check.name,
-                ...(check.conclusion ? { conclusion: check.conclusion } : {}),
-                ...(check.url ? { url: check.url } : {}),
-              })),
-            },
-            store: conversationStore,
-            config: ctx.config,
-            ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-            context: emitContext,
-          }),
-        {
-          artifacts: (result) => ({ plan: result }),
-        },
-      );
-
-      await updateState(ctx, (data) => ({
-        ...data,
-        ciFixSummary: {
-          summary: ciPlan.summary,
-          steps: ciPlan.steps.length,
-        },
-      }));
-
-      const ciPlanDigest = hashString(JSON.stringify(ciPlan));
-      await runStep(ctx, 'ci.fix.apply', 'Apply CI fixes', () =>
-        (async () => {
-          const execPrompt = new ProseWriter();
-          execPrompt.write('You are the implementation agent for Silvan.');
-          execPrompt.write('Follow the plan step-by-step, using tools when needed.');
-          execPrompt.write('Do not invent file contents; use fs.read before edits.');
-          execPrompt.write('Keep changes minimal and aligned to the plan.');
-          execPrompt.write(
-            'Use silvan.plan.read to fetch the full plan before making edits.',
-          );
-          execPrompt.write('Return a brief summary of changes.');
-          execPrompt.write(`Plan digest: ${ciPlanDigest}`);
-
-          const execSnapshot = await conversationStore.append({
-            role: 'system',
-            content: execPrompt.toString().trimEnd(),
-            metadata: { kind: 'plan' },
-          });
-
-          const result = await executePlan({
-            snapshot: execSnapshot,
-            model: execModel,
-            repoRoot: ctx.repo.repoRoot,
-            config: ctx.config,
-            dryRun: Boolean(options.dryRun),
-            allowDestructive: Boolean(options.apply),
-            allowDangerous: Boolean(options.dangerous),
-            ...execBudgets,
-            ...getToolBudget(ctx.config),
-            ...(options.sessions ? { sessionPool: options.sessions } : {}),
-            bus: ctx.events.bus,
-            context: emitContext,
-            state: ctx.state,
-            heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
-          });
-
-          const execConversation = appendMessages(execSnapshot.conversation, {
-            role: 'assistant',
-            content: `CI fix summary: ${result}`,
-            metadata: { kind: 'ci', protected: true },
-          });
-          await conversationStore.save(execConversation);
-          return result;
-        })(),
-      );
-
-      const ciVerify = await runStep(ctx, 'ci.fix.verify', 'Verify CI fixes', () =>
-        runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
-      );
-      if (!ciVerify.ok) {
-        throw new Error('Verification failed during CI fix');
-      }
-
-      await runStep(ctx, 'ci.fix.checkpoint', 'Checkpoint CI fixes', () =>
-        createCheckpointCommit(ctx, `silvan: checkpoint ci-${iteration + 1}`),
-      );
-
-      await runStep(ctx, 'ci.fix.push', 'Push CI fixes', () =>
-        runGit(['push', 'origin', headBranch], {
-          cwd: ctx.repo.repoRoot,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
-        }),
-      );
-
-      const ciAfter = await runStep(ctx, 'ci.wait.review', 'Wait for CI', () =>
+    try {
+      const ciResult = await runStep(ctx, 'ci.wait.review', 'Wait for CI', () =>
         waitForCi({
           owner,
           repo,
@@ -1382,422 +1269,668 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           },
         }),
       );
-      if (ciAfter.state === 'failing') {
-        throw new Error('CI still failing after fixes');
-      }
-      continue;
-    }
 
-    const review = await runStep(
-      ctx,
-      'github.review.fetch',
-      'Fetch review comments',
-      () =>
-        fetchUnresolvedReviewComments({
-          owner,
-          repo,
-          headBranch,
-          token: githubToken,
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        }),
-    );
-
-    await updateState(ctx, (data) => ({
-      ...data,
-      summary: {
-        ...(typeof data['summary'] === 'object' && data['summary']
-          ? data['summary']
-          : {}),
-        unresolvedReviewCount: review.comments.length,
-      },
-    }));
-
-    if (review.comments.length === 0 && ciResult.state === 'passing') {
-      await changePhase(ctx, 'complete', 'review_loop_clean');
-      const latest = await ctx.state.readRunState(ctx.runId);
-      const latestData = getRunState((latest?.data as Record<string, unknown>) ?? {});
-      const task = latestData['task'] as Task | undefined;
-      if (task) {
-        await runStep(ctx, 'task.move_done', 'Move task to Done', () =>
-          completeTask(task, ctx.config),
-        );
-      }
-      break;
-    }
-
-    const threadFingerprints = review.comments.reduce<
-      Record<string, ReviewThreadFingerprint>
-    >((acc, comment) => {
-      const entry = (acc[comment.threadId] ??= {
-        threadId: comment.threadId,
-        comments: [],
-        isOutdated: comment.isOutdated,
-      });
-      entry.comments.push({
-        id: comment.id,
-        path: comment.path,
-        line: comment.line,
-        bodyDigest: hashString(comment.body),
-        excerpt: comment.body.slice(0, 160),
-      });
-      return acc;
-    }, {});
-
-    await recordArtifacts(ctx, 'github.review.fetch', {
-      threads: Object.values(threadFingerprints),
-    });
-
-    const reviewKickoff = await runStep(
-      ctx,
-      'review.kickoff',
-      'Generate review remediation kickoff',
-      () =>
-        generateReviewRemediationKickoffPrompt({
-          task: reviewTask ?? {
-            id: 'unknown',
-            key: 'unknown',
-            provider: 'local',
-            title: 'Unknown task',
-            description: '',
-            acceptanceCriteria: [],
-            labels: [],
-          },
-          pr: {
-            id: `${review.pr.owner}/${review.pr.repo}#${review.pr.number}`,
-            ...(review.pr.url ? { url: review.pr.url } : {}),
-            branch: headBranch,
-          },
-          review: {
-            unresolvedThreadCount: review.comments.length,
-            threadFingerprints: Object.values(threadFingerprints).map((thread) => ({
-              threadId: thread.threadId,
-              commentIds: thread.comments.map((comment) => comment.id),
-              path: thread.comments[0]?.path ?? null,
-              line: thread.comments[0]?.line ?? 0,
-              isOutdated: thread.isOutdated,
-              bodyHash: thread.comments[0]?.bodyDigest ?? '',
-              excerpt: thread.comments[0]?.excerpt ?? '',
-            })),
-          },
-          ci: {
-            state: ciResult.state,
-            ...(ciResult.summary ? { summary: ciResult.summary } : {}),
-            failedChecks: (ciResult.checks ?? [])
-              .filter((check) => check.conclusion === 'failure')
-              .map((check) => check.name),
-          },
-          repo: {
-            frameworks: [],
-            verificationCommands: ctx.config.verify.commands.map(
-              (command) => command.cmd,
-            ),
-          },
-          store: conversationStore,
-          config: ctx.config,
-          bus: ctx.events.bus,
-          context: emitContext,
-        }),
-      {
-        artifacts: (prompt) => ({ review_remediation_kickoff: prompt }),
-      },
-    );
-
-    await updateState(ctx, (data) => ({
-      ...data,
-      promptDigests: {
-        ...(typeof data['promptDigests'] === 'object' && data['promptDigests']
-          ? data['promptDigests']
-          : {}),
-        review_remediation_kickoff: hashPrompt(reviewKickoff),
-      },
-      promptSummaries: {
-        ...(typeof data['promptSummaries'] === 'object' && data['promptSummaries']
-          ? data['promptSummaries']
-          : {}),
-        review_remediation_kickoff: renderPromptSummary(reviewKickoff),
-      },
-    }));
-
-    const classification = await runStep(
-      ctx,
-      'review.classify',
-      'Classify review threads',
-      () =>
-        classifyReviewThreads({
-          threads: Object.values(threadFingerprints),
-          store: conversationStore,
-          config: ctx.config,
-          bus: ctx.events.bus,
-          context: emitContext,
-        }),
-      {
-        artifacts: (result) => ({ classification: result }),
-        inputs: { threadCount: review.comments.length },
-      },
-    );
-
-    await updateState(ctx, (data) => ({
-      ...data,
-      reviewClassificationSummary: {
-        actionable: classification.actionableThreadIds.length,
-        ignored: classification.ignoredThreadIds.length,
-        needsContext: classification.needsContextThreadIds.length,
-      },
-    }));
-    const fingerprintList = Object.values(threadFingerprints);
-    const threadsNeedingContext = selectThreadsForContext({
-      fingerprints: fingerprintList,
-      needsContextThreadIds: classification.needsContextThreadIds,
-    });
-
-    const detailedThreads = threadsNeedingContext.length
-      ? await runStep(
-          ctx,
-          'review.thread.fetch',
-          'Fetch full review threads',
-          async () => {
-            const results: Array<{
-              threadId: string;
-              comments: Array<{
-                id: string;
-                path: string | null;
-                line: number | null;
-                body: string;
-                url?: string | null;
-              }>;
-              isOutdated: boolean;
-            }> = [];
-
-            for (const threadId of threadsNeedingContext) {
-              const thread = await fetchReviewThreadById({
-                threadId,
-                token: githubToken,
-                bus: ctx.events.bus,
-                context: {
-                  runId: ctx.runId,
-                  repoRoot: ctx.repo.repoRoot,
-                  mode: ctx.events.mode,
-                },
-              });
-              results.push({
-                threadId: thread.id,
-                isOutdated: thread.isOutdated,
-                comments: thread.comments.nodes.map((comment) => ({
-                  id: comment.id,
-                  path: comment.path,
-                  line: comment.line,
-                  body: comment.body,
-                  url: comment.url ?? null,
-                })),
-              });
-            }
-            return results;
-          },
-          {
-            inputs: { threadCount: threadsNeedingContext.length },
-            artifacts: (result) => ({ threads: result }),
-          },
-        )
-      : [];
-
-    const threadsForPlan = buildReviewPlanThreads({
-      fingerprints: fingerprintList,
-      detailedThreads,
-      actionableThreadIds: classification.actionableThreadIds,
-      ignoredThreadIds: classification.ignoredThreadIds,
-    });
-
-    const fixPlan = await runStep(
-      ctx,
-      'review.plan',
-      'Plan review fixes',
-      () =>
-        generateReviewFixPlan({
-          threads: threadsForPlan,
-          store: conversationStore,
-          config: ctx.config,
-          bus: ctx.events.bus,
-          context: emitContext,
-        }),
-      {
-        inputs: {
-          actionable: classification.actionableThreadIds.length,
-          ignored: classification.ignoredThreadIds.length,
-        },
-        artifacts: (result) => ({ plan: result }),
-      },
-    );
-
-    await updateState(ctx, (data) => ({
-      ...data,
-      reviewFixPlanSummary: {
-        actionable: fixPlan.threads.filter((thread) => thread.actionable).length,
-        ignored: fixPlan.threads.filter((thread) => !thread.actionable).length,
-      },
-      reviewIteration: iteration + 1,
-    }));
-
-    const actionableThreads = fixPlan.threads.filter((thread) => thread.actionable);
-    if (
-      actionableThreads.length === 0 &&
-      (!fixPlan.resolveThreads || fixPlan.resolveThreads.length === 0)
-    ) {
-      throw new Error('No actionable review fixes identified; manual review required');
-    }
-    if (actionableThreads.length > 0) {
-      const reviewPlan: Plan = {
-        summary: 'Review fixes',
-        steps: actionableThreads.map((thread) => ({
-          id: thread.threadId,
-          title: thread.summary,
-          description: thread.summary,
-        })),
-        verification: fixPlan.verification ?? [],
-      };
-      const reviewPlanDigest = hashString(JSON.stringify(reviewPlan));
-      await runStep(ctx, 'review.apply', 'Apply review fixes', () =>
-        (async () => {
-          const execPrompt = new ProseWriter();
-          execPrompt.write('You are the implementation agent for Silvan.');
-          execPrompt.write('Follow the plan step-by-step, using tools when needed.');
-          execPrompt.write('Do not invent file contents; use fs.read before edits.');
-          execPrompt.write('Keep changes minimal and aligned to the plan.');
-          execPrompt.write(
-            'Use silvan.plan.read to fetch the full plan before making edits.',
-          );
-          execPrompt.write('Return a brief summary of changes.');
-          execPrompt.write(`Plan digest: ${reviewPlanDigest}`);
-
-          const execSnapshot = await conversationStore.append({
-            role: 'system',
-            content: execPrompt.toString().trimEnd(),
-            metadata: { kind: 'review' },
-          });
-
-          const result = await executePlan({
-            snapshot: execSnapshot,
-            model: execModel,
-            repoRoot: ctx.repo.repoRoot,
-            config: ctx.config,
-            dryRun: Boolean(options.dryRun),
-            allowDestructive: Boolean(options.apply),
-            allowDangerous: Boolean(options.dangerous),
-            ...execBudgets,
-            ...getToolBudget(ctx.config),
-            ...(options.sessions ? { sessionPool: options.sessions } : {}),
-            bus: ctx.events.bus,
-            context: emitContext,
-            state: ctx.state,
-            heartbeat: () => heartbeatStep(ctx, 'review.apply'),
-          });
-
-          const execConversation = appendMessages(execSnapshot.conversation, {
-            role: 'assistant',
-            content: `Review fix summary: ${result}`,
-            metadata: { kind: 'review', protected: true },
-          });
-          await conversationStore.save(execConversation);
-          return result;
-        })(),
-      );
-
-      const verifyReport = await runStep(
-        ctx,
-        'review.verify',
-        'Verify review fixes',
-        () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
-        { artifacts: (report) => ({ report }) },
-      );
-      await updateState(ctx, (data) => ({
-        ...data,
-        reviewVerifySummary: {
-          ok: verifyReport.ok,
-          lastRunAt: new Date().toISOString(),
-        },
-      }));
-      if (!verifyReport.ok) {
-        throw new Error('Verification failed during review loop');
-      }
-    }
-
-    if (actionableThreads.length > 0) {
-      const reviewCheckpoint = await runStep(
-        ctx,
-        'review.checkpoint',
-        'Checkpoint review fixes',
-        () => createCheckpointCommit(ctx, `silvan: checkpoint review-${iteration + 1}`),
-        {
-          inputs: { iteration: iteration + 1 },
-          artifacts: (result) => ({ checkpoint: result }),
-        },
-      );
-      if (reviewCheckpoint?.sha) {
-        await updateState(ctx, (data) => ({
-          ...data,
-          checkpoints: [
-            ...((data['checkpoints'] as string[]) ?? []),
-            reviewCheckpoint.sha,
-          ],
-        }));
-      }
-
-      await runStep(ctx, 'review.push', 'Push review fixes', () =>
-        runGit(['push', 'origin', headBranch], {
-          cwd: ctx.repo.repoRoot,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
-        }),
-      );
-
-      const ciAfter = await runStep(ctx, 'ci.wait', 'Wait for CI', () =>
-        waitForCi({
-          owner,
-          repo,
-          headBranch,
-          token: githubToken,
-          pollIntervalMs: 15000,
-          timeoutMs: 900000,
-          onHeartbeat: () => heartbeatStep(ctx, 'ci.wait'),
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        }),
-      );
       await updateState(ctx, (data) => ({
         ...data,
         summary: {
           ...(typeof data['summary'] === 'object' && data['summary']
             ? data['summary']
             : {}),
-          ci: ciAfter.state,
+          ci: ciResult.state,
         },
       }));
-      if (ciAfter.state === 'failing') {
-        throw new Error('CI failed during review loop');
-      }
-    }
 
-    if (fixPlan.resolveThreads?.length) {
-      const resolvedState = await ctx.state.readRunState(ctx.runId);
-      const resolvedData = (resolvedState?.data as Record<string, unknown>) ?? {};
-      const resolvedThreads = new Set(
-        Array.isArray(resolvedData['resolvedThreads'])
-          ? (resolvedData['resolvedThreads'] as string[])
-          : [],
+      let finalCiState = ciResult.state;
+      if (ciResult.state === 'failing') {
+        const ciChecks = ciResult.checks ?? [];
+        const ciPlan = await runStep(
+          ctx,
+          'ci.fix.plan',
+          'Plan CI fixes',
+          () =>
+            generateCiFixPlan({
+              ci: {
+                state: ciResult.state,
+                ...(ciResult.summary ? { summary: ciResult.summary } : {}),
+                checks: ciChecks.map((check) => ({
+                  name: check.name,
+                  ...(check.conclusion ? { conclusion: check.conclusion } : {}),
+                  ...(check.url ? { url: check.url } : {}),
+                })),
+              },
+              store: conversationStore,
+              config: ctx.config,
+              ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+              context: emitContext,
+            }),
+          {
+            artifacts: (result) => ({ plan: result }),
+          },
+        );
+
+        await updateState(ctx, (data) => ({
+          ...data,
+          ciFixSummary: {
+            summary: ciPlan.summary,
+            steps: ciPlan.steps.length,
+          },
+        }));
+
+        const ciPlanDigest = hashString(JSON.stringify(ciPlan));
+        await runStep(ctx, 'ci.fix.apply', 'Apply CI fixes', () =>
+          (async () => {
+            const execPrompt = new ProseWriter();
+            execPrompt.write('You are the implementation agent for Silvan.');
+            execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+            execPrompt.write('Do not invent file contents; use fs.read before edits.');
+            execPrompt.write('Keep changes minimal and aligned to the plan.');
+            execPrompt.write(
+              'Use silvan.plan.read to fetch the full plan before making edits.',
+            );
+            execPrompt.write('Return a brief summary of changes.');
+            execPrompt.write(`Plan digest: ${ciPlanDigest}`);
+
+            const execSnapshot = await conversationStore.append({
+              role: 'system',
+              content: execPrompt.toString().trimEnd(),
+              metadata: { kind: 'plan' },
+            });
+
+            const result = await executePlan({
+              snapshot: execSnapshot,
+              model: execModel,
+              repoRoot: ctx.repo.repoRoot,
+              config: ctx.config,
+              dryRun: Boolean(options.dryRun),
+              allowDestructive: Boolean(options.apply),
+              allowDangerous: Boolean(options.dangerous),
+              ...execBudgets,
+              ...getToolBudget(ctx.config),
+              ...(options.sessions ? { sessionPool: options.sessions } : {}),
+              bus: ctx.events.bus,
+              context: emitContext,
+              state: ctx.state,
+              heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
+            });
+
+            const execConversation = appendMessages(execSnapshot.conversation, {
+              role: 'assistant',
+              content: `CI fix summary: ${result}`,
+              metadata: { kind: 'ci', protected: true },
+            });
+            await conversationStore.save(execConversation);
+            return result;
+          })(),
+        );
+
+        const ciVerify = await runStep(ctx, 'ci.fix.verify', 'Verify CI fixes', () =>
+          runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+        );
+        if (!ciVerify.ok) {
+          throw new Error('Verification failed during CI fix');
+        }
+
+        await runStep(ctx, 'ci.fix.checkpoint', 'Checkpoint CI fixes', () =>
+          createCheckpointCommit(ctx, `silvan: checkpoint ci-${iteration + 1}`),
+        );
+
+        await runStep(ctx, 'ci.fix.push', 'Push CI fixes', () =>
+          runGit(['push', 'origin', headBranch], {
+            cwd: ctx.repo.repoRoot,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
+          }),
+        );
+
+        const ciAfter = await runStep(ctx, 'ci.wait.review', 'Wait for CI', () =>
+          waitForCi({
+            owner,
+            repo,
+            headBranch,
+            token: githubToken,
+            pollIntervalMs: 15000,
+            timeoutMs: 900000,
+            onHeartbeat: () => heartbeatStep(ctx, 'ci.wait.review'),
+            bus: ctx.events.bus,
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
+          }),
+        );
+        finalCiState = ciAfter.state;
+        if (ciAfter.state === 'failing') {
+          await updateState(ctx, (data) => ({
+            ...data,
+            summary: {
+              ...(typeof data['summary'] === 'object' && data['summary']
+                ? data['summary']
+                : {}),
+              blockedReason: 'CI still failing after automated fixes.',
+            },
+          }));
+          await recordArtifacts(ctx, 'review-iterations', {
+            [`iteration-${iterationIndex}`]: {
+              iteration: iterationIndex,
+              status: 'blocked',
+              reason: 'ci_fix_failed',
+              unresolvedBefore: 0,
+              actionable: 0,
+              ignored: 0,
+              ciState: ciAfter.state,
+              generatedAt: new Date().toISOString(),
+            },
+          });
+          throw new Error('CI still failing after fixes');
+        }
+        continue;
+      }
+
+      const review = await runStep(
+        ctx,
+        'github.review.fetch',
+        'Fetch review comments',
+        () =>
+          fetchUnresolvedReviewComments({
+            owner,
+            repo,
+            headBranch,
+            token: githubToken,
+            bus: ctx.events.bus,
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
+          }),
       );
-      for (const threadId of fixPlan.resolveThreads) {
-        if (resolvedThreads.has(threadId)) continue;
-        await runStep(ctx, 'review.resolve', 'Resolve review thread', () =>
-          resolveReviewThread({
-            threadId,
+
+      await updateState(ctx, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          unresolvedReviewCount: review.comments.length,
+        },
+      }));
+
+      if (review.comments.length === 0 && ciResult.state === 'passing') {
+        await changePhase(ctx, 'complete', 'review_loop_clean');
+        const latest = await ctx.state.readRunState(ctx.runId);
+        const latestData = getRunState((latest?.data as Record<string, unknown>) ?? {});
+        const task = latestData['task'] as Task | undefined;
+        if (task) {
+          await runStep(ctx, 'task.move_done', 'Move task to Done', () =>
+            completeTask(task, ctx.config),
+          );
+        }
+        break;
+      }
+
+      const threadFingerprints = review.comments.reduce<
+        Record<string, ReviewThreadFingerprint>
+      >((acc, comment) => {
+        const entry = (acc[comment.threadId] ??= {
+          threadId: comment.threadId,
+          comments: [],
+          isOutdated: comment.isOutdated,
+        });
+        entry.comments.push({
+          id: comment.id,
+          path: comment.path,
+          line: comment.line,
+          bodyDigest: hashString(comment.body),
+          excerpt: comment.body.slice(0, 160),
+        });
+        return acc;
+      }, {});
+
+      await recordArtifacts(ctx, 'github.review.fetch', {
+        threads: Object.values(threadFingerprints),
+      });
+
+      const reviewKickoff = await runStep(
+        ctx,
+        'review.kickoff',
+        'Generate review remediation kickoff',
+        () =>
+          generateReviewRemediationKickoffPrompt({
+            task: reviewTask ?? {
+              id: 'unknown',
+              key: 'unknown',
+              provider: 'local',
+              title: 'Unknown task',
+              description: '',
+              acceptanceCriteria: [],
+              labels: [],
+            },
+            pr: {
+              id: `${review.pr.owner}/${review.pr.repo}#${review.pr.number}`,
+              ...(review.pr.url ? { url: review.pr.url } : {}),
+              branch: headBranch,
+            },
+            review: {
+              unresolvedThreadCount: review.comments.length,
+              threadFingerprints: Object.values(threadFingerprints).map((thread) => ({
+                threadId: thread.threadId,
+                commentIds: thread.comments.map((comment) => comment.id),
+                path: thread.comments[0]?.path ?? null,
+                line: thread.comments[0]?.line ?? 0,
+                isOutdated: thread.isOutdated,
+                bodyHash: thread.comments[0]?.bodyDigest ?? '',
+                excerpt: thread.comments[0]?.excerpt ?? '',
+              })),
+            },
+            ci: {
+              state: ciResult.state,
+              ...(ciResult.summary ? { summary: ciResult.summary } : {}),
+              failedChecks: (ciResult.checks ?? [])
+                .filter((check) => check.conclusion === 'failure')
+                .map((check) => check.name),
+            },
+            repo: {
+              frameworks: [],
+              verificationCommands: ctx.config.verify.commands.map(
+                (command) => command.cmd,
+              ),
+            },
+            store: conversationStore,
+            config: ctx.config,
+            bus: ctx.events.bus,
+            context: emitContext,
+          }),
+        {
+          artifacts: (prompt) => ({ review_remediation_kickoff: prompt }),
+        },
+      );
+
+      await updateState(ctx, (data) => ({
+        ...data,
+        promptDigests: {
+          ...(typeof data['promptDigests'] === 'object' && data['promptDigests']
+            ? data['promptDigests']
+            : {}),
+          review_remediation_kickoff: hashPrompt(reviewKickoff),
+        },
+        promptSummaries: {
+          ...(typeof data['promptSummaries'] === 'object' && data['promptSummaries']
+            ? data['promptSummaries']
+            : {}),
+          review_remediation_kickoff: renderPromptSummary(reviewKickoff),
+        },
+      }));
+
+      const classification = await runStep(
+        ctx,
+        'review.classify',
+        'Classify review threads',
+        () =>
+          classifyReviewThreads({
+            threads: Object.values(threadFingerprints),
+            store: conversationStore,
+            config: ctx.config,
+            cacheDir: ctx.state.cacheDir,
+            bus: ctx.events.bus,
+            context: emitContext,
+          }),
+        {
+          artifacts: (result) => ({ classification: result }),
+          inputs: { threadCount: review.comments.length },
+        },
+      );
+
+      await updateState(ctx, (data) => ({
+        ...data,
+        reviewClassificationSummary: {
+          actionable: classification.actionableThreadIds.length,
+          ignored: classification.ignoredThreadIds.length,
+          needsContext: classification.needsContextThreadIds.length,
+        },
+      }));
+      const fingerprintList = Object.values(threadFingerprints);
+      const threadsNeedingContext = selectThreadsForContext({
+        fingerprints: fingerprintList,
+        needsContextThreadIds: classification.needsContextThreadIds,
+      });
+
+      const detailedThreads = threadsNeedingContext.length
+        ? await runStep(
+            ctx,
+            'review.thread.fetch',
+            'Fetch full review threads',
+            async () => {
+              const results: Array<{
+                threadId: string;
+                comments: Array<{
+                  id: string;
+                  path: string | null;
+                  line: number | null;
+                  body: string;
+                  url?: string | null;
+                }>;
+                isOutdated: boolean;
+              }> = [];
+
+              for (const threadId of threadsNeedingContext) {
+                const thread = await fetchReviewThreadById({
+                  threadId,
+                  token: githubToken,
+                  bus: ctx.events.bus,
+                  context: {
+                    runId: ctx.runId,
+                    repoRoot: ctx.repo.repoRoot,
+                    mode: ctx.events.mode,
+                  },
+                });
+                results.push({
+                  threadId: thread.id,
+                  isOutdated: thread.isOutdated,
+                  comments: thread.comments.nodes.map((comment) => ({
+                    id: comment.id,
+                    path: comment.path,
+                    line: comment.line,
+                    body: comment.body,
+                    url: comment.url ?? null,
+                  })),
+                });
+              }
+              return results;
+            },
+            {
+              inputs: { threadCount: threadsNeedingContext.length },
+              artifacts: (result) => ({ threads: result }),
+            },
+          )
+        : [];
+
+      const threadsForPlan = buildReviewPlanThreads({
+        fingerprints: fingerprintList,
+        detailedThreads,
+        actionableThreadIds: classification.actionableThreadIds,
+        ignoredThreadIds: classification.ignoredThreadIds,
+      });
+
+      const fixPlan = await runStep(
+        ctx,
+        'review.plan',
+        'Plan review fixes',
+        () =>
+          generateReviewFixPlan({
+            threads: threadsForPlan,
+            store: conversationStore,
+            config: ctx.config,
+            cacheDir: ctx.state.cacheDir,
+            bus: ctx.events.bus,
+            context: emitContext,
+          }),
+        {
+          inputs: {
+            actionable: classification.actionableThreadIds.length,
+            ignored: classification.ignoredThreadIds.length,
+          },
+          artifacts: (result) => ({ plan: result }),
+        },
+      );
+
+      await updateState(ctx, (data) => ({
+        ...data,
+        reviewFixPlanSummary: {
+          actionable: fixPlan.threads.filter((thread) => thread.actionable).length,
+          ignored: fixPlan.threads.filter((thread) => !thread.actionable).length,
+        },
+        reviewIteration: iteration + 1,
+      }));
+
+      const actionableThreads = fixPlan.threads.filter((thread) => thread.actionable);
+      if (
+        actionableThreads.length === 0 &&
+        (!fixPlan.resolveThreads || fixPlan.resolveThreads.length === 0)
+      ) {
+        await updateState(ctx, (data) => ({
+          ...data,
+          summary: {
+            ...(typeof data['summary'] === 'object' && data['summary']
+              ? data['summary']
+              : {}),
+            blockedReason: 'No actionable review fixes identified.',
+          },
+        }));
+        await recordArtifacts(ctx, 'review-iterations', {
+          [`iteration-${iterationIndex}`]: {
+            iteration: iterationIndex,
+            status: 'blocked',
+            reason: 'no_actionable_fixes',
+            unresolvedBefore: review.comments.length,
+            actionable: actionableThreads.length,
+            ignored: fixPlan.threads.length - actionableThreads.length,
+            generatedAt: new Date().toISOString(),
+          },
+        });
+        throw new Error('No actionable review fixes identified; manual review required');
+      }
+      if (actionableThreads.length > 0) {
+        const reviewPlan: Plan = {
+          summary: 'Review fixes',
+          steps: actionableThreads.map((thread) => ({
+            id: thread.threadId,
+            title: thread.summary,
+            description: thread.summary,
+          })),
+          verification: fixPlan.verification ?? [],
+        };
+        const reviewPlanDigest = hashString(JSON.stringify(reviewPlan));
+        await runStep(ctx, 'review.apply', 'Apply review fixes', () =>
+          (async () => {
+            const execPrompt = new ProseWriter();
+            execPrompt.write('You are the implementation agent for Silvan.');
+            execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+            execPrompt.write('Do not invent file contents; use fs.read before edits.');
+            execPrompt.write('Keep changes minimal and aligned to the plan.');
+            execPrompt.write(
+              'Use silvan.plan.read to fetch the full plan before making edits.',
+            );
+            execPrompt.write('Return a brief summary of changes.');
+            execPrompt.write(`Plan digest: ${reviewPlanDigest}`);
+
+            const execSnapshot = await conversationStore.append({
+              role: 'system',
+              content: execPrompt.toString().trimEnd(),
+              metadata: { kind: 'review' },
+            });
+
+            const result = await executePlan({
+              snapshot: execSnapshot,
+              model: execModel,
+              repoRoot: ctx.repo.repoRoot,
+              config: ctx.config,
+              dryRun: Boolean(options.dryRun),
+              allowDestructive: Boolean(options.apply),
+              allowDangerous: Boolean(options.dangerous),
+              ...execBudgets,
+              ...getToolBudget(ctx.config),
+              ...(options.sessions ? { sessionPool: options.sessions } : {}),
+              bus: ctx.events.bus,
+              context: emitContext,
+              state: ctx.state,
+              heartbeat: () => heartbeatStep(ctx, 'review.apply'),
+            });
+
+            const execConversation = appendMessages(execSnapshot.conversation, {
+              role: 'assistant',
+              content: `Review fix summary: ${result}`,
+              metadata: { kind: 'review', protected: true },
+            });
+            await conversationStore.save(execConversation);
+            return result;
+          })(),
+        );
+
+        const verifyReport = await runStep(
+          ctx,
+          'review.verify',
+          'Verify review fixes',
+          () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+          { artifacts: (report) => ({ report }) },
+        );
+        await updateState(ctx, (data) => ({
+          ...data,
+          reviewVerifySummary: {
+            ok: verifyReport.ok,
+            lastRunAt: new Date().toISOString(),
+          },
+        }));
+        if (!verifyReport.ok) {
+          throw new Error('Verification failed during review loop');
+        }
+      }
+
+      let reviewCheckpointSha: string | undefined;
+      if (actionableThreads.length > 0) {
+        const reviewCheckpoint = await runStep(
+          ctx,
+          'review.checkpoint',
+          'Checkpoint review fixes',
+          () => createCheckpointCommit(ctx, `silvan: checkpoint review-${iteration + 1}`),
+          {
+            inputs: { iteration: iteration + 1 },
+            artifacts: (result) => ({ checkpoint: result }),
+          },
+        );
+        if (reviewCheckpoint?.sha) {
+          reviewCheckpointSha = reviewCheckpoint.sha;
+          await updateState(ctx, (data) => ({
+            ...data,
+            checkpoints: [
+              ...((data['checkpoints'] as string[]) ?? []),
+              reviewCheckpoint.sha,
+            ],
+            lastReviewCheckpoint: reviewCheckpoint.sha,
+          }));
+        }
+
+        await runStep(ctx, 'review.push', 'Push review fixes', () =>
+          runGit(['push', 'origin', headBranch], {
+            cwd: ctx.repo.repoRoot,
+            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
+          }),
+        );
+
+        const ciAfter = await runStep(ctx, 'ci.wait', 'Wait for CI', () =>
+          waitForCi({
+            owner,
+            repo,
+            headBranch,
+            token: githubToken,
+            pollIntervalMs: 15000,
+            timeoutMs: 900000,
+            onHeartbeat: () => heartbeatStep(ctx, 'ci.wait'),
+            bus: ctx.events.bus,
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
+          }),
+        );
+        finalCiState = ciAfter.state;
+        await updateState(ctx, (data) => ({
+          ...data,
+          summary: {
+            ...(typeof data['summary'] === 'object' && data['summary']
+              ? data['summary']
+              : {}),
+            ci: ciAfter.state,
+          },
+        }));
+        if (ciAfter.state === 'failing') {
+          const flaky =
+            reviewCheckpointSha &&
+            priorCheckpoint &&
+            reviewCheckpointSha === priorCheckpoint;
+          await updateState(ctx, (data) => ({
+            ...data,
+            summary: {
+              ...(typeof data['summary'] === 'object' && data['summary']
+                ? data['summary']
+                : {}),
+              blockedReason: flaky
+                ? 'CI failed without new changes (possible flake).'
+                : 'CI failed during review loop.',
+            },
+          }));
+          await recordArtifacts(ctx, 'review-iterations', {
+            [`iteration-${iterationIndex}`]: {
+              iteration: iterationIndex,
+              status: 'blocked',
+              reason: flaky ? 'ci_flaky' : 'ci_failed',
+              unresolvedBefore: review.comments.length,
+              actionable: actionableThreads.length,
+              ignored: fixPlan.threads.length - actionableThreads.length,
+              ciState: ciAfter.state,
+              checkpointSha: reviewCheckpointSha ?? null,
+              generatedAt: new Date().toISOString(),
+            },
+          });
+          throw new Error(
+            flaky
+              ? 'CI failed without new changes (possible flake).'
+              : 'CI failed during review loop',
+          );
+        }
+      }
+
+      if (fixPlan.resolveThreads?.length) {
+        const resolvedState = await ctx.state.readRunState(ctx.runId);
+        const resolvedData = (resolvedState?.data as Record<string, unknown>) ?? {};
+        const resolvedThreads = new Set(
+          Array.isArray(resolvedData['resolvedThreads'])
+            ? (resolvedData['resolvedThreads'] as string[])
+            : [],
+        );
+        for (const threadId of fixPlan.resolveThreads) {
+          if (resolvedThreads.has(threadId)) continue;
+          await runStep(ctx, 'review.resolve', 'Resolve review thread', () =>
+            resolveReviewThread({
+              threadId,
+              pr: review.pr,
+              token: githubToken,
+              bus: ctx.events.bus,
+              context: {
+                runId: ctx.runId,
+                repoRoot: ctx.repo.repoRoot,
+                mode: ctx.events.mode,
+              },
+            }),
+          );
+          resolvedThreads.add(threadId);
+          await updateState(ctx, (data) => ({
+            ...data,
+            resolvedThreads: Array.from(resolvedThreads),
+          }));
+        }
+      }
+
+      const reRequestKey = reviewRequestKey({
+        prNumber: review.pr.number,
+        reviewers: ctx.config.github.reviewers,
+        requestCopilot: ctx.config.github.requestCopilot,
+      });
+      const reRequestKeyWithIteration = hashString(
+        JSON.stringify({ key: reRequestKey, iteration: iteration + 1 }),
+      );
+      const latestState = await ctx.state.readRunState(ctx.runId);
+      const latestData = (latestState?.data as Record<string, unknown>) ?? {};
+      const existingReRequestKey =
+        typeof latestData['reviewRequestKey'] === 'string'
+          ? latestData['reviewRequestKey']
+          : undefined;
+      if (existingReRequestKey !== reRequestKeyWithIteration) {
+        await runStep(ctx, 'github.review.request', 'Re-request reviewers', () =>
+          requestReviewers({
             pr: review.pr,
+            reviewers: ctx.config.github.reviewers,
+            requestCopilot: ctx.config.github.requestCopilot,
             token: githubToken,
             bus: ctx.events.bus,
             context: {
@@ -1807,47 +1940,74 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
             },
           }),
         );
-        resolvedThreads.add(threadId);
         await updateState(ctx, (data) => ({
           ...data,
-          resolvedThreads: Array.from(resolvedThreads),
+          reviewRequestKey: reRequestKeyWithIteration,
         }));
       }
-    }
 
-    const reRequestKey = reviewRequestKey({
-      prNumber: review.pr.number,
-      reviewers: ctx.config.github.reviewers,
-      requestCopilot: ctx.config.github.requestCopilot,
-    });
-    const reRequestKeyWithIteration = hashString(
-      JSON.stringify({ key: reRequestKey, iteration: iteration + 1 }),
-    );
-    const latestState = await ctx.state.readRunState(ctx.runId);
-    const latestData = (latestState?.data as Record<string, unknown>) ?? {};
-    const existingReRequestKey =
-      typeof latestData['reviewRequestKey'] === 'string'
-        ? latestData['reviewRequestKey']
-        : undefined;
-    if (existingReRequestKey !== reRequestKeyWithIteration) {
-      await runStep(ctx, 'github.review.request', 'Re-request reviewers', () =>
-        requestReviewers({
-          pr: review.pr,
-          reviewers: ctx.config.github.reviewers,
-          requestCopilot: ctx.config.github.requestCopilot,
-          token: githubToken,
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        }),
+      const reviewAfter = await runStep(
+        ctx,
+        'github.review.fetch.post',
+        'Refetch review comments',
+        () =>
+          fetchUnresolvedReviewComments({
+            owner,
+            repo,
+            headBranch,
+            token: githubToken,
+            bus: ctx.events.bus,
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
+          }),
       );
+
       await updateState(ctx, (data) => ({
         ...data,
-        reviewRequestKey: reRequestKeyWithIteration,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          unresolvedReviewCount: reviewAfter.comments.length,
+        },
       }));
+
+      const resolvedThreadsSnapshot = await ctx.state.readRunState(ctx.runId);
+      const resolvedThreadsData =
+        (resolvedThreadsSnapshot?.data as Record<string, unknown>) ?? {};
+      const resolvedThreadsList = Array.isArray(resolvedThreadsData['resolvedThreads'])
+        ? (resolvedThreadsData['resolvedThreads'] as string[])
+        : [];
+
+      await recordArtifacts(ctx, 'review-iterations', {
+        [`iteration-${iterationIndex}`]: {
+          iteration: iterationIndex,
+          status: 'completed',
+          unresolvedBefore: review.comments.length,
+          unresolvedAfter: reviewAfter.comments.length,
+          actionable: actionableThreads.length,
+          ignored: fixPlan.threads.length - actionableThreads.length,
+          ciState: finalCiState,
+          checkpointSha: reviewCheckpointSha ?? null,
+          resolvedThreads: resolvedThreadsList,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Review loop failed';
+      await updateState(ctx, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          blockedReason: message,
+        },
+      }));
+      throw error;
     }
   }
 }
@@ -1876,6 +2036,7 @@ export async function runRecovery(ctx: RunContext): Promise<void> {
         runState: data,
         store: conversationStore,
         config: ctx.config,
+        cacheDir: ctx.state.cacheDir,
         bus: ctx.events.bus,
         context: emitContext,
       }),

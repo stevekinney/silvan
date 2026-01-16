@@ -7,6 +7,7 @@ import type { Config } from '../../config/schema';
 import type { EventBus } from '../../events/bus';
 import type { EmitContext } from '../../events/emit';
 import { createEnvelope } from '../../events/emit';
+import { hashInputs } from '../../prompts';
 import { hashString } from '../../utils/hash';
 import type { ConversationStore } from '../conversation/types';
 import { invokeCognition } from '../router';
@@ -28,6 +29,7 @@ export async function generateReviewFixPlan(input: {
   diffContext?: string;
   store: ConversationStore;
   config: Config;
+  cacheDir?: string;
   client?: {
     chat: (options: {
       messages: unknown;
@@ -72,11 +74,18 @@ export async function generateReviewFixPlan(input: {
     },
   ]);
 
+  const inputsDigest = hashInputs({
+    threads: input.threads,
+    diffContext: input.diffContext ?? null,
+  });
+
   const plan = await invokeCognition({
     snapshot,
     task: 'reviewCluster',
     schema: reviewFixPlanSchema,
     config: input.config,
+    inputsDigest,
+    ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
     ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),

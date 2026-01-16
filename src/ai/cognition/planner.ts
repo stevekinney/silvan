@@ -9,6 +9,7 @@ import type { Config } from '../../config/schema';
 import type { EventBus } from '../../events/bus';
 import type { EmitContext } from '../../events/emit';
 import { createEnvelope } from '../../events/emit';
+import { hashInputs } from '../../prompts';
 import type { Task } from '../../task/types';
 import { hashString } from '../../utils/hash';
 import type { ConversationStore } from '../conversation/types';
@@ -22,6 +23,7 @@ export type PlannerInput = {
   clarifications?: Record<string, string>;
   store: ConversationStore;
   config: Config;
+  cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
 };
@@ -95,11 +97,20 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
     },
   ]);
 
+  const inputsDigest = hashInputs({
+    task: input.task,
+    clarifications: input.clarifications ?? {},
+    repoSummary,
+    worktreeName: input.worktreeName ?? null,
+  });
+
   const plan = await invokeCognition({
     snapshot,
     task: 'plan',
     schema: planSchema,
     config: input.config,
+    inputsDigest,
+    ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

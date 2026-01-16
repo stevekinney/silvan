@@ -5,6 +5,12 @@ import { cac } from 'cac';
 
 import { collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
+import {
+  exportConversationSnapshot,
+  loadConversationSnapshot,
+  renderConversationSummary,
+  summarizeConversationSnapshot,
+} from '../ai/conversation';
 import { loadConfig } from '../config/load';
 import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
@@ -1455,6 +1461,38 @@ cli
       }
     });
   });
+
+cli
+  .command('convo show <runId>', 'Show conversation context')
+  .option('--limit <limit>', 'Number of messages to show', { default: '20' })
+  .action((runId: string, options: CliOptions & { limit?: string }) =>
+    withCliContext(options, 'headless', async (ctx) => {
+      const snapshot = await loadConversationSnapshot(ctx.state, runId);
+      if (!snapshot) {
+        throw new Error(`No conversation found for run ${runId}`);
+      }
+      const limit = Math.max(1, Number(options.limit ?? 20) || 20);
+      const summary = summarizeConversationSnapshot(snapshot, { limit });
+      console.log(renderConversationSummary(summary));
+    }),
+  );
+
+cli
+  .command('convo export <runId>', 'Export conversation snapshot')
+  .option('--format <format>', 'json or md', { default: 'json' })
+  .action((runId: string, options: CliOptions & { format?: string }) =>
+    withCliContext(options, 'headless', async (ctx) => {
+      const snapshot = await loadConversationSnapshot(ctx.state, runId);
+      if (!snapshot) {
+        throw new Error(`No conversation found for run ${runId}`);
+      }
+      const format = (options.format ?? 'json') as 'json' | 'md';
+      if (format !== 'json' && format !== 'md') {
+        throw new Error('Format must be json or md');
+      }
+      console.log(exportConversationSnapshot(snapshot, { format }));
+    }),
+  );
 
 export function run(argv: string[]): void {
   cli.parse(argv, { run: false });
