@@ -1,21 +1,19 @@
 #!/usr/bin/env node
-/* eslint-disable no-console */
-const fs = require('node:fs');
-const path = require('node:path');
-const https = require('node:https');
-const { spawnSync } = require('node:child_process');
+import fs from 'node:fs';
+import path from 'node:path';
+import https from 'node:https';
+import { spawnSync } from 'node:child_process';
 
-const envPaths = require('env-paths');
+import envPaths from 'env-paths';
 
-const pkg = require('../package.json');
+import pkg from '../package.json' assert { type: 'json' };
 
 const RELEASE_BASE =
   process.env.SILVAN_RELEASE_BASE ??
   'https://github.com/stevekinney/silvan/releases/download';
 
 function resolveTarget() {
-  const platform = process.platform;
-  const arch = process.arch;
+  const { platform, arch } = process;
 
   if (platform === 'darwin' && arch === 'x64') return { target: 'darwin-x64' };
   if (platform === 'darwin' && arch === 'arm64') return { target: 'darwin-arm64' };
@@ -101,17 +99,15 @@ async function ensureBinary() {
   return binaryPath;
 }
 
-(async () => {
-  try {
-    const binary = await ensureBinary();
-    const args = process.argv.slice(2);
-    const result = spawnSync(binary, args, { stdio: 'inherit' });
-    if (result.error) {
-      throw result.error;
-    }
-    process.exitCode = result.status ?? 1;
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+try {
+  const binary = await ensureBinary();
+  const args = process.argv.slice(2);
+  const result = spawnSync(binary, args, { stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
   }
-})();
+  process.exitCode = result.status ?? 1;
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}

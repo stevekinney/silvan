@@ -20,7 +20,7 @@
     }
   },
   "bin": {
-    "silvan": "./bin/silvan.cjs"
+    "silvan": "./bin/silvan.js"
   },
   "files": [
     "bin",
