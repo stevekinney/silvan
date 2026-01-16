@@ -133,19 +133,8 @@
 
 - [x] Apply maxTurns/maxBudget/maxThinkingTokens to planner/reviewer/pr/verifier/recovery.
 
-### Context budgeter module
+## Future work (not scheduled)
 
-- [ ] Add context budgeter utilities for truncation + sampling.
-- [ ] Emit context size metadata in run state or events.
-
-### Skip agent calls when inputs unchanged
-
-- [x] Add input digests and cache outputs for plan/review/PR/verify to skip re-calls.
-
-### Programmatic PR drafting
-
-- [ ] Add deterministic PR body template and gate AI polish behind config flag.
-
-### Deterministic local review gates
-
-- [x] Add deterministic checks before any local review agent call.
+- Context budgeter utilities for truncation + sampling.
+- Emit context size metadata in run state or events.
+- Deterministic PR body template with optional AI polish.
