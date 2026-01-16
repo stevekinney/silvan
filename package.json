@@ -45,7 +45,8 @@
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit",
-    "validate": "bun run lint && bun run typecheck && bun run test"
+    "validate": "bun run lint && bun run typecheck && bun run test",
+    "verify:release-version": "bun run scripts/verify-release-version.ts"
   },
   "lint-staged": {
     "src/**/*.{js,ts,tsx,jsx,mjs,cjs}": [

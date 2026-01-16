@@ -53,6 +53,15 @@ Troubleshooting:
 - If binary download fails behind a proxy, set `SILVAN_RELEASE_BASE` to a reachable mirror URL.
 - On macOS, Gatekeeper may require you to allow the binary in System Settings.
 
+### Publishing (maintainers)
+
+- GitHub Releases and npm publish are automated on tag pushes (`v*.*.*`).
+- The workflow requires `NPM_TOKEN` as a repository secret.
+- npm authentication uses `NODE_AUTH_TOKEN` and supports `--provenance` in CI.
+- npm is moving away from long‑lived classic tokens. Prefer trusted publishing or
+  granular tokens with rotation to keep release automation compliant with upcoming
+  npm security changes.
+
 ## Quick Start
 
 ```bash
