@@ -1,12 +1,15 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import envPaths from 'env-paths';
 
 import pkg from '../package.json' assert { type: 'json' };
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const RELEASE_BASE =
   process.env.SILVAN_RELEASE_BASE ??
@@ -99,6 +102,16 @@ async function ensureBinary() {
   return binaryPath;
 }
 
+function runFromSource() {
+  const srcEntry = path.join(__dirname, '..', 'src', 'index.ts');
+  const args = process.argv.slice(2);
+  const result = spawnSync('bun', [srcEntry, ...args], { stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status ?? 1;
+}
+
 try {
   const binary = await ensureBinary();
   const args = process.argv.slice(2);
@@ -108,6 +121,11 @@ try {
   }
   process.exitCode = result.status ?? 1;
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+  // If binary download fails, try running from source (dev mode)
+  try {
+    process.exitCode = runFromSource();
+  } catch (sourceError) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }
