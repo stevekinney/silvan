@@ -20,6 +20,7 @@ describe('linearTicketToTask', () => {
 
     const task = linearTicketToTask(ticket);
     expect(task.id).toBe('DEP-10');
+    expect(task.key).toBe('DEP-10');
     expect(task.provider).toBe('linear');
     expect(task.acceptanceCriteria).toContain('supports teams');
     expect(task.labels).toContain('integration');

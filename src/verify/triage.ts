@@ -1,4 +1,4 @@
-import type { VerificationDecision } from '../agent/verifier';
+import type { VerificationDecision } from '../ai/cognition/verifier';
 
 type VerificationResult = {
   name: string;

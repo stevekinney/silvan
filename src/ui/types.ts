@@ -25,6 +25,7 @@ export type RunRecord = {
   phase: Phase;
   step?: RunStepSummary;
   steps?: RunStepSummary[];
+  checkpoints?: string[];
   pr?: {
     id: string;
     url?: string;
@@ -37,16 +38,42 @@ export type RunRecord = {
     unresolvedCount: number;
     iteration?: number;
   };
+  reviewClassification?: {
+    actionable: number;
+    ignored: number;
+    needsContext: number;
+  };
+  reviewFixPlan?: {
+    actionable: number;
+    ignored: number;
+  };
   verification?: {
     ok?: boolean;
     lastRunAt?: string;
+  };
+  reviewVerification?: {
+    ok?: boolean;
+    lastRunAt?: string;
+  };
+  verificationDecision?: {
+    commands: string[];
+    askUser: boolean;
+  };
+  recoverySummary?: {
+    nextAction: string;
+    reason: string;
   };
   toolCalls?: {
     total: number;
     failed?: number;
   };
   taskId?: string;
+  taskKey?: string;
   taskTitle?: string;
+  taskProvider?: string;
+  taskUrl?: string;
+  blockedReason?: string;
+  promptSummaries?: string[];
   lastError?: RunError;
   lastMessage?: string;
   stuck?: {

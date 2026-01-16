@@ -2,10 +2,12 @@ import type { Config } from '../config/schema';
 import { requireGitHubConfig } from '../config/validate';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
+import type { StateStore } from '../state/store';
 import { sanitizeName } from '../utils/slug';
 import { extractLinearTaskFromBranch } from '../utils/task-ref';
 import { fetchGitHubTask, parseGitHubIssueUrl } from './providers/github';
 import { fetchLinearTask } from './providers/linear';
+import { createLocalTask, loadLocalTask, type LocalTaskInput } from './providers/local';
 import type { Task, TaskRef } from './types';
 
 const linearPattern = /\b([A-Z]{2,10})-(\d+)\b/;
@@ -16,6 +18,9 @@ export async function resolveTask(
   options: {
     config: Config;
     repoRoot: string;
+    runId?: string;
+    state: StateStore;
+    localInput?: LocalTaskInput;
     bus?: EventBus;
     context?: EmitContext;
   },
@@ -27,6 +32,45 @@ export async function resolveTask(
     }
     const task = await fetchLinearTask(ref.id, options.config.linear.token);
     return { task, ref };
+  }
+
+  if (ref.provider === 'local') {
+    if (!options.config.task.providers.enabled.includes('local')) {
+      throw new Error('Local provider is disabled in config.');
+    }
+    const title =
+      options.localInput?.title && options.localInput.title.trim().length > 0
+        ? options.localInput.title
+        : ref.raw;
+    const task =
+      ref.mode === 'id'
+        ? await loadLocalTask(options.state, ref.id)
+        : await createLocalTask({
+            state: options.state,
+            ...(options.runId ? { runId: options.runId } : {}),
+            input: {
+              title,
+              ...(options.localInput?.description
+                ? { description: options.localInput.description }
+                : {}),
+              ...(options.localInput?.acceptanceCriteria
+                ? { acceptanceCriteria: options.localInput.acceptanceCriteria }
+                : {}),
+              ...(options.localInput?.labels
+                ? { labels: options.localInput.labels }
+                : {}),
+            },
+          });
+    return {
+      task,
+      ref: {
+        provider: 'local',
+        id: task.id,
+        ...(task.key ? { key: task.key } : {}),
+        raw: ref.mode === 'id' ? `local:${ref.id}` : ref.raw,
+        mode: 'id',
+      },
+    };
   }
 
   if (!options.config.task.providers.enabled.includes('github')) {
@@ -53,6 +97,16 @@ export async function resolveTask(
 
 export function parseTaskRef(input: string, config: Config): TaskRef {
   const trimmed = input.trim();
+  if (trimmed.toLowerCase().startsWith('local:')) {
+    const id = trimmed.slice('local:'.length);
+    return {
+      provider: 'local',
+      id,
+      key: id,
+      raw: trimmed,
+      mode: 'id',
+    };
+  }
   const urlMatch = parseGitHubIssueUrl(trimmed);
   if (urlMatch) {
     return {
@@ -85,9 +139,13 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
     };
   }
 
-  const defaultProvider = config.task.providers.default;
+  let defaultProvider = config.task.providers.default;
   if (!config.task.providers.enabled.includes(defaultProvider)) {
-    throw new Error(`Default provider ${defaultProvider} is not enabled in config.`);
+    if (config.task.providers.enabled.includes('local')) {
+      defaultProvider = 'local';
+    } else {
+      throw new Error(`Default provider ${defaultProvider} is not enabled in config.`);
+    }
   }
   if (defaultProvider === 'github') {
     const number = Number(trimmed.replace(/^#/, ''));
@@ -99,6 +157,15 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
       id: `gh-${number}`,
       raw: trimmed,
       number,
+    };
+  }
+
+  if (defaultProvider === 'local') {
+    return {
+      provider: 'local',
+      id: sanitizeName(trimmed),
+      raw: trimmed,
+      mode: 'title',
     };
   }
 

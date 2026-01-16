@@ -4,7 +4,7 @@ import type { Config } from '../config/schema';
 import { parseTaskRef } from './resolve';
 
 const baseConfig = {
-  task: { providers: { enabled: ['linear', 'github'], default: 'linear' } },
+  task: { providers: { enabled: ['local', 'linear', 'github'], default: 'local' } },
 } as Config;
 
 describe('parseTaskRef', () => {
@@ -26,5 +26,18 @@ describe('parseTaskRef', () => {
     expect(ref.owner).toBe('acme');
     expect(ref.repo).toBe('repo');
     expect(ref.number).toBe(42);
+  });
+
+  it('parses local task refs', () => {
+    const ref = parseTaskRef('local:abc123', baseConfig);
+    expect(ref.provider).toBe('local');
+    expect(ref.mode).toBe('id');
+    expect(ref.id).toBe('abc123');
+  });
+
+  it('defaults to local for free-form titles', () => {
+    const ref = parseTaskRef('Add offline mode', baseConfig);
+    expect(ref.provider).toBe('local');
+    expect(ref.mode).toBe('title');
   });
 });

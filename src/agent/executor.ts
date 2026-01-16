@@ -1,16 +1,18 @@
-import type { SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk';
-import { ProseWriter } from 'prose-writer';
+import { createClaudeToolGate } from 'armorer/claude-agent-sdk';
 
+import type { ConversationSnapshot } from '../ai/conversation';
+import { invokeAgent } from '../ai/router';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
 import type { StateStore } from '../state/store';
 import { createToolRegistry } from './registry';
-import { createToolHooks, runClaudePrompt } from './sdk';
+import type { ClaudeSessionOptions } from './sdk';
+import { createToolHooks } from './sdk';
 import type { SessionPool } from './session';
 
 export type ExecutorInput = {
-  planDigest?: string;
+  snapshot: ConversationSnapshot;
   model: string;
   repoRoot: string;
   config: Parameters<typeof createToolRegistry>[0]['config'];
@@ -54,25 +56,13 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     'search_files',
     'glob',
   ]);
-  const writeBuiltinTools = new Set(['write_file', 'edit_file', 'create_file']);
-  const execBuiltinTools = new Set(['bash']);
+  const mutatingBuiltinTools = new Set(['write_file', 'edit_file', 'create_file']);
+  const dangerousBuiltinTools = new Set(['bash']);
   const allowedToolCount =
     registry.toolNames.length +
     readOnlyBuiltinTools.size +
-    writeBuiltinTools.size +
-    execBuiltinTools.size;
-
-  const promptWriter = new ProseWriter();
-  promptWriter.write('You are the implementation agent for Silvan.');
-  promptWriter.write('Follow the plan step-by-step, using tools when needed.');
-  promptWriter.write('Do not invent file contents; use fs.read before edits.');
-  promptWriter.write('Keep changes minimal and aligned to the plan.');
-  promptWriter.write('Use silvan.plan.read to fetch the full plan before making edits.');
-  promptWriter.write('Use silvan.task.read to fetch the task details as needed.');
-  promptWriter.write('Return a brief summary of changes.');
-  promptWriter.write('Plan digest:');
-  promptWriter.write(input.planDigest ?? 'unknown');
-  const prompt = promptWriter.toString().trimEnd();
+    mutatingBuiltinTools.size +
+    dangerousBuiltinTools.size;
 
   const start = performance.now();
   if (input.bus) {
@@ -112,42 +102,35 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
         : {}),
     });
 
-    const permissionMode: SDKSessionOptions['permissionMode'] = input.dryRun
+    const permissionMode: ClaudeSessionOptions['permissionMode'] = input.dryRun
       ? 'plan'
       : 'dontAsk';
-    const allow = { behavior: 'allow' } as const;
-    const deny = (message: string) => ({ behavior: 'deny', message }) as const;
-    const canUseTool: SDKSessionOptions['canUseTool'] = (toolName) => {
-      if (registry.toolNames.includes(toolName)) {
-        if (input.dryRun && registry.mutatingToolNames.includes(toolName)) {
-          return Promise.resolve(deny('Dry-run mode: mutating tools disabled.'));
-        }
-        if (!input.allowDestructive && registry.mutatingToolNames.includes(toolName)) {
-          return Promise.resolve(deny('Use --apply to allow mutating tools.'));
-        }
-        return Promise.resolve(allow);
+    const toolGate = createClaudeToolGate({
+      registry: registry.armorer,
+      readOnly: input.dryRun,
+      allowMutation: input.allowDestructive,
+      allowDangerous: input.allowDangerous && input.allowDestructive && !input.dryRun,
+      builtin: {
+        readOnly: Array.from(readOnlyBuiltinTools),
+        mutating: Array.from(mutatingBuiltinTools),
+        dangerous: Array.from(dangerousBuiltinTools),
+      },
+      messages: {
+        dangerous: 'Use --apply and --dangerous to allow this tool.',
+      },
+    });
+    const canUseTool: ClaudeSessionOptions['canUseTool'] = async (toolName) => {
+      const decision = await toolGate(toolName);
+      if (decision.behavior === 'allow') {
+        return { behavior: 'allow' };
       }
-      if (readOnlyBuiltinTools.has(toolName)) {
-        return Promise.resolve(allow);
-      }
-      if (writeBuiltinTools.has(toolName)) {
-        if (input.dryRun || !input.allowDestructive) {
-          return Promise.resolve(deny('Use --apply to allow file edits.'));
-        }
-        return Promise.resolve(allow);
-      }
-      if (execBuiltinTools.has(toolName)) {
-        if (input.dryRun || !input.allowDestructive || !input.allowDangerous) {
-          return Promise.resolve(
-            deny('Use --apply and --dangerous to allow command execution.'),
-          );
-        }
-        return Promise.resolve(allow);
-      }
-      return Promise.resolve(deny(`Tool not allowed: ${toolName}`));
+      return {
+        behavior: 'deny',
+        message: decision.message ?? `Tool not allowed: ${toolName}`,
+      };
     };
 
-    const sessionOptions = {
+    const sessionOptions: ClaudeSessionOptions = {
       model: input.model,
       permissionMode,
       mcpServers: { 'silvan-tools': registry.sdkServer },
@@ -164,9 +147,13 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
 
     const session = input.sessionPool?.get('execute', sessionOptions);
     const runOptions = session
-      ? { message: prompt, model: input.model, session }
-      : { message: prompt, ...sessionOptions };
-    result = await runClaudePrompt(runOptions);
+      ? { snapshot: input.snapshot, model: input.model, session }
+      : { snapshot: input.snapshot, ...sessionOptions };
+    result = await invokeAgent({
+      ...runOptions,
+      ...(input.bus ? { bus: input.bus } : {}),
+      ...(input.context ? { context: input.context } : {}),
+    });
   } finally {
     if (input.bus) {
       const durationMs = Math.round(performance.now() - start);

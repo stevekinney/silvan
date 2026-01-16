@@ -32,6 +32,15 @@ describe('resolveStatePaths', () => {
       '/Users/alice/Library/Application Support/silvan/repos/repo-1/audit',
     );
     expect(paths.cacheDir).toBe('/Users/alice/Library/Caches/silvan/repos/repo-1');
+    expect(paths.conversationsDir).toBe(
+      '/Users/alice/Library/Application Support/silvan/repos/repo-1/conversations',
+    );
+    expect(paths.artifactsDir).toBe(
+      '/Users/alice/Library/Application Support/silvan/repos/repo-1/artifacts',
+    );
+    expect(paths.tasksDir).toBe(
+      '/Users/alice/Library/Application Support/silvan/repos/repo-1/tasks',
+    );
   });
 
   it('resolves global paths on Linux', () => {
@@ -46,6 +55,13 @@ describe('resolveStatePaths', () => {
     expect(paths.runsDir).toBe('/home/alice/.local/share/silvan/repos/repo-2/runs');
     expect(paths.auditDir).toBe('/home/alice/.local/share/silvan/repos/repo-2/audit');
     expect(paths.cacheDir).toBe('/home/alice/.cache/silvan/repos/repo-2');
+    expect(paths.conversationsDir).toBe(
+      '/home/alice/.local/share/silvan/repos/repo-2/conversations',
+    );
+    expect(paths.artifactsDir).toBe(
+      '/home/alice/.local/share/silvan/repos/repo-2/artifacts',
+    );
+    expect(paths.tasksDir).toBe('/home/alice/.local/share/silvan/repos/repo-2/tasks');
   });
 
   it('resolves global paths on Windows', () => {
@@ -68,6 +84,15 @@ describe('resolveStatePaths', () => {
     );
     expect(paths.cacheDir).toBe(
       'C:\\Users\\Alice\\AppData\\Local\\silvan\\Cache\\repos\\repo-3',
+    );
+    expect(paths.conversationsDir).toBe(
+      'C:\\Users\\Alice\\AppData\\Roaming\\silvan\\repos\\repo-3\\conversations',
+    );
+    expect(paths.artifactsDir).toBe(
+      'C:\\Users\\Alice\\AppData\\Roaming\\silvan\\repos\\repo-3\\artifacts',
+    );
+    expect(paths.tasksDir).toBe(
+      'C:\\Users\\Alice\\AppData\\Roaming\\silvan\\repos\\repo-3\\tasks',
     );
   });
 });

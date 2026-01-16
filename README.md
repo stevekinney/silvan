@@ -87,13 +87,7 @@ const config = defineConfig({
     requestCopilot: true,
   },
   linear: {
-    enabled: true,
     token: 'lin_example',
-    states: {
-      inProgress: 'In Progress',
-      inReview: 'In Review',
-      done: 'Done',
-    },
   },
   naming: {
     branchPrefix: 'feature/',
@@ -110,6 +104,21 @@ const config = defineConfig({
     models: {
       default: 'claude-sonnet-4-5-20250929',
       execute: 'claude-sonnet-4-5-20250929',
+    },
+    cognition: {
+      provider: 'anthropic',
+      modelByTask: {
+        plan: 'claude-3-5-haiku-latest',
+        prDraft: 'claude-3-5-haiku-latest',
+      },
+    },
+    conversation: {
+      pruning: {
+        maxTurns: 80,
+        maxBytes: 200000,
+        summarizeAfterTurns: 30,
+        keepLastTurns: 20,
+      },
     },
     budgets: {
       default: { maxTurns: 12, maxBudgetUsd: 5 },
@@ -162,8 +171,11 @@ Silvan resolves settings in this order:
 
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access for PR and CI commands.
 - `LINEAR_API_KEY`: Linear task access for planning.
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`: cognition lane provider credentials.
 - `CLAUDE_MODEL`: default Claude model (fallback for all phases).
 - `SILVAN_MODEL_PLAN|EXECUTE|REVIEW|PR|RECOVERY|VERIFY`: override model per phase.
+- `SILVAN_COGNITION_PROVIDER`: cognition provider (`anthropic`, `openai`, `gemini`).
+- `SILVAN_COGNITION_MODEL_KICKOFF|PLAN|REVIEW|CI|VERIFY|RECOVERY|PR|CONVERSATION_SUMMARY`: cognition model overrides.
 - `SILVAN_MAX_TOOL_CALLS`: cap tool calls per agent execution.
 - `SILVAN_MAX_TOOL_MS`: cap tool execution duration per agent execution.
 - `SILVAN_MAX_TURNS` (and per-phase `SILVAN_MAX_TURNS_*`): cap agent turns.
@@ -177,6 +189,22 @@ Silvan resolves settings in this order:
 All environment variables above can also be set in `silvan.config.*` and overridden
 via CLI flags.
 
+## AI Lanes and Conversation State
+
+Silvan separates AI work into two lanes:
+
+- **Agent lane (Claude Agents SDK)**: tool-using, side-effectful execution (edits, git ops).
+- **Cognition lane (homogenaize + conversationalist)**: read-only, structured outputs
+  for planning, summaries, and triage.
+
+All AI calls consume **conversation snapshots** persisted per run under:
+
+```
+<APP_DATA>/silvan/repos/<repoId>/conversations/<runId>.json
+```
+
+Conversation pruning is configured under `ai.conversation.pruning`.
+
 ## Global Flags
 
 - `--github-token <token>`
@@ -188,6 +216,15 @@ via CLI flags.
 - `--model-verify <model>`
 - `--model-pr <model>`
 - `--model-recovery <model>`
+- `--cognition-provider <provider>`
+- `--cognition-model-kickoff <model>`
+- `--cognition-model-plan <model>`
+- `--cognition-model-review <model>`
+- `--cognition-model-ci <model>`
+- `--cognition-model-verify <model>`
+- `--cognition-model-recovery <model>`
+- `--cognition-model-pr <model>`
+- `--cognition-model-conversation-summary <model>`
 - `--max-turns <n>`
 - `--max-turns-plan <n>`
 - `--max-turns-execute <n>`
@@ -291,6 +328,9 @@ Per-repo data is stored under:
 
 - `repos/<repoId>/runs` - run snapshots
 - `repos/<repoId>/audit` - event audit logs (JSONL)
+- `repos/<repoId>/artifacts` - run artifacts (plans, reports, summaries)
+- `repos/<repoId>/conversations` - conversation snapshots
+- `repos/<repoId>/tasks` - local task definitions
 - cache: `cache/repos/<repoId>` (rebuildable data)
 
 To keep state inside a repo, set `state.mode = "repo"` or pass `--state-mode repo`.
@@ -309,6 +349,43 @@ Silvan stores state in a global per-user location by default.
 - Verification failures are triaged deterministically; the verifier agent runs only when needed.
 - Review loop waits for CI and re-requests reviewers after fixes.
 - Runs persist step cursors for resumability (`runs resume <runId>`).
+- Artifacts are stored outside the repo and indexed in run state (`runs inspect` or `silvan ui`).
+
+## Prompt Schemas
+
+Silvan standardizes kickoff prompts with a shared PromptSchema:
+
+- Prompts are versioned, schema-validated, and hashable.
+- Each prompt is persisted as an artifact with a digest stored in run state.
+- Prompts never include large blobs (no diffs, full files, or raw review threads).
+
+To add a new prompt kind, define its body schema in `src/prompts/schema.ts`,
+export its type in `src/prompts/types.ts`, and validate it via `validatePrompt`
+before persisting the artifact.
+
+## Local Tasks
+
+Silvan works without any issue tracker configured. Start a run from a local task:
+
+```bash
+silvan task start "Add fuzzy search to ui"
+```
+
+Optional local task flags:
+
+```bash
+silvan task start --title "Add fuzzy search" --desc "Search the run list" \
+  --ac "Matches partial strings" --ac "Highlights matched text"
+```
+
+Load a local task from a file:
+
+```bash
+silvan task start --from-file task.md
+```
+
+If GitHub is not configured, Silvan will run plan/implement/verify and stop
+before PR and review steps with a clear blocked reason in the run summary.
 
 ## Development
 

@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import PQueue from 'p-queue';
-import { ProseWriter } from 'prose-writer';
 
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
@@ -519,48 +518,5 @@ export async function normalizeClaudeSettings(options: {
     }
   } catch {
     return;
-  }
-}
-
-export async function ensureArtifactsIgnored(options: {
-  worktreePath: string;
-  entries?: string[];
-  bus?: EventBus;
-  context: EmitContext;
-}): Promise<void> {
-  const entries = options.entries ?? ['.claude-artifacts.json', '.worktree-run.json'];
-  const gitignorePath = join(options.worktreePath, '.gitignore');
-  const gitignoreFile = Bun.file(gitignorePath);
-  const exists = await gitignoreFile.exists();
-  const current = exists ? await readFile(gitignorePath, 'utf8') : '';
-  const lines = current.split('\n').map((line) => line.trim());
-  const missing = entries.filter((entry) => !lines.includes(entry));
-
-  if (missing.length > 0) {
-    const suffix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
-    const writer = new ProseWriter();
-    const missingBlock = missing.reduce(
-      (acc, entry, index) => `${acc}${index ? '\n' : ''}${entry}`,
-      '',
-    );
-    writer.write(missingBlock);
-    const updated = `${current}${suffix}${writer.toString().trimEnd()}\n`;
-    await writeFile(gitignorePath, updated);
-  }
-
-  for (const entry of entries) {
-    const tracked = await runGit(['ls-files', '--error-unmatch', entry], {
-      cwd: options.worktreePath,
-      bus: options.bus,
-      context: { ...options.context, worktreePath: options.worktreePath },
-    });
-
-    if (tracked.exitCode === 0) {
-      await runGit(['rm', '--cached', '-f', entry], {
-        cwd: options.worktreePath,
-        bus: options.bus,
-        context: { ...options.context, worktreePath: options.worktreePath },
-      });
-    }
   }
 }

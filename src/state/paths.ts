@@ -25,6 +25,9 @@ export type StatePaths = {
   runsDir: string;
   auditDir: string;
   cacheDir: string;
+  conversationsDir: string;
+  artifactsDir: string;
+  tasksDir: string;
   metadataPath: string;
 };
 
@@ -53,6 +56,9 @@ export function resolveStatePaths(options: {
       runsDir: joinPath(root, 'runs'),
       auditDir: joinPath(root, 'audit'),
       cacheDir: joinPath(root, 'cache'),
+      conversationsDir: joinPath(root, 'conversations'),
+      artifactsDir: joinPath(root, 'artifacts'),
+      tasksDir: joinPath(root, 'tasks'),
       metadataPath: joinPath(root, 'metadata.json'),
     };
   }
@@ -73,6 +79,9 @@ export function resolveStatePaths(options: {
     runsDir: joinPath(repoRoot, 'runs'),
     auditDir: joinPath(repoRoot, 'audit'),
     cacheDir: joinPath(cacheRoot, 'repos', repoId),
+    conversationsDir: joinPath(repoRoot, 'conversations'),
+    artifactsDir: joinPath(repoRoot, 'artifacts'),
+    tasksDir: joinPath(repoRoot, 'tasks'),
     metadataPath: joinPath(repoRoot, 'metadata.json'),
   };
 }

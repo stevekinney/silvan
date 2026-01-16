@@ -237,6 +237,14 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
     typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {};
   const prData = typeof data['pr'] === 'object' && data['pr'] ? data['pr'] : undefined;
   const task = typeof data['task'] === 'object' && data['task'] ? data['task'] : {};
+  const taskProvider =
+    typeof (task as { provider?: string }).provider === 'string'
+      ? (task as { provider?: string }).provider
+      : undefined;
+  const taskUrl =
+    typeof (task as { url?: string }).url === 'string'
+      ? (task as { url?: string }).url
+      : undefined;
 
   const phase = (runMeta as { phase?: Phase }).phase ?? 'idle';
   const status = mapRunStatus((runMeta as { status?: string }).status);
@@ -255,12 +263,35 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
       ? stepsRecord[lastFailed.stepId]?.error?.message
       : undefined;
 
-  const verifyReport = data['verifyReport'] as { ok?: boolean } | undefined;
+  const verifySummary = data['verifySummary'] as
+    | { ok?: boolean; lastRunAt?: string }
+    | undefined;
+  const reviewVerifySummary = data['reviewVerifySummary'] as
+    | { ok?: boolean; lastRunAt?: string }
+    | undefined;
+  const reviewClassificationSummary = data['reviewClassificationSummary'] as
+    | { actionable?: number; ignored?: number; needsContext?: number }
+    | undefined;
+  const reviewFixPlanSummary = data['reviewFixPlanSummary'] as
+    | { actionable?: number; ignored?: number }
+    | undefined;
+  const verificationDecisionSummary = data['verificationDecisionSummary'] as
+    | { commands?: string[]; askUser?: boolean }
+    | undefined;
+  const recoverySummary = data['recoverySummary'] as
+    | { nextAction?: string; reason?: string }
+    | undefined;
   const verifyStepRecord = stepsRecord['verify.run'];
-  const verifyRunAt = verifyStepRecord?.endedAt ?? verifyStepRecord?.startedAt;
+  const verifyRunAt =
+    verifySummary?.lastRunAt ?? verifyStepRecord?.endedAt ?? verifyStepRecord?.startedAt;
   const reviewIteration =
     typeof data['reviewIteration'] === 'number' ? data['reviewIteration'] : undefined;
-  const toolCalls = Array.isArray(data['toolCalls']) ? data['toolCalls'] : undefined;
+  const toolCallSummary = data['toolCallSummary'] as
+    | { total?: number; failed?: number }
+    | undefined;
+  const checkpoints = Array.isArray(data['checkpoints'])
+    ? (data['checkpoints'] as string[])
+    : undefined;
   const ciState = (summary as { ci?: CiState }).ci;
   const prUrl =
     typeof (summary as { prUrl?: string }).prUrl === 'string'
@@ -272,6 +303,11 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const unresolvedValue = (summary as { unresolvedReviewCount?: number })
     .unresolvedReviewCount;
   const unresolved: number = typeof unresolvedValue === 'number' ? unresolvedValue : 0;
+  const blockedReason =
+    typeof (summary as { blockedReason?: string }).blockedReason === 'string'
+      ? (summary as { blockedReason?: string }).blockedReason
+      : undefined;
+  const promptSummaries = data['promptSummaries'] as Record<string, string> | undefined;
 
   const stuck = detectStuck(stepId, stepsRecord, snapshot.updatedAt);
 
@@ -298,21 +334,81 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
       unresolvedCount: unresolved,
       ...(typeof reviewIteration === 'number' ? { iteration: reviewIteration } : {}),
     },
-    ...(verifyReport?.ok !== undefined
+    ...(checkpoints ? { checkpoints } : {}),
+    ...(verifySummary?.ok !== undefined
       ? {
           verification: {
-            ok: verifyReport.ok,
+            ok: verifySummary.ok,
             ...(verifyRunAt ? { lastRunAt: verifyRunAt } : {}),
           },
         }
       : {}),
-    ...(toolCalls ? { toolCalls: { total: toolCalls.length } } : {}),
+    ...(reviewVerifySummary?.ok !== undefined
+      ? {
+          reviewVerification: {
+            ok: reviewVerifySummary.ok,
+            ...(reviewVerifySummary.lastRunAt
+              ? { lastRunAt: reviewVerifySummary.lastRunAt }
+              : {}),
+          },
+        }
+      : {}),
+    ...(reviewClassificationSummary
+      ? {
+          reviewClassification: {
+            actionable: reviewClassificationSummary.actionable ?? 0,
+            ignored: reviewClassificationSummary.ignored ?? 0,
+            needsContext: reviewClassificationSummary.needsContext ?? 0,
+          },
+        }
+      : {}),
+    ...(reviewFixPlanSummary
+      ? {
+          reviewFixPlan: {
+            actionable: reviewFixPlanSummary.actionable ?? 0,
+            ignored: reviewFixPlanSummary.ignored ?? 0,
+          },
+        }
+      : {}),
+    ...(verificationDecisionSummary
+      ? {
+          verificationDecision: {
+            commands: verificationDecisionSummary.commands ?? [],
+            askUser: verificationDecisionSummary.askUser ?? false,
+          },
+        }
+      : {}),
+    ...(recoverySummary?.nextAction
+      ? {
+          recoverySummary: {
+            nextAction: recoverySummary.nextAction,
+            reason: recoverySummary.reason ?? '',
+          },
+        }
+      : {}),
+    ...(blockedReason ? { blockedReason } : {}),
+    ...(promptSummaries ? { promptSummaries: Object.values(promptSummaries) } : {}),
+    ...(typeof toolCallSummary?.total === 'number'
+      ? {
+          toolCalls: {
+            total: toolCallSummary.total,
+            ...(typeof toolCallSummary.failed === 'number'
+              ? { failed: toolCallSummary.failed }
+              : {}),
+          },
+        }
+      : {}),
     ...(typeof (task as { id?: string }).id === 'string'
       ? { taskId: (task as { id?: string }).id }
+      : {}),
+    ...(typeof (task as { key?: string }).key === 'string'
+      ? { taskKey: (task as { key?: string }).key }
       : {}),
     ...(typeof (task as { title?: string }).title === 'string'
       ? { taskTitle: (task as { title?: string }).title }
       : {}),
+    ...(taskProvider ? { taskProvider } : {}),
+    ...(taskUrl ? { taskUrl } : {}),
     ...(lastFailed
       ? {
           lastError: {

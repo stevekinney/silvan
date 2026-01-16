@@ -195,6 +195,45 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
+  const cognitionProvider = env['SILVAN_COGNITION_PROVIDER'];
+  if (cognitionProvider) {
+    override.ai = {
+      ...(override.ai ?? {}),
+      cognition: {
+        ...(override.ai?.cognition ?? {}),
+        provider: cognitionProvider as Config['ai']['cognition']['provider'],
+      },
+    };
+  }
+
+  const cognitionModels: Array<
+    [keyof NonNullable<Config['ai']>['cognition']['modelByTask'], string]
+  > = [
+    ['kickoffPrompt', 'SILVAN_COGNITION_MODEL_KICKOFF'],
+    ['plan', 'SILVAN_COGNITION_MODEL_PLAN'],
+    ['reviewKickoff', 'SILVAN_COGNITION_MODEL_REVIEW'],
+    ['reviewCluster', 'SILVAN_COGNITION_MODEL_REVIEW'],
+    ['ciTriage', 'SILVAN_COGNITION_MODEL_CI'],
+    ['verificationSummary', 'SILVAN_COGNITION_MODEL_VERIFY'],
+    ['recovery', 'SILVAN_COGNITION_MODEL_RECOVERY'],
+    ['prDraft', 'SILVAN_COGNITION_MODEL_PR'],
+    ['conversationSummary', 'SILVAN_COGNITION_MODEL_CONVERSATION_SUMMARY'],
+  ];
+  for (const [task, key] of cognitionModels) {
+    const value = env[key];
+    if (!value) continue;
+    override.ai = {
+      ...(override.ai ?? {}),
+      cognition: {
+        ...(override.ai?.cognition ?? {}),
+        modelByTask: {
+          ...(override.ai?.cognition?.modelByTask ?? {}),
+          [task]: value,
+        },
+      },
+    };
+  }
+
   const reviewLoops = parseNumber(env['SILVAN_MAX_REVIEW_LOOPS']);
   if (reviewLoops) {
     override.review = { ...(override.review ?? {}), maxIterations: reviewLoops };

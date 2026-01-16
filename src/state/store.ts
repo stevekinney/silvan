@@ -8,9 +8,13 @@ import { resolveStatePaths, type StateMode } from './paths';
 
 export type StateStore = {
   root: string;
+  repoId: string;
   runsDir: string;
   auditDir: string;
   cacheDir: string;
+  conversationsDir: string;
+  artifactsDir: string;
+  tasksDir: string;
   stateVersion: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: RunStateData) => Promise<string>;
@@ -51,11 +55,15 @@ export async function initStateStore(
     mode,
     ...(options?.root ? { stateRoot: options.root } : {}),
   });
-  const { root, runsDir, auditDir, cacheDir, metadataPath } = paths;
+  const { root, runsDir, auditDir, cacheDir, metadataPath, artifactsDir, tasksDir } =
+    paths;
 
   await mkdir(runsDir, { recursive: true });
   await mkdir(auditDir, { recursive: true });
   await mkdir(cacheDir, { recursive: true });
+  await mkdir(paths.conversationsDir, { recursive: true });
+  await mkdir(artifactsDir, { recursive: true });
+  await mkdir(tasksDir, { recursive: true });
 
   const lockRelease =
     options?.lock === false
@@ -111,9 +119,13 @@ export async function initStateStore(
 
   return {
     root,
+    repoId: paths.repoId,
     runsDir,
     auditDir,
     cacheDir,
+    conversationsDir: paths.conversationsDir,
+    artifactsDir,
+    tasksDir,
     stateVersion,
     lockRelease,
     writeRunState,

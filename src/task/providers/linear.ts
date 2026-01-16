@@ -19,6 +19,7 @@ export function linearTicketToTask(ticket: LinearTicket): Task {
   const state = ticket.state ?? ticket.status ?? undefined;
   return {
     id: ticket.identifier,
+    key: ticket.identifier,
     provider: 'linear',
     title: ticket.title,
     description: ticket.description ?? '',

@@ -3,8 +3,8 @@ import { defineConfig } from './src/config/define-config';
 export default defineConfig({
   task: {
     providers: {
-      enabled: ['linear', 'github'],
-      default: 'linear',
+      enabled: ['local', 'linear', 'github'],
+      default: 'local',
     },
     github: {
       closeOnSuccess: false,

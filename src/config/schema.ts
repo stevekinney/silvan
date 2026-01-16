@@ -11,10 +11,10 @@ export const configSchema = z.object({
     .object({
       providers: z
         .object({
-          enabled: z.array(z.enum(['linear', 'github'])).default(['linear']),
-          default: z.enum(['linear', 'github']).default('linear'),
+          enabled: z.array(z.enum(['linear', 'github', 'local'])).default(['local']),
+          default: z.enum(['linear', 'github', 'local']).default('local'),
         })
-        .default({ enabled: ['linear'], default: 'linear' }),
+        .default({ enabled: ['local'], default: 'local' }),
       github: z
         .object({
           closeOnSuccess: z.boolean().default(false),
@@ -35,7 +35,7 @@ export const configSchema = z.object({
         .default({ states: { inProgress: 'In Progress' } }),
     })
     .default({
-      providers: { enabled: ['linear'], default: 'linear' },
+      providers: { enabled: ['local'], default: 'local' },
       github: { closeOnSuccess: false, commentOnPrOpen: false },
       linear: { states: { inProgress: 'In Progress' } },
     }),
@@ -168,6 +168,56 @@ export const configSchema = z.object({
           persist: z.boolean().default(false),
         })
         .default({ persist: false }),
+      cognition: z
+        .object({
+          provider: z.enum(['anthropic', 'openai', 'gemini']).default('anthropic'),
+          fallbackProviders: z
+            .array(z.enum(['anthropic', 'openai', 'gemini']))
+            .default([]),
+          modelByTask: z
+            .object({
+              kickoffPrompt: z.string().optional(),
+              plan: z.string().optional(),
+              reviewKickoff: z.string().optional(),
+              reviewClassify: z.string().optional(),
+              reviewCluster: z.string().optional(),
+              ciTriage: z.string().optional(),
+              verificationSummary: z.string().optional(),
+              recovery: z.string().optional(),
+              prDraft: z.string().optional(),
+              conversationSummary: z.string().optional(),
+            })
+            .default({}),
+        })
+        .default({
+          provider: 'anthropic',
+          fallbackProviders: [],
+          modelByTask: {},
+        }),
+      conversation: z
+        .object({
+          pruning: z
+            .object({
+              maxTurns: z.number().int().positive().default(80),
+              maxBytes: z.number().int().positive().default(200_000),
+              summarizeAfterTurns: z.number().int().positive().default(30),
+              keepLastTurns: z.number().int().positive().default(20),
+            })
+            .default({
+              maxTurns: 80,
+              maxBytes: 200_000,
+              summarizeAfterTurns: 30,
+              keepLastTurns: 20,
+            }),
+        })
+        .default({
+          pruning: {
+            maxTurns: 80,
+            maxBytes: 200_000,
+            summarizeAfterTurns: 30,
+            keepLastTurns: 20,
+          },
+        }),
     })
     .default({
       models: {},
@@ -182,6 +232,15 @@ export const configSchema = z.object({
       },
       toolLimits: {},
       sessions: { persist: false },
+      cognition: { provider: 'anthropic', fallbackProviders: [], modelByTask: {} },
+      conversation: {
+        pruning: {
+          maxTurns: 80,
+          maxBytes: 200_000,
+          summarizeAfterTurns: 30,
+          keepLastTurns: 20,
+        },
+      },
     }),
   review: z
     .object({

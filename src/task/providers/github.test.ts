@@ -28,6 +28,7 @@ describe('fetchGitHubTask', () => {
       octokit as any,
     );
     expect(task.id).toBe('gh-123');
+    expect(task.key).toBe('gh-123');
     expect(task.provider).toBe('github');
     expect(task.acceptanceCriteria).toContain('handles null input');
     expect(task.acceptanceCriteria).toContain('add test');

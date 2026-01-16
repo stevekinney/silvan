@@ -57,6 +57,23 @@ export const reviewFixPlanSchema = z.object({
 
 export type ReviewFixPlan = z.infer<typeof reviewFixPlanSchema>;
 
+export const reviewClassificationSchema = z.object({
+  actionableThreadIds: z.array(z.string()),
+  ignoredThreadIds: z.array(z.string()),
+  needsContextThreadIds: z.array(z.string()),
+  clusters: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        summary: z.string().min(1),
+        threadIds: z.array(z.string().min(1)).min(1),
+      }),
+    )
+    .optional(),
+});
+
+export type ReviewClassification = z.infer<typeof reviewClassificationSchema>;
+
 export const recoveryPlanSchema = z.object({
   nextAction: z.enum([
     'rerun_verification',

@@ -28,27 +28,6 @@ export function RunDetails({ run }: { run: RunRecord }): React.ReactElement {
       </Box>
 
       <Box flexDirection="column">
-        <Text>Verification</Text>
-        {run.verification ? (
-          <Text color={run.verification.ok ? 'green' : 'red'}>
-            {run.verification.ok ? 'Passed' : 'Failed'}
-            {run.verification.lastRunAt ? ` • ${run.verification.lastRunAt}` : ''}
-          </Text>
-        ) : (
-          <Text color="gray">No verification data</Text>
-        )}
-      </Box>
-
-      <Box flexDirection="column">
-        <Text>Tool calls</Text>
-        {run.toolCalls ? (
-          <Text>{run.toolCalls.total} calls</Text>
-        ) : (
-          <Text color="gray">No tool calls recorded</Text>
-        )}
-      </Box>
-
-      <Box flexDirection="column">
         <Text>Last update</Text>
         <Text color="gray">{run.updatedAt}</Text>
       </Box>

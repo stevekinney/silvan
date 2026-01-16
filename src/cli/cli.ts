@@ -23,7 +23,6 @@ import type { EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import {
   createWorktree,
-  ensureArtifactsIgnored,
   hasUncommittedChanges,
   installDependencies,
   listWorktrees,
@@ -38,6 +37,7 @@ import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { initStateStore } from '../state/store';
+import { type LocalTaskInput, parseLocalTaskFile } from '../task/providers/local';
 import { inferTaskRefFromBranch, resolveTask } from '../task/resolve';
 import { mountDashboard, startPrSnapshotPoller } from '../ui';
 import { confirmAction } from '../utils/confirm';
@@ -67,6 +67,15 @@ type CliOptions = {
   modelVerify?: string;
   modelPr?: string;
   modelRecovery?: string;
+  cognitionProvider?: string;
+  cognitionModelKickoff?: string;
+  cognitionModelPlan?: string;
+  cognitionModelReview?: string;
+  cognitionModelCi?: string;
+  cognitionModelVerify?: string;
+  cognitionModelRecovery?: string;
+  cognitionModelPr?: string;
+  cognitionModelConversationSummary?: string;
   maxTurns?: string;
   maxTurnsPlan?: string;
   maxTurnsExecute?: string;
@@ -94,6 +103,10 @@ type CliOptions = {
   persistSessions?: boolean;
   verifyShell?: string;
   stateMode?: string;
+  title?: string;
+  desc?: string;
+  ac?: string[] | string;
+  fromFile?: string;
 };
 
 cli.option('--json', 'Output JSON event stream');
@@ -108,6 +121,21 @@ cli.option('--model-review <model>', 'Review model');
 cli.option('--model-verify <model>', 'Verify model');
 cli.option('--model-pr <model>', 'PR writer model');
 cli.option('--model-recovery <model>', 'Recovery model');
+cli.option(
+  '--cognition-provider <provider>',
+  'Cognition provider (anthropic|openai|gemini)',
+);
+cli.option('--cognition-model-kickoff <model>', 'Cognition kickoff model');
+cli.option('--cognition-model-plan <model>', 'Cognition planner model');
+cli.option('--cognition-model-review <model>', 'Cognition review model');
+cli.option('--cognition-model-ci <model>', 'Cognition CI triage model');
+cli.option('--cognition-model-verify <model>', 'Cognition verification model');
+cli.option('--cognition-model-recovery <model>', 'Cognition recovery model');
+cli.option('--cognition-model-pr <model>', 'Cognition PR draft model');
+cli.option(
+  '--cognition-model-conversation-summary <model>',
+  'Cognition conversation summary model',
+);
 cli.option('--max-turns <n>', 'Max turns per session');
 cli.option('--max-turns-plan <n>', 'Max turns for planner');
 cli.option('--max-turns-execute <n>', 'Max turns for executor');
@@ -188,6 +216,43 @@ function buildConfigOverrides(options: CliOptions): ConfigInput {
     overrides.ai = {
       ...(overrides.ai ?? {}),
       models: { ...(overrides.ai?.models ?? {}), [phase]: value },
+    };
+  }
+
+  if (options.cognitionProvider) {
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      cognition: {
+        ...(overrides.ai?.cognition ?? {}),
+        provider: options.cognitionProvider as Config['ai']['cognition']['provider'],
+      },
+    };
+  }
+
+  const cognitionModels: Array<
+    [keyof NonNullable<Config['ai']>['cognition']['modelByTask'], string | undefined]
+  > = [
+    ['kickoffPrompt', options.cognitionModelKickoff],
+    ['plan', options.cognitionModelPlan],
+    ['reviewKickoff', options.cognitionModelReview],
+    ['reviewCluster', options.cognitionModelReview],
+    ['ciTriage', options.cognitionModelCi],
+    ['verificationSummary', options.cognitionModelVerify],
+    ['recovery', options.cognitionModelRecovery],
+    ['prDraft', options.cognitionModelPr],
+    ['conversationSummary', options.cognitionModelConversationSummary],
+  ];
+  for (const [task, value] of cognitionModels) {
+    if (!value) continue;
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      cognition: {
+        ...(overrides.ai?.cognition ?? {}),
+        modelByTask: {
+          ...(overrides.ai?.cognition?.modelByTask ?? {}),
+          [task]: value,
+        },
+      },
     };
   }
 
@@ -348,11 +413,6 @@ cli
       );
 
       await normalizeClaudeSettings({ worktreePath: worktree.path });
-      await ensureArtifactsIgnored({
-        worktreePath: worktree.path,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
 
       const installResult = await installDependencies({ worktreePath: worktree.path });
       if (!installResult.ok) {
@@ -847,7 +907,35 @@ cli
       console.log(JSON.stringify(snapshot, null, 2));
       return;
     }
-    console.log(JSON.stringify(snapshot, null, 2));
+    const data = snapshot.data as Record<string, unknown>;
+    const task = (
+      typeof data['task'] === 'object' && data['task'] ? data['task'] : {}
+    ) as {
+      id?: string;
+      key?: string;
+      title?: string;
+      provider?: string;
+      acceptanceCriteria?: string[];
+    };
+    const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
+      status?: string;
+      phase?: string;
+      updatedAt?: string;
+    };
+    const acCount = Array.isArray(task.acceptanceCriteria)
+      ? task.acceptanceCriteria.length
+      : 0;
+
+    if (task.id || task.title) {
+      console.log(
+        `Task: ${task.key ?? task.id ?? 'unknown'} • ${task.title ?? 'Untitled'} • ${task.provider ?? 'unknown'}`,
+      );
+      console.log(`Acceptance criteria: ${acCount}`);
+    }
+    console.log(
+      `Run: ${snapshot.runId} • ${run.status ?? 'unknown'} • ${run.phase ?? 'unknown'} • ${run.updatedAt ?? 'n/a'}`,
+    );
+    console.log(`State file: ${snapshot.runId}.json`);
   });
 
 cli
@@ -921,30 +1009,42 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
 
 cli
   .command('task start [taskRef]', 'Start a task')
+  .option('--title <title>', 'Local task title')
+  .option('--desc <desc>', 'Local task description')
+  .option('--ac <criteria>', 'Local task acceptance criteria (repeatable)')
+  .option('--from-file <path>', 'Load local task details from a file')
   .action((taskRef: string | undefined, options: CliOptions) =>
     withCliContext(options, 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         const mode = ctx.events.mode;
-        const inferred = taskRef ?? inferTaskRefFromBranch(ctx.repo.branch ?? '');
+        const localInput = await buildLocalTaskInput(options);
+        const inferred =
+          taskRef ??
+          inferTaskRefFromBranch(ctx.repo.branch ?? '') ??
+          localInput?.title ??
+          '';
 
         if (!inferred) {
           throw new Error(
-            'Task reference required. Provide a Linear ID, gh-<number>, or GitHub issue URL.',
+            'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
           );
         }
 
         const resolved = await resolveTask(inferred, {
           config: ctx.config,
           repoRoot: ctx.repo.repoRoot,
+          state: ctx.state,
+          runId: ctx.runId,
+          ...(localInput ? { localInput } : {}),
           bus: ctx.events.bus,
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         });
 
         console.log(
-          `Task: ${resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
+          `Task: ${resolved.task.key ?? resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
         );
 
-        const safeName = sanitizeName(resolved.task.id);
+        const safeName = sanitizeName(resolved.task.key ?? resolved.task.id);
         const worktree = await runStep(
           ctx,
           'git.worktree.create',
@@ -960,11 +1060,6 @@ cli
         );
 
         await normalizeClaudeSettings({ worktreePath: worktree.path });
-        await ensureArtifactsIgnored({
-          worktreePath: worktree.path,
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        });
 
         const installResult = await installDependencies({ worktreePath: worktree.path });
         if (!installResult.ok) {
@@ -982,6 +1077,43 @@ cli
       }),
     ),
   );
+
+async function buildLocalTaskInput(
+  options: CliOptions,
+): Promise<LocalTaskInput | undefined> {
+  const acValues = Array.isArray(options.ac)
+    ? options.ac
+    : options.ac
+      ? [options.ac]
+      : [];
+  const fromFile = options.fromFile?.trim();
+  let input: LocalTaskInput | undefined;
+
+  if (fromFile) {
+    const contents = await Bun.file(fromFile).text();
+    input = parseLocalTaskFile(contents);
+  }
+
+  if (!input && !options.title && !options.desc && acValues.length === 0) {
+    return undefined;
+  }
+
+  const merged: LocalTaskInput = {
+    title: options.title ?? input?.title ?? '',
+    ...(options.desc
+      ? { description: options.desc }
+      : input?.description
+        ? { description: input.description }
+        : {}),
+    ...(acValues.length > 0
+      ? { acceptanceCriteria: acValues }
+      : input?.acceptanceCriteria
+        ? { acceptanceCriteria: input.acceptanceCriteria }
+        : {}),
+  };
+
+  return merged;
+}
 
 cli
   .command('agent plan', 'Generate plan')
@@ -1080,8 +1212,10 @@ cli
           ...(options.dangerous ? { dangerous: true } : {}),
           sessions,
         };
-        await runImplementation(ctx, runOptions);
-        await runReviewLoop(ctx, runOptions);
+        const shouldReview = await runImplementation(ctx, runOptions);
+        if (shouldReview) {
+          await runReviewLoop(ctx, runOptions);
+        }
       }),
     ),
   );
@@ -1090,9 +1224,7 @@ cli
   .command('agent resume', 'Resume agent')
   .action((options: CliOptions) =>
     withCliContext(options, 'headless', async (ctx) =>
-      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), (sessions) =>
-        runRecovery(ctx, { sessions }),
-      ),
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), () => runRecovery(ctx)),
     ),
   );
 

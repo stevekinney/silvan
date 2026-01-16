@@ -1,20 +1,37 @@
-import { generateCiFixPlan } from '../agent/ci-triager';
+import { appendMessages } from 'conversationalist';
+import { ProseWriter } from 'prose-writer';
+
 import { executePlan } from '../agent/executor';
-import { generatePlan } from '../agent/planner';
-import { draftPullRequest } from '../agent/pr-writer';
-import { generateRecoveryPlan } from '../agent/recovery';
-import { createToolRegistry } from '../agent/registry';
-import { generateReviewFixPlan } from '../agent/reviewer';
 import { type Plan, planSchema } from '../agent/schemas';
 import type { SessionPool } from '../agent/session';
-import { decideVerification } from '../agent/verifier';
+import { generateCiFixPlan } from '../ai/cognition/ci-triager';
+import { generateExecutionKickoffPrompt } from '../ai/cognition/kickoff';
+import { generatePlan } from '../ai/cognition/planner';
+import { draftPullRequest } from '../ai/cognition/pr-writer';
+import { generateRecoveryPlan } from '../ai/cognition/recovery';
+import { classifyReviewThreads } from '../ai/cognition/review-classifier';
+import { generateReviewRemediationKickoffPrompt } from '../ai/cognition/review-kickoff';
+import { generateReviewFixPlan } from '../ai/cognition/reviewer';
+import { decideVerification } from '../ai/cognition/verifier';
+import { createConversationStore } from '../ai/conversation';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { createEnvelope, toEventError } from '../events/emit';
 import type { Phase, RunPhaseChanged, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
-import { fetchUnresolvedReviewComments, resolveReviewThread } from '../github/review';
+import {
+  fetchReviewThreadById,
+  fetchUnresolvedReviewComments,
+  resolveReviewThread,
+} from '../github/review';
+import { hashPrompt, renderPromptSummary } from '../prompts';
+import {
+  buildReviewPlanThreads,
+  type ReviewThreadFingerprint,
+  selectThreadsForContext,
+} from '../review/planning';
+import { type ArtifactEntry, readArtifact, writeArtifact } from '../state/artifacts';
 import {
   commentOnPrOpen,
   completeTask,
@@ -58,7 +75,7 @@ type StepRecord = {
   endedAt?: string;
   inputsDigest?: string;
   outputsDigest?: string;
-  artifacts?: Record<string, unknown>;
+  artifacts?: Record<string, ArtifactEntry>;
   error?: ReturnType<typeof toEventError>;
   lease?: { leaseId: string; startedAt: string; heartbeatAt: string };
 };
@@ -66,6 +83,7 @@ type StepRecord = {
 type RunStateData = Record<string, unknown> & {
   run?: RunMeta;
   steps?: Record<string, StepRecord>;
+  artifactsIndex?: Record<string, Record<string, ArtifactEntry>>;
 };
 
 const leaseStaleMs = 2 * 60 * 1000;
@@ -120,10 +138,79 @@ function getStepRecord(data: RunStateData, stepId: string): StepRecord | undefin
   return data.steps?.[stepId];
 }
 
+function getArtifactEntry(
+  data: RunStateData,
+  stepId: string,
+  name: string,
+): ArtifactEntry | undefined {
+  const index = data.artifactsIndex ?? {};
+  return index[stepId]?.[name];
+}
+
+async function storeArtifacts(
+  ctx: RunContext,
+  stepId: string,
+  artifacts?: Record<string, unknown>,
+): Promise<Record<string, ArtifactEntry> | undefined> {
+  if (!artifacts || Object.keys(artifacts).length === 0) return undefined;
+  const entries: Record<string, ArtifactEntry> = {};
+  for (const [name, data] of Object.entries(artifacts)) {
+    const entry = await writeArtifact({
+      state: ctx.state,
+      runId: ctx.runId,
+      stepId,
+      name,
+      data,
+    });
+    entries[name] = entry;
+  }
+  return entries;
+}
+
+async function recordArtifacts(
+  ctx: RunContext,
+  stepId: string,
+  artifacts?: Record<string, unknown>,
+): Promise<Record<string, ArtifactEntry> | undefined> {
+  const entries = await storeArtifacts(ctx, stepId, artifacts);
+  if (!entries) return undefined;
+  await updateState(ctx, (prev) => {
+    const artifactsIndex =
+      (prev['artifactsIndex'] as
+        | Record<string, Record<string, ArtifactEntry>>
+        | undefined) ?? {};
+    return {
+      ...prev,
+      artifactsIndex: {
+        ...artifactsIndex,
+        [stepId]: {
+          ...(artifactsIndex[stepId] ?? {}),
+          ...entries,
+        },
+      },
+    };
+  });
+  return entries;
+}
+
 function isLeaseStale(lease?: StepRecord['lease']): boolean {
   if (!lease?.heartbeatAt) return false;
   const last = new Date(lease.heartbeatAt).getTime();
   return Date.now() - last > leaseStaleMs;
+}
+
+function reviewRequestKey(options: {
+  prNumber: number;
+  reviewers: string[];
+  requestCopilot: boolean;
+}): string {
+  return hashString(
+    JSON.stringify({
+      prNumber: options.prNumber,
+      reviewers: [...options.reviewers].sort(),
+      requestCopilot: options.requestCopilot,
+    }),
+  );
 }
 
 async function createCheckpointCommit(
@@ -298,9 +385,18 @@ async function runStep<T>(
     const endedAt = new Date().toISOString();
     const outputPayload = JSON.stringify(result) ?? 'undefined';
     const outputsDigest = hashString(outputPayload);
+    const artifacts = await storeArtifacts(
+      ctx,
+      stepId,
+      options?.artifacts ? options.artifacts(result) : undefined,
+    );
     await updateState(ctx, (prev) => {
       const steps = (prev['steps'] as Record<string, StepRecord>) ?? {};
       const existing = steps[stepId] ?? { status: 'not_started' };
+      const artifactsIndex =
+        (prev['artifactsIndex'] as
+          | Record<string, Record<string, ArtifactEntry>>
+          | undefined) ?? {};
       return {
         ...prev,
         run: {
@@ -316,9 +412,20 @@ async function runStep<T>(
             status: 'done',
             endedAt,
             outputsDigest,
-            ...(options?.artifacts ? { artifacts: options.artifacts(result) } : {}),
+            ...(artifacts ? { artifacts } : {}),
           },
         },
+        ...(artifacts
+          ? {
+              artifactsIndex: {
+                ...artifactsIndex,
+                [stepId]: {
+                  ...(artifactsIndex[stepId] ?? {}),
+                  ...artifacts,
+                },
+              },
+            }
+          : {}),
       };
     });
     await ctx.events.bus.emit(
@@ -332,6 +439,7 @@ async function runStep<T>(
     );
     return result;
   } catch (error) {
+    void error;
     const endedAt = new Date().toISOString();
     await updateState(ctx, (prev) => {
       const steps = (prev['steps'] as Record<string, StepRecord>) ?? {};
@@ -355,6 +463,20 @@ async function runStep<T>(
         },
       };
     });
+    const errorStore = createConversationStore({
+      runId: ctx.runId,
+      state: ctx.state,
+      config: ctx.config,
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+    });
+    const errorMessage = error instanceof Error ? error.message : `Step ${stepId} failed`;
+    const errorConversation = appendMessages(await errorStore.load(), {
+      role: 'assistant',
+      content: `Error in ${stepId}: ${errorMessage}`,
+      metadata: { kind: 'error', protected: true },
+    });
+    await errorStore.save(errorConversation);
     await ctx.events.bus.emit(
       createEnvelope({
         type: 'run.step',
@@ -389,11 +511,17 @@ async function heartbeatStep(ctx: RunContext, stepId: string): Promise<void> {
 
 export async function runPlanner(ctx: RunContext, options: RunControllerOptions) {
   await changePhase(ctx, 'plan');
-  const model = getModelForPhase(ctx.config, 'plan');
-  const planBudgets = getBudgetsForPhase(ctx.config, 'plan');
-  const planSession = options.sessions?.get('plan', {
-    model,
-    permissionMode: 'plan',
+  const emitContext = {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+  };
+  const conversationStore = createConversationStore({
+    runId: ctx.runId,
+    state: ctx.state,
+    config: ctx.config,
+    bus: ctx.events.bus,
+    context: emitContext,
   });
   const taskResult = options.task
     ? {
@@ -408,6 +536,8 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
       ? await resolveTask(options.taskRef, {
           config: ctx.config,
           repoRoot: ctx.repo.repoRoot,
+          state: ctx.state,
+          runId: ctx.runId,
           bus: ctx.events.bus,
           context: {
             runId: ctx.runId,
@@ -417,20 +547,40 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
         })
       : undefined;
 
+  const kickoffPrompt = taskResult?.task
+    ? await runStep(
+        ctx,
+        'agent.kickoff',
+        'Generate kickoff prompt',
+        () =>
+          generateExecutionKickoffPrompt({
+            task: taskResult.task,
+            repoRoot: ctx.repo.repoRoot,
+            store: conversationStore,
+            config: ctx.config,
+            bus: ctx.events.bus,
+            context: {
+              ...emitContext,
+              ...(taskResult.task ? { taskId: taskResult.task.id } : {}),
+            },
+          }),
+        {
+          artifacts: (prompt) => ({ execution_kickoff: prompt }),
+        },
+      )
+    : undefined;
+
   const plan = await runStep(ctx, 'agent.plan.generate', 'Generate plan', () =>
     generatePlan({
       ...(taskResult ? { task: taskResult.task } : {}),
       ...(options.worktreeName ? { worktreeName: options.worktreeName } : {}),
       repoRoot: ctx.repo.repoRoot,
-      model,
-      ...planBudgets,
       ...(options.clarifications ? { clarifications: options.clarifications } : {}),
-      ...(planSession ? { session: planSession } : {}),
+      store: conversationStore,
+      config: ctx.config,
       bus: ctx.events.bus,
       context: {
-        runId: ctx.runId,
-        repoRoot: ctx.repo.repoRoot,
-        mode: ctx.events.mode,
+        ...emitContext,
         ...(taskResult?.task ? { taskId: taskResult.task.id } : {}),
       },
     }),
@@ -442,6 +592,22 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
     task: taskResult?.task,
     ...(taskResult?.ref ? { taskRef: taskResult.ref } : {}),
     ...(options.clarifications ? { clarifications: options.clarifications } : {}),
+    ...(kickoffPrompt
+      ? {
+          promptDigests: {
+            ...(typeof data['promptDigests'] === 'object' && data['promptDigests']
+              ? data['promptDigests']
+              : {}),
+            execution_kickoff: hashPrompt(kickoffPrompt),
+          },
+          promptSummaries: {
+            ...(typeof data['promptSummaries'] === 'object' && data['promptSummaries']
+              ? data['promptSummaries']
+              : {}),
+            execution_kickoff: renderPromptSummary(kickoffPrompt),
+          },
+        }
+      : {}),
     summary: {
       ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
       planDigest: hashString(JSON.stringify(plan)),
@@ -458,7 +624,10 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
   return plan;
 }
 
-export async function runImplementation(ctx: RunContext, options: RunControllerOptions) {
+export async function runImplementation(
+  ctx: RunContext,
+  options: RunControllerOptions,
+): Promise<boolean> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = getRunState((state?.data as Record<string, unknown>) ?? {});
   const planResult = planSchema.safeParse(data['plan']);
@@ -480,12 +649,21 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
 
   await changePhase(ctx, 'implement');
   const execModel = getModelForPhase(ctx.config, 'execute');
-  const verifyModel = getModelForPhase(ctx.config, 'verify');
-  const prModel = getModelForPhase(ctx.config, 'pr');
   const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
-  const verifyBudgets = getBudgetsForPhase(ctx.config, 'verify');
-  const prBudgets = getBudgetsForPhase(ctx.config, 'pr');
   const task = (data['task'] as Task | undefined) ?? undefined;
+  const emitContext = {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+    ...(task ? { taskId: task.id } : {}),
+  };
+  const conversationStore = createConversationStore({
+    runId: ctx.runId,
+    state: ctx.state,
+    config: ctx.config,
+    bus: ctx.events.bus,
+    context: emitContext,
+  });
   if (task) {
     const moveStep = getStepRecord(data, 'task.move_in_progress');
     if (moveStep?.status !== 'done') {
@@ -514,39 +692,67 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
           ctx,
           'agent.execute',
           'Execute plan',
-          () =>
-            executePlan({
+          async () => {
+            const execPrompt = new ProseWriter();
+            execPrompt.write('You are the implementation agent for Silvan.');
+            execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+            execPrompt.write('Do not invent file contents; use fs.read before edits.');
+            execPrompt.write('Keep changes minimal and aligned to the plan.');
+            execPrompt.write(
+              'Use silvan.plan.read to fetch the full plan before making edits.',
+            );
+            execPrompt.write('Use silvan.task.read to fetch the task details as needed.');
+            execPrompt.write('Return a brief summary of changes.');
+            execPrompt.write(`Plan digest: ${planDigest}`);
+
+            const execSnapshot = await conversationStore.append({
+              role: 'system',
+              content: execPrompt.toString().trimEnd(),
+              metadata: { kind: 'plan' },
+            });
+
+            const result = await executePlan({
+              snapshot: execSnapshot,
               model: execModel,
               repoRoot: ctx.repo.repoRoot,
               config: ctx.config,
               dryRun: Boolean(options.dryRun),
               allowDestructive: Boolean(options.apply),
               allowDangerous: Boolean(options.dangerous),
-              planDigest,
               ...(options.sessions ? { sessionPool: options.sessions } : {}),
               bus: ctx.events.bus,
-              context: {
-                runId: ctx.runId,
-                repoRoot: ctx.repo.repoRoot,
-                mode: ctx.events.mode,
-                ...(task ? { taskId: task.id } : {}),
-              },
+              context: emitContext,
               state: ctx.state,
               ...execBudgets,
               ...getToolBudget(ctx.config),
               heartbeat: () => heartbeatStep(ctx, 'agent.execute'),
               toolCallLog,
-            }),
-          { inputs: { planDigest } },
+            });
+
+            const execConversation = appendMessages(execSnapshot.conversation, {
+              role: 'assistant',
+              content: `Implementation summary: ${result}`,
+              metadata: { kind: 'plan', protected: true },
+            });
+            await conversationStore.save(execConversation);
+            return result;
+          },
+          {
+            inputs: { planDigest },
+            artifacts: () => ({ toolCalls: toolCallLog }),
+          },
         );
 
   await updateState(ctx, (data) => ({
     ...data,
     implementationSummary: summary,
-    toolCalls: toolCallLog,
+    toolCallSummary: {
+      total: toolCallLog.length,
+      failed: toolCallLog.filter((call) => !call.ok).length,
+    },
   }));
 
-  await runStep(
+  const implementationCheckpoint = await runStep(
     ctx,
     'git.checkpoint',
     'Checkpoint implementation',
@@ -556,20 +762,41 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
       artifacts: (result) => ({ checkpoint: result }),
     },
   );
+  if (implementationCheckpoint?.sha) {
+    await updateState(ctx, (data) => ({
+      ...data,
+      checkpoints: [
+        ...((data['checkpoints'] as string[]) ?? []),
+        implementationCheckpoint.sha,
+      ],
+    }));
+  }
 
   await changePhase(ctx, 'verify');
   const verifyStep = getStepRecord(data, 'verify.run');
-  const existingVerify = data['verifyReport'];
+  const existingVerify = data['verifySummary'];
   const verifyReport =
     verifyStep?.status === 'done' &&
     typeof existingVerify === 'object' &&
     existingVerify &&
     (existingVerify as { ok?: boolean }).ok === true
-      ? (existingVerify as { ok: boolean; results: unknown[] })
-      : await runStep(ctx, 'verify.run', 'Run verification', () =>
-          runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+      ? { ok: true, results: [] }
+      : await runStep(
+          ctx,
+          'verify.run',
+          'Run verification',
+          () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+          {
+            artifacts: (report) => ({ report }),
+          },
         );
-  await updateState(ctx, (data) => ({ ...data, verifyReport }));
+  await updateState(ctx, (data) => ({
+    ...data,
+    verifySummary: {
+      ok: verifyReport.ok,
+      lastRunAt: new Date().toISOString(),
+    },
+  }));
 
   if (!verifyReport.ok) {
     const results = (
@@ -585,73 +812,106 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
     }));
 
     const triage = triageVerificationFailures(results);
-    let decision = triage.decision;
-
-    if (options.apply && !triage.classified) {
-      const verifySession = options.sessions?.get('verify', {
-        model: verifyModel,
-        permissionMode: 'plan',
-      });
-      decision = await decideVerification({
-        model: verifyModel,
-        report: {
-          ok: verifyReport.ok,
-          results,
+    const decision = await runStep(
+      ctx,
+      'verify.decide',
+      'Decide verification next steps',
+      async () => {
+        if (options.apply && !triage.classified) {
+          return decideVerification({
+            report: {
+              ok: verifyReport.ok,
+              results,
+            },
+            store: conversationStore,
+            config: ctx.config,
+            ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+            context: emitContext,
+          });
+        }
+        return triage.decision;
+      },
+      {
+        inputs: {
+          classified: triage.classified,
+          commandCount: results.length,
         },
-        ...verifyBudgets,
-        ...(verifySession ? { session: verifySession } : {}),
-        ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      });
-    }
+        artifacts: (result) => ({ decision: result }),
+      },
+    );
 
-    await updateState(ctx, (data) => ({ ...data, verificationDecision: decision }));
+    await updateState(ctx, (data) => ({
+      ...data,
+      verificationDecisionSummary: {
+        commands: decision.commands,
+        askUser: decision.askUser ?? false,
+      },
+    }));
     throw new Error('Verification failed');
   }
 
   await changePhase(ctx, 'pr');
-  const githubToken = requireGitHubAuth(ctx.config);
+  let githubToken: string | undefined;
+  let githubConfig: { owner: string; repo: string };
+  try {
+    githubToken = requireGitHubAuth(ctx.config);
+    githubConfig = await requireGitHubConfig({
+      config: ctx.config,
+      repoRoot: ctx.repo.repoRoot,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      bus: ctx.events.bus,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    await updateState(ctx, (data) => ({
+      ...data,
+      summary: {
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
+        blockedReason: `GitHub not configured. Skipping PR and review steps. ${errorMessage}`,
+      },
+    }));
+    await changePhase(ctx, 'complete', 'github_unconfigured');
+    return false;
+  }
   const planSummary = plan.summary ?? 'Plan';
   const taskUrl = task?.url;
   const taskId = task?.id;
-  const prSession = options.sessions?.get('pr', {
-    model: prModel,
-    permissionMode: 'plan',
-  });
   const prDraftStep = getStepRecord(data, 'pr.draft');
+  const existingDraftEntry = getArtifactEntry(data, 'pr.draft', 'draft');
   const existingDraft =
-    typeof data['prDraft'] === 'object' && data['prDraft']
-      ? (data['prDraft'] as { title: string; body: string })
+    prDraftStep?.status === 'done' && existingDraftEntry
+      ? await readArtifact<{ title: string; body: string }>({ entry: existingDraftEntry })
       : undefined;
   const prDraft =
     prDraftStep?.status === 'done' && existingDraft
       ? existingDraft
-      : await runStep(ctx, 'pr.draft', 'Draft PR description', () =>
-          draftPullRequest({
-            model: prModel,
-            planSummary,
-            changesSummary: summary,
-            ...prBudgets,
-            ...(taskUrl ? { taskUrl } : {}),
-            ...(taskId ? { taskId } : {}),
-            ...(prSession ? { session: prSession } : {}),
-            bus: ctx.events.bus,
-            context: {
-              runId: ctx.runId,
-              repoRoot: ctx.repo.repoRoot,
-              mode: ctx.events.mode,
-            },
-          }),
+      : await runStep(
+          ctx,
+          'pr.draft',
+          'Draft PR description',
+          () =>
+            draftPullRequest({
+              planSummary,
+              changesSummary: summary,
+              ...(taskUrl ? { taskUrl } : {}),
+              ...(taskId ? { taskId } : {}),
+              store: conversationStore,
+              config: ctx.config,
+              bus: ctx.events.bus,
+              context: emitContext,
+            }),
+          {
+            artifacts: (draft) => ({ draft }),
+          },
         );
-  await updateState(ctx, (data) => ({ ...data, prDraft }));
+  await updateState(ctx, (data) => ({
+    ...data,
+    prDraftSummary: { title: prDraft.title, bodyDigest: hashString(prDraft.body) },
+  }));
 
-  const github = await requireGitHubConfig({
-    config: ctx.config,
-    repoRoot: ctx.repo.repoRoot,
-    context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-    bus: ctx.events.bus,
-  });
-  const { owner, repo } = github;
+  const { owner, repo } = githubConfig;
   const headBranch = ctx.repo.branch;
   const baseBranch = ctx.config.github.baseBranch ?? ctx.config.repo.defaultBranch;
   const prStep = getStepRecord(data, 'github.pr.open');
@@ -730,7 +990,14 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
     }
   }
   const reviewStep = getStepRecord(data, 'github.review.request');
-  if (reviewStep?.status !== 'done') {
+  const requestKey = reviewRequestKey({
+    prNumber: prResult.pr.number,
+    reviewers: ctx.config.github.reviewers,
+    requestCopilot: ctx.config.github.requestCopilot,
+  });
+  const existingRequestKey =
+    typeof data['reviewRequestKey'] === 'string' ? data['reviewRequestKey'] : undefined;
+  if (reviewStep?.status !== 'done' || existingRequestKey !== requestKey) {
     await runStep(ctx, 'github.review.request', 'Request reviewers', () =>
       requestReviewers({
         pr: prResult.pr,
@@ -741,22 +1008,38 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
     );
+    await updateState(ctx, (data) => ({ ...data, reviewRequestKey: requestKey }));
   }
 
-  await updateState(ctx, (data) => ({ ...data, prDraft, pr: prResult.pr }));
-  return prResult.pr;
+  await updateState(ctx, (data) => ({ ...data, pr: prResult.pr }));
+  return true;
 }
 
 export async function runReviewLoop(ctx: RunContext, options: RunControllerOptions) {
   await changePhase(ctx, 'review');
   const githubToken = requireGitHubAuth(ctx.config);
   const execModel = getModelForPhase(ctx.config, 'execute');
-  const reviewModel = getModelForPhase(ctx.config, 'review');
-  const verifyModel = getModelForPhase(ctx.config, 'verify');
   const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
-  const reviewBudgets = getBudgetsForPhase(ctx.config, 'review');
-  const verifyBudgets = getBudgetsForPhase(ctx.config, 'verify');
   const headBranch = ctx.repo.branch;
+  const reviewState = await ctx.state.readRunState(ctx.runId);
+  const reviewData = (reviewState?.data as Record<string, unknown>) ?? {};
+  const reviewTask =
+    typeof reviewData['task'] === 'object' && reviewData['task']
+      ? (reviewData['task'] as Task)
+      : undefined;
+  const emitContext = {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+    ...(reviewTask ? { taskId: reviewTask.id } : {}),
+  };
+  const conversationStore = createConversationStore({
+    runId: ctx.runId,
+    state: ctx.state,
+    config: ctx.config,
+    bus: ctx.events.bus,
+    context: emitContext,
+  });
   const github = await requireGitHubConfig({
     config: ctx.config,
     repoRoot: ctx.repo.repoRoot,
@@ -792,58 +1075,85 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
     }));
 
     if (ciResult.state === 'failing') {
-      const ciSession = options.sessions?.get('verify', {
-        model: verifyModel,
-        permissionMode: 'plan',
-      });
       const ciChecks = ciResult.checks ?? [];
-      const ciPlan = await runStep(ctx, 'ci.fix.plan', 'Plan CI fixes', () =>
-        generateCiFixPlan({
-          model: verifyModel,
-          ci: {
-            state: ciResult.state,
-            ...(ciResult.summary ? { summary: ciResult.summary } : {}),
-            checks: ciChecks.map((check) => ({
-              name: check.name,
-              ...(check.conclusion ? { conclusion: check.conclusion } : {}),
-              ...(check.url ? { url: check.url } : {}),
-            })),
-          },
-          ...verifyBudgets,
-          ...(ciSession ? { session: ciSession } : {}),
-          ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        }),
+      const ciPlan = await runStep(
+        ctx,
+        'ci.fix.plan',
+        'Plan CI fixes',
+        () =>
+          generateCiFixPlan({
+            ci: {
+              state: ciResult.state,
+              ...(ciResult.summary ? { summary: ciResult.summary } : {}),
+              checks: ciChecks.map((check) => ({
+                name: check.name,
+                ...(check.conclusion ? { conclusion: check.conclusion } : {}),
+                ...(check.url ? { url: check.url } : {}),
+              })),
+            },
+            store: conversationStore,
+            config: ctx.config,
+            ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+            context: emitContext,
+          }),
+        {
+          artifacts: (result) => ({ plan: result }),
+        },
       );
 
-      await updateState(ctx, (data) => ({ ...data, ciFixPlan: ciPlan }));
+      await updateState(ctx, (data) => ({
+        ...data,
+        ciFixSummary: {
+          summary: ciPlan.summary,
+          steps: ciPlan.steps.length,
+        },
+      }));
 
       const ciPlanDigest = hashString(JSON.stringify(ciPlan));
       await runStep(ctx, 'ci.fix.apply', 'Apply CI fixes', () =>
-        executePlan({
-          model: execModel,
-          repoRoot: ctx.repo.repoRoot,
-          config: ctx.config,
-          dryRun: Boolean(options.dryRun),
-          allowDestructive: Boolean(options.apply),
-          allowDangerous: Boolean(options.dangerous),
-          planDigest: ciPlanDigest,
-          ...execBudgets,
-          ...getToolBudget(ctx.config),
-          ...(options.sessions ? { sessionPool: options.sessions } : {}),
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
+        (async () => {
+          const execPrompt = new ProseWriter();
+          execPrompt.write('You are the implementation agent for Silvan.');
+          execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+          execPrompt.write('Do not invent file contents; use fs.read before edits.');
+          execPrompt.write('Keep changes minimal and aligned to the plan.');
+          execPrompt.write(
+            'Use silvan.plan.read to fetch the full plan before making edits.',
+          );
+          execPrompt.write('Return a brief summary of changes.');
+          execPrompt.write(`Plan digest: ${ciPlanDigest}`);
+
+          const execSnapshot = await conversationStore.append({
+            role: 'system',
+            content: execPrompt.toString().trimEnd(),
+            metadata: { kind: 'plan' },
+          });
+
+          const result = await executePlan({
+            snapshot: execSnapshot,
+            model: execModel,
             repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-          state: ctx.state,
-          heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
-        }),
+            config: ctx.config,
+            dryRun: Boolean(options.dryRun),
+            allowDestructive: Boolean(options.apply),
+            allowDangerous: Boolean(options.dangerous),
+            ...execBudgets,
+            ...getToolBudget(ctx.config),
+            ...(options.sessions ? { sessionPool: options.sessions } : {}),
+            bus: ctx.events.bus,
+            context: emitContext,
+            state: ctx.state,
+            heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
+          });
+
+          const execConversation = appendMessages(execSnapshot.conversation, {
+            role: 'assistant',
+            content: `CI fix summary: ${result}`,
+            metadata: { kind: 'ci', protected: true },
+          });
+          await conversationStore.save(execConversation);
+          return result;
+        })(),
       );
 
       const ciVerify = await runStep(ctx, 'ci.fix.verify', 'Verify CI fixes', () =>
@@ -929,167 +1239,370 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       break;
     }
 
-    type ReviewThreadInput = {
-      threadId: string;
-      comments: Array<{
-        id: string;
-        path?: string | null;
-        line?: number | null;
-        bodyDigest: string;
-        excerpt?: string;
-      }>;
-      isOutdated: boolean;
-    };
+    const threadFingerprints = review.comments.reduce<
+      Record<string, ReviewThreadFingerprint>
+    >((acc, comment) => {
+      const entry = (acc[comment.threadId] ??= {
+        threadId: comment.threadId,
+        comments: [],
+        isOutdated: comment.isOutdated,
+      });
+      entry.comments.push({
+        id: comment.id,
+        path: comment.path,
+        line: comment.line,
+        bodyDigest: hashString(comment.body),
+        excerpt: comment.body.slice(0, 160),
+      });
+      return acc;
+    }, {});
 
-    const threads = review.comments.reduce<Record<string, ReviewThreadInput>>(
-      (acc, comment) => {
-        const entry = (acc[comment.threadId] ??= {
-          threadId: comment.threadId,
-          comments: [],
-          isOutdated: comment.isOutdated,
-        });
-        entry.comments.push({
-          id: comment.id,
-          path: comment.path,
-          line: comment.line,
-          bodyDigest: hashString(comment.body),
-          excerpt: comment.body.slice(0, 200),
-        });
-        return acc;
+    await recordArtifacts(ctx, 'github.review.fetch', {
+      threads: Object.values(threadFingerprints),
+    });
+
+    const reviewKickoff = await runStep(
+      ctx,
+      'review.kickoff',
+      'Generate review remediation kickoff',
+      () =>
+        generateReviewRemediationKickoffPrompt({
+          task: reviewTask ?? {
+            id: 'unknown',
+            key: 'unknown',
+            provider: 'local',
+            title: 'Unknown task',
+            description: '',
+            acceptanceCriteria: [],
+            labels: [],
+          },
+          pr: {
+            id: `${review.pr.owner}/${review.pr.repo}#${review.pr.number}`,
+            ...(review.pr.url ? { url: review.pr.url } : {}),
+            branch: headBranch,
+          },
+          review: {
+            unresolvedThreadCount: review.comments.length,
+            threadFingerprints: Object.values(threadFingerprints).map((thread) => ({
+              threadId: thread.threadId,
+              commentIds: thread.comments.map((comment) => comment.id),
+              path: thread.comments[0]?.path ?? null,
+              line: thread.comments[0]?.line ?? 0,
+              isOutdated: thread.isOutdated,
+              bodyHash: thread.comments[0]?.bodyDigest ?? '',
+              excerpt: thread.comments[0]?.excerpt ?? '',
+            })),
+          },
+          ci: {
+            state: ciResult.state,
+            ...(ciResult.summary ? { summary: ciResult.summary } : {}),
+            failedChecks: (ciResult.checks ?? [])
+              .filter((check) => check.conclusion === 'failure')
+              .map((check) => check.name),
+          },
+          repo: {
+            frameworks: [],
+            verificationCommands: ctx.config.verify.commands.map(
+              (command) => command.cmd,
+            ),
+          },
+          store: conversationStore,
+          config: ctx.config,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        artifacts: (prompt) => ({ review_remediation_kickoff: prompt }),
       },
-      {},
     );
 
     await updateState(ctx, (data) => ({
       ...data,
-      reviewThreads: Object.values(threads),
+      promptDigests: {
+        ...(typeof data['promptDigests'] === 'object' && data['promptDigests']
+          ? data['promptDigests']
+          : {}),
+        review_remediation_kickoff: hashPrompt(reviewKickoff),
+      },
+      promptSummaries: {
+        ...(typeof data['promptSummaries'] === 'object' && data['promptSummaries']
+          ? data['promptSummaries']
+          : {}),
+        review_remediation_kickoff: renderPromptSummary(reviewKickoff),
+      },
     }));
 
-    const reviewSession = options.sessions?.get('review', {
-      model: reviewModel,
-      permissionMode: 'plan',
-    });
-
-    const reviewRegistry = createToolRegistry({
-      repoRoot: ctx.repo.repoRoot,
-      config: ctx.config,
-      dryRun: true,
-      allowDestructive: false,
-      allowDangerous: false,
-      emitContext: {
-        runId: ctx.runId,
-        repoRoot: ctx.repo.repoRoot,
-        mode: ctx.events.mode,
+    const classification = await runStep(
+      ctx,
+      'review.classify',
+      'Classify review threads',
+      () =>
+        classifyReviewThreads({
+          threads: Object.values(threadFingerprints),
+          store: conversationStore,
+          config: ctx.config,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        artifacts: (result) => ({ classification: result }),
+        inputs: { threadCount: review.comments.length },
       },
-      ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-      state: ctx.state,
-    });
-    const fixPlan = await runStep(ctx, 'review.plan', 'Plan review fixes', () =>
-      generateReviewFixPlan({
-        model: reviewModel,
-        threads: Object.values(threads),
-        ...reviewBudgets,
-        ...(reviewSession ? { session: reviewSession } : {}),
-        mcpServers: { 'silvan-tools': reviewRegistry.sdkServer },
-        allowedTools: reviewRegistry.toolNames,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      }),
     );
 
     await updateState(ctx, (data) => ({
       ...data,
-      reviewFixPlan: fixPlan,
+      reviewClassificationSummary: {
+        actionable: classification.actionableThreadIds.length,
+        ignored: classification.ignoredThreadIds.length,
+        needsContext: classification.needsContextThreadIds.length,
+      },
+    }));
+    const fingerprintList = Object.values(threadFingerprints);
+    const threadsNeedingContext = selectThreadsForContext({
+      fingerprints: fingerprintList,
+      needsContextThreadIds: classification.needsContextThreadIds,
+    });
+
+    const detailedThreads = threadsNeedingContext.length
+      ? await runStep(
+          ctx,
+          'review.thread.fetch',
+          'Fetch full review threads',
+          async () => {
+            const results: Array<{
+              threadId: string;
+              comments: Array<{
+                id: string;
+                path: string | null;
+                line: number | null;
+                body: string;
+                url?: string | null;
+              }>;
+              isOutdated: boolean;
+            }> = [];
+
+            for (const threadId of threadsNeedingContext) {
+              const thread = await fetchReviewThreadById({
+                threadId,
+                token: githubToken,
+                bus: ctx.events.bus,
+                context: {
+                  runId: ctx.runId,
+                  repoRoot: ctx.repo.repoRoot,
+                  mode: ctx.events.mode,
+                },
+              });
+              results.push({
+                threadId: thread.id,
+                isOutdated: thread.isOutdated,
+                comments: thread.comments.nodes.map((comment) => ({
+                  id: comment.id,
+                  path: comment.path,
+                  line: comment.line,
+                  body: comment.body,
+                  url: comment.url ?? null,
+                })),
+              });
+            }
+            return results;
+          },
+          {
+            inputs: { threadCount: threadsNeedingContext.length },
+            artifacts: (result) => ({ threads: result }),
+          },
+        )
+      : [];
+
+    const threadsForPlan = buildReviewPlanThreads({
+      fingerprints: fingerprintList,
+      detailedThreads,
+      actionableThreadIds: classification.actionableThreadIds,
+      ignoredThreadIds: classification.ignoredThreadIds,
+    });
+
+    const fixPlan = await runStep(
+      ctx,
+      'review.plan',
+      'Plan review fixes',
+      () =>
+        generateReviewFixPlan({
+          threads: threadsForPlan,
+          store: conversationStore,
+          config: ctx.config,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        inputs: {
+          actionable: classification.actionableThreadIds.length,
+          ignored: classification.ignoredThreadIds.length,
+        },
+        artifacts: (result) => ({ plan: result }),
+      },
+    );
+
+    await updateState(ctx, (data) => ({
+      ...data,
+      reviewFixPlanSummary: {
+        actionable: fixPlan.threads.filter((thread) => thread.actionable).length,
+        ignored: fixPlan.threads.filter((thread) => !thread.actionable).length,
+      },
       reviewIteration: iteration + 1,
     }));
 
-    const reviewPlan: Plan = {
-      summary: 'Review fixes',
-      steps: fixPlan.threads.map((thread) => ({
-        id: thread.threadId,
-        title: thread.summary,
-        description: thread.summary,
-      })),
-      verification: fixPlan.verification ?? [],
-    };
+    const actionableThreads = fixPlan.threads.filter((thread) => thread.actionable);
+    if (
+      actionableThreads.length === 0 &&
+      (!fixPlan.resolveThreads || fixPlan.resolveThreads.length === 0)
+    ) {
+      throw new Error('No actionable review fixes identified; manual review required');
+    }
+    if (actionableThreads.length > 0) {
+      const reviewPlan: Plan = {
+        summary: 'Review fixes',
+        steps: actionableThreads.map((thread) => ({
+          id: thread.threadId,
+          title: thread.summary,
+          description: thread.summary,
+        })),
+        verification: fixPlan.verification ?? [],
+      };
+      const reviewPlanDigest = hashString(JSON.stringify(reviewPlan));
+      await runStep(ctx, 'review.apply', 'Apply review fixes', () =>
+        (async () => {
+          const execPrompt = new ProseWriter();
+          execPrompt.write('You are the implementation agent for Silvan.');
+          execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+          execPrompt.write('Do not invent file contents; use fs.read before edits.');
+          execPrompt.write('Keep changes minimal and aligned to the plan.');
+          execPrompt.write(
+            'Use silvan.plan.read to fetch the full plan before making edits.',
+          );
+          execPrompt.write('Return a brief summary of changes.');
+          execPrompt.write(`Plan digest: ${reviewPlanDigest}`);
 
-    const reviewPlanDigest = hashString(JSON.stringify(reviewPlan));
-    await runStep(ctx, 'review.apply', 'Apply review fixes', () =>
-      executePlan({
-        model: execModel,
-        repoRoot: ctx.repo.repoRoot,
-        config: ctx.config,
-        dryRun: Boolean(options.dryRun),
-        allowDestructive: Boolean(options.apply),
-        allowDangerous: Boolean(options.dangerous),
-        planDigest: reviewPlanDigest,
-        ...execBudgets,
-        ...getToolBudget(ctx.config),
-        ...(options.sessions ? { sessionPool: options.sessions } : {}),
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-        state: ctx.state,
-        heartbeat: () => heartbeatStep(ctx, 'review.apply'),
-      }),
-    );
+          const execSnapshot = await conversationStore.append({
+            role: 'system',
+            content: execPrompt.toString().trimEnd(),
+            metadata: { kind: 'review' },
+          });
 
-    const verifyReport = await runStep(ctx, 'review.verify', 'Verify review fixes', () =>
-      runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
-    );
-    await updateState(ctx, (data) => ({
-      ...data,
-      reviewVerifyReport: verifyReport,
-    }));
-    if (!verifyReport.ok) {
-      throw new Error('Verification failed during review loop');
+          const result = await executePlan({
+            snapshot: execSnapshot,
+            model: execModel,
+            repoRoot: ctx.repo.repoRoot,
+            config: ctx.config,
+            dryRun: Boolean(options.dryRun),
+            allowDestructive: Boolean(options.apply),
+            allowDangerous: Boolean(options.dangerous),
+            ...execBudgets,
+            ...getToolBudget(ctx.config),
+            ...(options.sessions ? { sessionPool: options.sessions } : {}),
+            bus: ctx.events.bus,
+            context: emitContext,
+            state: ctx.state,
+            heartbeat: () => heartbeatStep(ctx, 'review.apply'),
+          });
+
+          const execConversation = appendMessages(execSnapshot.conversation, {
+            role: 'assistant',
+            content: `Review fix summary: ${result}`,
+            metadata: { kind: 'review', protected: true },
+          });
+          await conversationStore.save(execConversation);
+          return result;
+        })(),
+      );
+
+      const verifyReport = await runStep(
+        ctx,
+        'review.verify',
+        'Verify review fixes',
+        () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+        { artifacts: (report) => ({ report }) },
+      );
+      await updateState(ctx, (data) => ({
+        ...data,
+        reviewVerifySummary: {
+          ok: verifyReport.ok,
+          lastRunAt: new Date().toISOString(),
+        },
+      }));
+      if (!verifyReport.ok) {
+        throw new Error('Verification failed during review loop');
+      }
     }
 
-    await runStep(
-      ctx,
-      'review.checkpoint',
-      'Checkpoint review fixes',
-      () => createCheckpointCommit(ctx, `silvan: checkpoint review-${iteration + 1}`),
-      {
-        inputs: { iteration: iteration + 1 },
-        artifacts: (result) => ({ checkpoint: result }),
-      },
-    );
+    if (actionableThreads.length > 0) {
+      const reviewCheckpoint = await runStep(
+        ctx,
+        'review.checkpoint',
+        'Checkpoint review fixes',
+        () => createCheckpointCommit(ctx, `silvan: checkpoint review-${iteration + 1}`),
+        {
+          inputs: { iteration: iteration + 1 },
+          artifacts: (result) => ({ checkpoint: result }),
+        },
+      );
+      if (reviewCheckpoint?.sha) {
+        await updateState(ctx, (data) => ({
+          ...data,
+          checkpoints: [
+            ...((data['checkpoints'] as string[]) ?? []),
+            reviewCheckpoint.sha,
+          ],
+        }));
+      }
 
-    await runStep(ctx, 'review.push', 'Push review fixes', () =>
-      runGit(['push', 'origin', headBranch], {
-        cwd: ctx.repo.repoRoot,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
-      }),
-    );
+      await runStep(ctx, 'review.push', 'Push review fixes', () =>
+        runGit(['push', 'origin', headBranch], {
+          cwd: ctx.repo.repoRoot,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
+        }),
+      );
 
-    const ciAfter = await runStep(ctx, 'ci.wait', 'Wait for CI', () =>
-      waitForCi({
-        owner,
-        repo,
-        headBranch,
-        token: githubToken,
-        pollIntervalMs: 15000,
-        timeoutMs: 900000,
-        onHeartbeat: () => heartbeatStep(ctx, 'ci.wait'),
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      }),
-    );
-    await updateState(ctx, (data) => ({
-      ...data,
-      summary: {
-        ...(typeof data['summary'] === 'object' && data['summary']
-          ? data['summary']
-          : {}),
-        ci: ciAfter.state,
-      },
-    }));
-    if (ciAfter.state === 'failing') {
-      throw new Error('CI failed during review loop');
+      const ciAfter = await runStep(ctx, 'ci.wait', 'Wait for CI', () =>
+        waitForCi({
+          owner,
+          repo,
+          headBranch,
+          token: githubToken,
+          pollIntervalMs: 15000,
+          timeoutMs: 900000,
+          onHeartbeat: () => heartbeatStep(ctx, 'ci.wait'),
+          bus: ctx.events.bus,
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
+        }),
+      );
+      await updateState(ctx, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          ci: ciAfter.state,
+        },
+      }));
+      if (ciAfter.state === 'failing') {
+        throw new Error('CI failed during review loop');
+      }
     }
 
     if (fixPlan.resolveThreads?.length) {
+      const resolvedState = await ctx.state.readRunState(ctx.runId);
+      const resolvedData = (resolvedState?.data as Record<string, unknown>) ?? {};
+      const resolvedThreads = new Set(
+        Array.isArray(resolvedData['resolvedThreads'])
+          ? (resolvedData['resolvedThreads'] as string[])
+          : [],
+      );
       for (const threadId of fixPlan.resolveThreads) {
+        if (resolvedThreads.has(threadId)) continue;
         await runStep(ctx, 'review.resolve', 'Resolve review thread', () =>
           resolveReviewThread({
             threadId,
@@ -1103,45 +1616,89 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
             },
           }),
         );
+        resolvedThreads.add(threadId);
+        await updateState(ctx, (data) => ({
+          ...data,
+          resolvedThreads: Array.from(resolvedThreads),
+        }));
       }
     }
 
-    await runStep(ctx, 'github.review.request', 'Re-request reviewers', () =>
-      requestReviewers({
-        pr: review.pr,
-        reviewers: ctx.config.github.reviewers,
-        requestCopilot: ctx.config.github.requestCopilot,
-        token: githubToken,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      }),
+    const reRequestKey = reviewRequestKey({
+      prNumber: review.pr.number,
+      reviewers: ctx.config.github.reviewers,
+      requestCopilot: ctx.config.github.requestCopilot,
+    });
+    const reRequestKeyWithIteration = hashString(
+      JSON.stringify({ key: reRequestKey, iteration: iteration + 1 }),
     );
+    const latestState = await ctx.state.readRunState(ctx.runId);
+    const latestData = (latestState?.data as Record<string, unknown>) ?? {};
+    const existingReRequestKey =
+      typeof latestData['reviewRequestKey'] === 'string'
+        ? latestData['reviewRequestKey']
+        : undefined;
+    if (existingReRequestKey !== reRequestKeyWithIteration) {
+      await runStep(ctx, 'github.review.request', 'Re-request reviewers', () =>
+        requestReviewers({
+          pr: review.pr,
+          reviewers: ctx.config.github.reviewers,
+          requestCopilot: ctx.config.github.requestCopilot,
+          token: githubToken,
+          bus: ctx.events.bus,
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
+        }),
+      );
+      await updateState(ctx, (data) => ({
+        ...data,
+        reviewRequestKey: reRequestKeyWithIteration,
+      }));
+    }
   }
 }
 
-export async function runRecovery(
-  ctx: RunContext,
-  options: { sessions?: SessionPool } = {},
-): Promise<void> {
+export async function runRecovery(ctx: RunContext): Promise<void> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = (state?.data as Record<string, unknown>) ?? {};
-  const model = getModelForPhase(ctx.config, 'recovery');
-  const recoveryBudgets = getBudgetsForPhase(ctx.config, 'recovery');
-  const recoverySession = options.sessions?.get('recovery', {
-    model,
-    permissionMode: 'plan',
+  const emitContext = {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+  };
+  const conversationStore = createConversationStore({
+    runId: ctx.runId,
+    state: ctx.state,
+    config: ctx.config,
+    bus: ctx.events.bus,
+    context: emitContext,
   });
-  const plan = await runStep(ctx, 'agent.recovery.plan', 'Plan recovery', () =>
-    generateRecoveryPlan({
-      model,
-      runState: data,
-      ...recoveryBudgets,
-      ...(recoverySession ? { session: recoverySession } : {}),
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-    }),
+  const plan = await runStep(
+    ctx,
+    'agent.recovery.plan',
+    'Plan recovery',
+    () =>
+      generateRecoveryPlan({
+        runState: data,
+        store: conversationStore,
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: emitContext,
+      }),
+    {
+      artifacts: (result) => ({ plan: result }),
+    },
   );
-  await updateState(ctx, (prev) => ({ ...prev, recovery: plan }));
+  await updateState(ctx, (prev) => ({
+    ...prev,
+    recoverySummary: {
+      nextAction: plan.nextAction,
+      reason: plan.reason,
+    },
+  }));
 
   switch (plan.nextAction) {
     case 'rerun_verification': {
@@ -1151,10 +1708,17 @@ export async function runRecovery(
         'recovery.verify',
         'Rerun verification',
         () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+        { artifacts: (report) => ({ report }) },
       );
       await updateState(ctx, (prev) => ({
         ...prev,
-        recoveryResult: { action: plan.nextAction, verifyReport },
+        recoveryResult: {
+          action: plan.nextAction,
+          verifySummary: {
+            ok: verifyReport.ok,
+            lastRunAt: new Date().toISOString(),
+          },
+        },
       }));
       if (!verifyReport.ok) {
         throw new Error('Verification failed during recovery');
@@ -1260,7 +1824,10 @@ export async function resumeRun(
   }
 
   if (run?.phase === 'implement' || run?.phase === 'verify' || run?.phase === 'pr') {
-    await runImplementation(ctx, options);
+    const shouldReview = await runImplementation(ctx, options);
+    if (!shouldReview) {
+      return;
+    }
     return;
   }
 
@@ -1273,7 +1840,5 @@ export async function resumeRun(
     return;
   }
 
-  await runRecovery(ctx, {
-    ...(options.sessions ? { sessions: options.sessions } : {}),
-  });
+  await runRecovery(ctx);
 }

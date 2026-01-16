@@ -8,7 +8,7 @@
         "@anthropic-ai/claude-agent-sdk": "^0.2.7",
         "@lasercat/homogenaize": "^1.2.41",
         "@linear/sdk": "^70.0.0",
-        "armorer": "^0.4.0",
+        "armorer": "^0.5.0",
         "cac": "^6.7.14",
         "change-case": "^5.4.4",
         "conversationalist": "^0.0.10",
@@ -303,7 +303,7 @@
 
     "argparse": ["argparse@2.0.1", "", {}, "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q=="],
 
-    "armorer": ["armorer@0.4.0", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.25.2", "event-emission": "0.2.0" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-CRO6qipM5QXqFHxXqY0YQ6Gi0Osx/RGT1j4bXi4AOeF9LkMfQA3IUk1sHX9I8ScbAsSLWhQy39FTSyvra1qm9Q=="],
+    "armorer": ["armorer@0.5.0", "", { "dependencies": { "@anthropic-ai/claude-agent-sdk": "^0.2.6", "@modelcontextprotocol/sdk": "^1.25.2", "event-emission": "0.2.0" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-oiIkkqKNcONWiUm9xYi6tEvk2lboJu4qvOU2TTCyqdhw9xQUuViCBPeE6J4nc8zLQSCpyQ+3iPahQwe5PSE/Gw=="],
 
     "array-buffer-byte-length": ["array-buffer-byte-length@1.0.2", "", { "dependencies": { "call-bound": "^1.0.3", "is-array-buffer": "^3.0.5" } }, "sha512-LHE+8BuR7RYGDKvnrmcuSq3tDcKv9OFEXQt/HpbZhY7V6h0zlUXutnAD82GiFx9rdieCMjkvtcsPqBwgUl1Iiw=="],
 

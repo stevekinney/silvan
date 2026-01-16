@@ -4,6 +4,7 @@ import { moveLinearTicket } from '../linear/linear';
 import type { Task } from './types';
 
 export async function moveTaskToInProgress(task: Task, config: Config): Promise<void> {
+  if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.inProgress;
     if (!config.task.providers.enabled.includes('linear') || !state) return;
@@ -15,6 +16,7 @@ export async function moveTaskToInProgress(task: Task, config: Config): Promise<
 }
 
 export async function moveTaskToInReview(task: Task, config: Config): Promise<void> {
+  if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.inReview;
     if (!config.task.providers.enabled.includes('linear') || !state) return;
@@ -26,6 +28,7 @@ export async function moveTaskToInReview(task: Task, config: Config): Promise<vo
 }
 
 export async function completeTask(task: Task, config: Config): Promise<void> {
+  if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.done;
     if (!config.task.providers.enabled.includes('linear') || !state) return;
@@ -45,6 +48,7 @@ export async function commentOnPrOpen(
   config: Config,
   prUrl: string,
 ): Promise<void> {
+  if (task.provider === 'local') return;
   if (task.provider !== 'github' || !config.task.github.commentOnPrOpen) return;
   const meta = task.metadata as
     | { owner?: string; repo?: string; number?: number }

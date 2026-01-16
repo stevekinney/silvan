@@ -5,8 +5,8 @@
     "task": {
       "default": {
         "providers": {
-          "enabled": ["linear"],
-          "default": "linear"
+          "enabled": ["local"],
+          "default": "local"
         },
         "github": {
           "closeOnSuccess": false,
@@ -22,23 +22,23 @@
       "properties": {
         "providers": {
           "default": {
-            "enabled": ["linear"],
-            "default": "linear"
+            "enabled": ["local"],
+            "default": "local"
           },
           "type": "object",
           "properties": {
             "enabled": {
-              "default": ["linear"],
+              "default": ["local"],
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": ["linear", "github"]
+                "enum": ["linear", "github", "local"]
               }
             },
             "default": {
-              "default": "linear",
+              "default": "local",
               "type": "string",
-              "enum": ["linear", "github"]
+              "enum": ["linear", "github", "local"]
             }
           },
           "required": ["enabled", "default"],
@@ -275,6 +275,19 @@
         "toolLimits": {},
         "sessions": {
           "persist": false
+        },
+        "cognition": {
+          "provider": "anthropic",
+          "fallbackProviders": [],
+          "modelByTask": {}
+        },
+        "conversation": {
+          "pruning": {
+            "maxTurns": 80,
+            "maxBytes": 200000,
+            "summarizeAfterTurns": 30,
+            "keepLastTurns": 20
+          }
         }
       },
       "type": "object",
@@ -508,9 +521,135 @@
           },
           "required": ["persist"],
           "additionalProperties": false
+        },
+        "cognition": {
+          "default": {
+            "provider": "anthropic",
+            "fallbackProviders": [],
+            "modelByTask": {}
+          },
+          "type": "object",
+          "properties": {
+            "provider": {
+              "default": "anthropic",
+              "type": "string",
+              "enum": ["anthropic", "openai", "gemini"]
+            },
+            "fallbackProviders": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["anthropic", "openai", "gemini"]
+              }
+            },
+            "modelByTask": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "kickoffPrompt": {
+                  "type": "string"
+                },
+                "plan": {
+                  "type": "string"
+                },
+                "reviewKickoff": {
+                  "type": "string"
+                },
+                "reviewClassify": {
+                  "type": "string"
+                },
+                "reviewCluster": {
+                  "type": "string"
+                },
+                "ciTriage": {
+                  "type": "string"
+                },
+                "verificationSummary": {
+                  "type": "string"
+                },
+                "recovery": {
+                  "type": "string"
+                },
+                "prDraft": {
+                  "type": "string"
+                },
+                "conversationSummary": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["provider", "fallbackProviders", "modelByTask"],
+          "additionalProperties": false
+        },
+        "conversation": {
+          "default": {
+            "pruning": {
+              "maxTurns": 80,
+              "maxBytes": 200000,
+              "summarizeAfterTurns": 30,
+              "keepLastTurns": 20
+            }
+          },
+          "type": "object",
+          "properties": {
+            "pruning": {
+              "default": {
+                "maxTurns": 80,
+                "maxBytes": 200000,
+                "summarizeAfterTurns": 30,
+                "keepLastTurns": 20
+              },
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "default": 80,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBytes": {
+                  "default": 200000,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "summarizeAfterTurns": {
+                  "default": 30,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "keepLastTurns": {
+                  "default": 20,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "maxTurns",
+                "maxBytes",
+                "summarizeAfterTurns",
+                "keepLastTurns"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": ["pruning"],
+          "additionalProperties": false
         }
       },
-      "required": ["models", "budgets", "toolLimits", "sessions"],
+      "required": [
+        "models",
+        "budgets",
+        "toolLimits",
+        "sessions",
+        "cognition",
+        "conversation"
+      ],
       "additionalProperties": false
     },
     "review": {

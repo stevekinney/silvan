@@ -38,6 +38,7 @@ export async function fetchGitHubTask(
 
   return {
     id: `gh-${issue.data.number}`,
+    key: `gh-${issue.data.number}`,
     provider: 'github',
     title: issue.data.title ?? `Issue #${issue.data.number}`,
     description: body,

@@ -1,11 +1,6 @@
-import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type {
-  ToolContext as ArmorerToolContext,
-  ToolMetadata,
-  ToolPolicyDecision,
-} from 'armorer';
+import type { ToolContext as ArmorerToolContext, ToolMetadata } from 'armorer';
 import { createArmorer, createTool } from 'armorer';
+import { createClaudeAgentSdkServer } from 'armorer/claude-agent-sdk';
 import { z } from 'zod';
 
 import type { Config } from '../config/schema';
@@ -18,6 +13,7 @@ import {
   fetchUnresolvedReviewComments,
   resolveReviewThread,
 } from '../github/review';
+import { type ArtifactEntry, readArtifact } from '../state/artifacts';
 import type { StateStore } from '../state/store';
 
 export type ToolPolicy = {
@@ -44,39 +40,7 @@ type ToolDefinition<TSchema extends z.ZodObject<z.ZodRawShape>> = {
   execute: (params: z.infer<TSchema>, ctx: ToolContext) => Promise<unknown>;
 };
 
-const readOnlyHint = { readOnly: true, mcp: { annotations: { readOnlyHint: true } } };
-
-function withReadOnlyHint(metadata?: ToolMetadata): ToolMetadata {
-  return {
-    ...readOnlyHint,
-    ...(metadata ?? {}),
-  };
-}
-
-// File operations are provided by Claude Code; the registry focuses on repo/API tools.
-function enforcePolicy(
-  toolDef: ToolDefinition<z.ZodObject<z.ZodRawShape>>,
-  ctx: ToolContext,
-): ToolPolicyDecision | void {
-  const metadata = toolDef.metadata;
-  if (metadata?.mutates) {
-    if (ctx.dryRun) {
-      return { allow: false, reason: 'Dry-run mode: mutating tools disabled.' };
-    }
-    if (!ctx.allowDestructive) {
-      return { allow: false, reason: 'Use --apply to allow mutating tools.' };
-    }
-    if (metadata.dangerous && !ctx.allowDangerous) {
-      return { allow: false, reason: 'Use --dangerous to allow this tool.' };
-    }
-  }
-}
-
-function toStructuredContent(result: unknown): Record<string, unknown> | undefined {
-  if (typeof result !== 'object' || result === null) return undefined;
-  if (Array.isArray(result)) return undefined;
-  return result as Record<string, unknown>;
-}
+const readOnlyMetadata: ToolMetadata = { readOnly: true };
 
 async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> {
   if (!ctx.state) {
@@ -92,7 +56,6 @@ async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> 
 }
 
 export function createToolRegistry(context: ToolContext) {
-  const toolsByName = new Map<string, ToolDefinition<z.ZodObject<z.ZodRawShape>>>();
   const githubToken = context.config.github.token;
   const armorer = createArmorer([], {
     context,
@@ -102,13 +65,6 @@ export function createToolRegistry(context: ToolContext) {
     readOnly: context.dryRun,
     allowMutation: context.allowDestructive,
     ...(context.toolBudget ? { budget: context.toolBudget } : {}),
-    policy: {
-      beforeExecute(policyContext) {
-        const tool = toolsByName.get(policyContext.toolName);
-        if (!tool) return;
-        return enforcePolicy(tool, context);
-      },
-    },
     policyContext: (policyContext) => ({
       runId: context.emitContext.runId,
       repoRoot: context.repoRoot,
@@ -118,10 +74,6 @@ export function createToolRegistry(context: ToolContext) {
       inputDigest: policyContext.inputDigest,
     }),
   });
-  const sdkTools: Array<ReturnType<typeof sdkTool>> = [];
-  const toolNames: string[] = [];
-  const mutatingToolNames: string[] = [];
-
   const register = <TSchema extends z.ZodObject<z.ZodRawShape>>(
     definition: ToolDefinition<TSchema>,
   ): void => {
@@ -129,42 +81,20 @@ export function createToolRegistry(context: ToolContext) {
       name: definition.name,
       description: definition.description,
       schema: definition.schema,
-      metadata: definition.metadata ?? readOnlyHint,
+      metadata: definition.metadata ?? readOnlyMetadata,
       async execute(params: object, _toolContext: ArmorerToolContext) {
         return definition.execute(params as z.infer<TSchema>, context);
       },
     } satisfies Parameters<typeof createTool>[0];
 
-    const armorerTool = createTool(toolConfig, armorer);
-
-    sdkTools.push(
-      sdkTool(
-        definition.name,
-        definition.description,
-        definition.schema.shape,
-        async (args): Promise<CallToolResult> => {
-          const result = await armorerTool.execute(args as Record<string, unknown>);
-          const structuredContent = toStructuredContent(result);
-          return {
-            content: [{ type: 'text', text: JSON.stringify(result) }],
-            ...(structuredContent ? { structuredContent } : {}),
-          };
-        },
-      ),
-    );
-
-    toolNames.push(definition.name);
-    toolsByName.set(definition.name, definition);
-    if (definition.metadata?.mutates) {
-      mutatingToolNames.push(definition.name);
-    }
+    createTool(toolConfig, armorer);
   };
 
   register({
     name: 'silvan.state.read',
     description: 'Read persisted run state data',
     schema: z.object({ key: z.string().optional() }),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute({ key }) {
       const data = await readRunState(context);
       if (!key) return data;
@@ -176,7 +106,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'silvan.plan.read',
     description: 'Read the current run plan',
     schema: z.object({}),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute() {
       const data = await readRunState(context);
       return data['plan'];
@@ -187,7 +117,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'silvan.task.read',
     description: 'Read the current run task payload',
     schema: z.object({}),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute() {
       const data = await readRunState(context);
       return data['task'];
@@ -198,10 +128,15 @@ export function createToolRegistry(context: ToolContext) {
     name: 'silvan.review.read',
     description: 'Read persisted review thread fingerprints',
     schema: z.object({}),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute() {
       const data = await readRunState(context);
-      return data['reviewThreads'];
+      const index = data['artifactsIndex'] as
+        | Record<string, Record<string, ArtifactEntry>>
+        | undefined;
+      const entry = index?.['github.review.fetch']?.['threads'];
+      if (!entry || entry.kind !== 'json') return undefined;
+      return readArtifact({ entry });
     },
   });
 
@@ -260,7 +195,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'github.review.fetch',
     description: 'Fetch unresolved review threads',
     schema: z.object({ owner: z.string(), repo: z.string(), headBranch: z.string() }),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute({ owner, repo, headBranch }) {
       return await fetchUnresolvedReviewComments({
         owner,
@@ -277,7 +212,7 @@ export function createToolRegistry(context: ToolContext) {
     name: 'github.review.thread',
     description: 'Fetch a review thread by ID',
     schema: z.object({ threadId: z.string() }),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute({ threadId }) {
       return await fetchReviewThreadById({
         threadId,
@@ -313,7 +248,7 @@ export function createToolRegistry(context: ToolContext) {
       pollIntervalMs: z.number().optional(),
       timeoutMs: z.number().optional(),
     }),
-    metadata: withReadOnlyHint(),
+    metadata: readOnlyMetadata,
     async execute({ owner, repo, headBranch, pollIntervalMs, timeoutMs }, ctx) {
       return await waitForCi({
         owner,
@@ -328,11 +263,11 @@ export function createToolRegistry(context: ToolContext) {
     },
   });
 
-  const sdkServer = createSdkMcpServer({
-    name: 'silvan-tools',
-    version: '0.1.0',
-    tools: sdkTools,
-  });
+  const { sdkServer, toolNames, mutatingToolNames, dangerousToolNames } =
+    createClaudeAgentSdkServer(armorer, {
+      name: 'silvan-tools',
+      version: '0.1.0',
+    });
 
-  return { armorer, sdkServer, toolNames, mutatingToolNames };
+  return { armorer, sdkServer, toolNames, mutatingToolNames, dangerousToolNames };
 }

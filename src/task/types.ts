@@ -1,7 +1,8 @@
-export type TaskProvider = 'linear' | 'github';
+export type TaskProvider = 'linear' | 'github' | 'local';
 
 export type Task = {
   id: string;
+  key?: string;
   provider: TaskProvider;
   title: string;
   description: string;
@@ -17,6 +18,8 @@ export type TaskRef = {
   provider: TaskProvider;
   id: string;
   raw: string;
+  key?: string;
+  mode?: 'id' | 'title';
   owner?: string;
   repo?: string;
   number?: number;
