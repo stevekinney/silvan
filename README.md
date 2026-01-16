@@ -14,6 +14,50 @@ A production-quality CLI for managing git worktrees and automating PR workflows 
 bun install
 ```
 
+## Distribution
+
+### npm (recommended)
+
+```bash
+npm install -g silvan
+silvan --help
+```
+
+Or run without a global install:
+
+```bash
+npx silvan --help
+```
+
+The npm wrapper downloads a platform-specific binary on first run and caches it
+under the Silvan cache directory.
+
+### Direct binary download
+
+Download the appropriate binary from GitHub Releases and run it directly:
+
+- macOS: `silvan-darwin-x64`, `silvan-darwin-arm64`
+- Linux: `silvan-linux-x64`, `silvan-linux-arm64`
+- Windows: `silvan-windows-x64.exe`
+
+If you download a Unix binary, make it executable:
+
+```bash
+chmod +x ./silvan-<platform>
+./silvan-<platform> --help
+```
+
+Supported platforms:
+
+- macOS (x64, arm64)
+- Linux (x64, arm64)
+- Windows (x64)
+
+Troubleshooting:
+
+- If the binary download fails behind a proxy, set `SILVAN_RELEASE_BASE` to a reachable mirror URL.
+- On macOS, Gatekeeper may require you to allow the binary in System Settings.
+
 ## Quick Start
 
 ```bash
