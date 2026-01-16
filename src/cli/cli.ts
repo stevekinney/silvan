@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 
 import { cac } from 'cac';
 
+import pkg from '../../package.json';
 import { collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
 import {
@@ -63,8 +64,16 @@ import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
 import { buildWorktreeName } from '../utils/worktree-name';
+import {
+  generateBashCompletion,
+  generateFishCompletion,
+  generateZshCompletion,
+} from './completion';
 
 const cli = cac('silvan');
+
+cli.help();
+cli.version(pkg.version);
 
 type CliOptions = {
   json?: boolean;
@@ -133,60 +142,70 @@ type CliOptions = {
   fromFile?: string;
 };
 
-cli.option('--json', 'Output JSON event stream');
-cli.option('--no-ui', 'Disable UI');
-cli.option('--yes', 'Skip confirmations');
-cli.option('--github-token <token>', 'GitHub token (overrides config/env)');
-cli.option('--linear-token <token>', 'Linear token (overrides config/env)');
-cli.option('--model <model>', 'Default Claude model');
-cli.option('--model-plan <model>', 'Planner model');
-cli.option('--model-execute <model>', 'Executor model');
-cli.option('--model-review <model>', 'Review model');
-cli.option('--model-verify <model>', 'Verify model');
-cli.option('--model-pr <model>', 'PR writer model');
-cli.option('--model-recovery <model>', 'Recovery model');
-cli.option(
-  '--cognition-provider <provider>',
-  'Cognition provider (anthropic|openai|gemini)',
-);
-cli.option('--cognition-model-kickoff <model>', 'Cognition kickoff model');
-cli.option('--cognition-model-plan <model>', 'Cognition planner model');
-cli.option('--cognition-model-review <model>', 'Cognition review model');
-cli.option('--cognition-model-ci <model>', 'Cognition CI triage model');
-cli.option('--cognition-model-verify <model>', 'Cognition verification model');
-cli.option('--cognition-model-recovery <model>', 'Cognition recovery model');
-cli.option('--cognition-model-pr <model>', 'Cognition PR draft model');
+// Essential options (shown in default help)
+cli.option('--json', 'Output as JSON event stream');
+cli.option('--yes, -y', 'Skip all confirmation prompts');
+cli.option('--no-ui', 'Disable interactive UI');
+
+// Auth tokens
+cli.option('--github-token <token>', 'GitHub token (env: GITHUB_TOKEN)');
+cli.option('--linear-token <token>', 'Linear token (env: LINEAR_API_KEY)');
+
+// Model selection (use config file for phase-specific overrides)
+cli.option('--model <model>', 'Claude model (default: claude-sonnet-4-20250514)');
+
+// Budget limits
+cli.option('--max-turns <n>', 'Max agent turns per session (default: 50)');
+cli.option('--max-budget-usd <n>', 'Max cost in USD per session');
+
+// State storage
+cli.option('--state-mode <mode>', 'State storage: "repo" or "global" (default: repo)');
+
+// Advanced options (phase-specific - prefer config file)
+cli.option('--model-plan <model>', 'Model for planning phase');
+cli.option('--model-execute <model>', 'Model for execution phase');
+cli.option('--model-review <model>', 'Model for review phase');
+cli.option('--model-verify <model>', 'Model for verification phase');
+cli.option('--model-pr <model>', 'Model for PR generation');
+cli.option('--model-recovery <model>', 'Model for error recovery');
+cli.option('--max-turns-plan <n>', 'Max turns for planning');
+cli.option('--max-turns-execute <n>', 'Max turns for execution');
+cli.option('--max-turns-review <n>', 'Max turns for review');
+cli.option('--max-turns-verify <n>', 'Max turns for verification');
+cli.option('--max-turns-pr <n>', 'Max turns for PR generation');
+cli.option('--max-turns-recovery <n>', 'Max turns for recovery');
+cli.option('--max-budget-usd-plan <n>', 'Max USD for planning');
+cli.option('--max-budget-usd-execute <n>', 'Max USD for execution');
+cli.option('--max-budget-usd-review <n>', 'Max USD for review');
+cli.option('--max-budget-usd-verify <n>', 'Max USD for verification');
+cli.option('--max-budget-usd-pr <n>', 'Max USD for PR generation');
+cli.option('--max-budget-usd-recovery <n>', 'Max USD for recovery');
+cli.option('--max-thinking-tokens <n>', 'Max thinking tokens per session');
+cli.option('--max-thinking-tokens-plan <n>', 'Max thinking tokens for planning');
+cli.option('--max-thinking-tokens-execute <n>', 'Max thinking tokens for execution');
+cli.option('--max-thinking-tokens-review <n>', 'Max thinking tokens for review');
+cli.option('--max-thinking-tokens-verify <n>', 'Max thinking tokens for verification');
+cli.option('--max-thinking-tokens-pr <n>', 'Max thinking tokens for PR');
+cli.option('--max-thinking-tokens-recovery <n>', 'Max thinking tokens for recovery');
+cli.option('--max-tool-calls <n>', 'Max tool invocations per session');
+cli.option('--max-tool-ms <n>', 'Tool execution timeout in ms');
+cli.option('--max-review-loops <n>', 'Max review iterations (default: 3)');
+cli.option('--persist-sessions', 'Keep agent sessions across phases');
+cli.option('--verify-shell <path>', 'Shell for verification commands');
+
+// Cognition provider (advanced - prefer config file)
+cli.option('--cognition-provider <provider>', 'AI provider: anthropic, openai, gemini');
+cli.option('--cognition-model-kickoff <model>', 'Model for kickoff prompts');
+cli.option('--cognition-model-plan <model>', 'Model for plan generation');
+cli.option('--cognition-model-review <model>', 'Model for code review');
+cli.option('--cognition-model-ci <model>', 'Model for CI triage');
+cli.option('--cognition-model-verify <model>', 'Model for verification summary');
+cli.option('--cognition-model-recovery <model>', 'Model for error recovery');
+cli.option('--cognition-model-pr <model>', 'Model for PR drafts');
 cli.option(
   '--cognition-model-conversation-summary <model>',
-  'Cognition conversation summary model',
+  'Model for conversation summaries',
 );
-cli.option('--max-turns <n>', 'Max turns per session');
-cli.option('--max-turns-plan <n>', 'Max turns for planner');
-cli.option('--max-turns-execute <n>', 'Max turns for executor');
-cli.option('--max-turns-review <n>', 'Max turns for review');
-cli.option('--max-turns-verify <n>', 'Max turns for verify');
-cli.option('--max-turns-pr <n>', 'Max turns for PR writer');
-cli.option('--max-turns-recovery <n>', 'Max turns for recovery');
-cli.option('--max-budget-usd <n>', 'Max budget in USD per session');
-cli.option('--max-budget-usd-plan <n>', 'Max USD budget for planner');
-cli.option('--max-budget-usd-execute <n>', 'Max USD budget for executor');
-cli.option('--max-budget-usd-review <n>', 'Max USD budget for review');
-cli.option('--max-budget-usd-verify <n>', 'Max USD budget for verify');
-cli.option('--max-budget-usd-pr <n>', 'Max USD budget for PR writer');
-cli.option('--max-budget-usd-recovery <n>', 'Max USD budget for recovery');
-cli.option('--max-thinking-tokens <n>', 'Max thinking tokens per session');
-cli.option('--max-thinking-tokens-plan <n>', 'Max thinking tokens for planner');
-cli.option('--max-thinking-tokens-execute <n>', 'Max thinking tokens for executor');
-cli.option('--max-thinking-tokens-review <n>', 'Max thinking tokens for review');
-cli.option('--max-thinking-tokens-verify <n>', 'Max thinking tokens for verify');
-cli.option('--max-thinking-tokens-pr <n>', 'Max thinking tokens for PR writer');
-cli.option('--max-thinking-tokens-recovery <n>', 'Max thinking tokens for recovery');
-cli.option('--max-tool-calls <n>', 'Max tool calls per session');
-cli.option('--max-tool-ms <n>', 'Max tool call duration (ms)');
-cli.option('--max-review-loops <n>', 'Max review loop iterations');
-cli.option('--persist-sessions', 'Persist agent sessions across phases');
-cli.option('--verify-shell <path>', 'Shell used for verify commands');
-cli.option('--state-mode <mode>', 'Use repo or global state storage');
 
 cli
   .command('init', 'Initialize silvan.config.ts with guided prompts')
@@ -430,7 +449,8 @@ async function withCliContext<T>(
   );
 }
 
-cli.command('wt list', 'List worktrees').action(async (options: CliOptions) => {
+// Worktree commands - aliased as both 'tree' and 't'
+cli.command('tree list', 'List all git worktrees').action(async (options: CliOptions) => {
   const mode: EventMode = options.json ? 'json' : 'headless';
   await withCliContext(options, mode, async (ctx) => {
     await runStep(ctx, 'git.worktree.list', 'List worktrees', async () =>
@@ -445,7 +465,7 @@ cli.command('wt list', 'List worktrees').action(async (options: CliOptions) => {
 });
 
 cli
-  .command('wt add <name>', 'Create a worktree and branch')
+  .command('tree add <name>', 'Create a new worktree with branch')
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
@@ -477,7 +497,7 @@ cli
   });
 
 cli
-  .command('wt remove [name]', 'Remove a worktree')
+  .command('tree remove [name]', 'Remove a worktree')
   .option('--force', 'Force removal even if dirty')
   .option('--task <task>', 'Remove worktree for a task reference')
   .action(async (name: string | undefined, options: CliOptions) => {
@@ -549,7 +569,7 @@ cli
   });
 
 cli
-  .command('wt clean', 'Remove worktrees with merged PRs')
+  .command('tree clean', 'Remove worktrees with merged PRs')
   .option('--force', 'Force removal even if dirty')
   .option('--all', 'Remove all merged worktrees without prompting')
   .action(async (options: CliOptions) => {
@@ -643,7 +663,7 @@ cli
   });
 
 cli
-  .command('wt prune', 'Prune stale worktree data')
+  .command('tree prune', 'Prune stale worktree data')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
@@ -658,7 +678,7 @@ cli
   });
 
 cli
-  .command('wt lock <name>', 'Lock a worktree')
+  .command('tree lock <name>', 'Lock a worktree')
   .option('--reason <reason>', 'Reason for locking')
   .action(async (name: string, options: CliOptions & { reason?: string }) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
@@ -687,7 +707,7 @@ cli
   });
 
 cli
-  .command('wt unlock <name>', 'Unlock a worktree')
+  .command('tree unlock <name>', 'Unlock a worktree')
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
@@ -714,7 +734,7 @@ cli
   });
 
 cli
-  .command('wt rebase', 'Rebase current branch onto base')
+  .command('tree rebase', 'Rebase current branch onto base')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
@@ -885,7 +905,7 @@ cli
     });
   });
 
-cli.command('runs list', 'List recorded runs').action(async (options: CliOptions) => {
+cli.command('run list', 'List all recorded runs').action(async (options: CliOptions) => {
   const repo = await detectRepoContext({ cwd: process.cwd() });
   const configResult = await loadConfig(buildConfigOverrides(options));
   const state = await initStateStore(repo.repoRoot, {
@@ -943,7 +963,7 @@ cli.command('runs list', 'List recorded runs').action(async (options: CliOptions
 });
 
 cli
-  .command('runs inspect <runId>', 'Inspect a run snapshot')
+  .command('run inspect <runId>', 'Inspect a run snapshot')
   .action(async (runId: string, options: CliOptions) => {
     const repo = await detectRepoContext({ cwd: process.cwd() });
     const configResult = await loadConfig(buildConfigOverrides(options));
@@ -990,29 +1010,6 @@ cli
     );
     console.log(`State file: ${snapshot.runId}.json`);
   });
-
-cli
-  .command('runs resume <runId>', 'Resume a run from state')
-  .option('--dry-run', 'Allow only read-only tools')
-  .option('--apply', 'Allow mutating tools')
-  .option('--dangerous', 'Allow dangerous tools (requires --apply)')
-  .action((runId: string, options: CliOptions) =>
-    withCliContext(
-      options,
-      'headless',
-      async (ctx) =>
-        withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
-          const runOptions = {
-            ...(options.dryRun ? { dryRun: true } : {}),
-            ...(options.apply ? { apply: true } : {}),
-            ...(options.dangerous ? { dangerous: true } : {}),
-            sessions,
-          };
-          await resumeRun(ctx, runOptions);
-        }),
-      { runId },
-    ),
-  );
 
 cli
   .command('run status <runId>', 'Show convergence status for a run')
@@ -1274,16 +1271,19 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
 });
 
 cli
-  .command('task start [taskRef]', 'Start a task')
-  .option('--title <title>', 'Local task title')
-  .option('--desc <desc>', 'Local task description')
-  .option('--ac <criteria>', 'Local task acceptance criteria (repeatable)')
-  .option('--from-file <path>', 'Load local task details from a file')
-  .option('--print-cd', 'Print a cd command after creating the worktree', {
+  .command(
+    'task start [taskRef]',
+    'Start a task (accepts: Linear ID like "ENG-123", GitHub issue like "gh-42" or URL, or local title)',
+  )
+  .option('--title <title>', 'Task title for local tasks')
+  .option('--desc <desc>', 'Task description for local tasks')
+  .option('--ac <criteria>', 'Acceptance criteria (can be used multiple times)')
+  .option('--from-file <path>', 'Load task details from a markdown file')
+  .option('--print-cd', 'Print cd command to worktree (default: true)', {
     default: true,
   })
-  .option('--open-shell', 'Open a subshell in the worktree')
-  .option('--exec <cmd>', 'Run a command in the worktree and exit')
+  .option('--open-shell', 'Open interactive shell in worktree')
+  .option('--exec <cmd>', 'Run command in worktree then exit')
   .action((taskRef: string | undefined, options: CliOptions) =>
     withCliContext(options, 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
@@ -1613,10 +1613,10 @@ cli
   );
 
 cli
-  .command('agent run', 'Run agent')
-  .option('--dry-run', 'Allow only read-only tools')
-  .option('--apply', 'Allow mutating tools')
-  .option('--dangerous', 'Allow dangerous tools (requires --apply)')
+  .command('agent run', 'Execute the implementation plan')
+  .option('--dry-run', 'Read-only mode: no file changes (default)')
+  .option('--apply', 'Allow file modifications (edits, writes, deletes)')
+  .option('--dangerous', 'Allow shell commands and network access (requires --apply)')
   .action((options: CliOptions) =>
     withCliContext(options, 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
@@ -1641,6 +1641,159 @@ cli
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), () => runRecovery(ctx)),
     ),
   );
+
+// Shell completion
+cli
+  .command('completion <shell>', 'Generate shell completion script (bash, zsh, fish)')
+  .action((shell: string) => {
+    switch (shell.toLowerCase()) {
+      case 'bash':
+        console.log(generateBashCompletion());
+        console.log('# Add to ~/.bashrc: eval "$(silvan completion bash)"');
+        break;
+      case 'zsh':
+        console.log(generateZshCompletion());
+        console.log('# Add to ~/.zshrc: eval "$(silvan completion zsh)"');
+        break;
+      case 'fish':
+        console.log(generateFishCompletion());
+        console.log('# Save to ~/.config/fish/completions/silvan.fish');
+        break;
+      default:
+        throw new Error(`Unknown shell: ${shell}. Supported: bash, zsh, fish`);
+    }
+  });
+
+// Config inspection commands
+cli
+  .command('config show', 'Display resolved configuration')
+  .action(async (options: CliOptions) => {
+    const { config, source } = await loadConfig(buildConfigOverrides(options));
+    if (options.json) {
+      console.log(JSON.stringify({ source, config }, null, 2));
+      return;
+    }
+    console.log(`Config source: ${source?.path ?? 'defaults (no config file found)'}`);
+    console.log('');
+    console.log('Key settings:');
+    console.log(`  Default branch: ${config.repo.defaultBranch}`);
+    console.log(`  Branch prefix: ${config.naming.branchPrefix}`);
+    console.log(`  Worktree dir: ${config.naming.worktreeDir}`);
+    console.log(`  State mode: ${config.state.mode}`);
+    console.log('');
+    console.log('AI settings:');
+    console.log(`  Default model: ${config.ai.models.default}`);
+    console.log(`  Max turns: ${config.ai.budgets.default.maxTurns}`);
+    if (config.ai.budgets.default.maxBudgetUsd) {
+      console.log(`  Max budget: $${config.ai.budgets.default.maxBudgetUsd}`);
+    }
+    console.log('');
+    console.log('Task providers:');
+    console.log(`  Enabled: ${config.task.providers.enabled.join(', ') || 'none'}`);
+    console.log('');
+    console.log('Verify commands:');
+    if (config.verify.commands.length === 0) {
+      console.log('  (none configured)');
+    } else {
+      for (const cmd of config.verify.commands) {
+        console.log(`  ${cmd.name}: ${cmd.cmd}`);
+      }
+    }
+    console.log('');
+    console.log('Use --json for full configuration output.');
+  });
+
+cli
+  .command('config validate', 'Validate configuration without running')
+  .action(async (options: CliOptions) => {
+    try {
+      const { config, source } = await loadConfig(buildConfigOverrides(options));
+      const checks: Array<{ name: string; ok: boolean; message: string }> = [];
+
+      // Check config loaded
+      checks.push({
+        name: 'Config file',
+        ok: true,
+        message: source ? `Loaded from ${source.path}` : 'Using defaults',
+      });
+
+      // Check GitHub auth
+      const hasGitHubToken = Boolean(
+        config.github.token || process.env['GITHUB_TOKEN'] || process.env['GH_TOKEN'],
+      );
+      checks.push({
+        name: 'GitHub token',
+        ok: hasGitHubToken,
+        message: hasGitHubToken
+          ? 'Found'
+          : 'Missing (set GITHUB_TOKEN or configure github.token)',
+      });
+
+      // Check Linear auth if enabled
+      if (config.task.providers.enabled.includes('linear')) {
+        const hasLinearToken = Boolean(
+          config.linear.token || process.env['LINEAR_API_KEY'],
+        );
+        checks.push({
+          name: 'Linear token',
+          ok: hasLinearToken,
+          message: hasLinearToken
+            ? 'Found'
+            : 'Missing (set LINEAR_API_KEY or configure linear.token)',
+        });
+      }
+
+      // Check verify commands
+      const hasVerifyCommands = config.verify.commands.length > 0;
+      checks.push({
+        name: 'Verify commands',
+        ok: hasVerifyCommands,
+        message: hasVerifyCommands
+          ? `${config.verify.commands.length} command(s) configured`
+          : 'None configured (runs will skip verification)',
+      });
+
+      if (options.json) {
+        const allOk = checks.every((c) => c.ok);
+        console.log(JSON.stringify({ ok: allOk, checks }, null, 2));
+        if (!allOk) process.exitCode = 1;
+        return;
+      }
+
+      for (const check of checks) {
+        const prefix = check.ok ? 'ok' : 'warn';
+        console.log(`${prefix}  ${check.name}: ${check.message}`);
+      }
+
+      const allOk = checks.every((c) => c.ok);
+      if (!allOk) {
+        console.log('');
+        console.log('Some checks have warnings. Fix them for full functionality.');
+        process.exitCode = 1;
+      } else {
+        console.log('');
+        console.log('Configuration is valid.');
+      }
+    } catch (error) {
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.error(
+          `Configuration error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      process.exitCode = 1;
+    }
+  });
 
 cli
   .command('doctor', 'Check environment and configuration')
@@ -1697,13 +1850,43 @@ cli
     }),
   );
 
+// Command aliases: short names for common commands
+const COMMAND_ALIASES: Record<string, string> = {
+  t: 'tree',
+  r: 'run',
+  a: 'agent',
+};
+
+function expandAliases(argv: string[]): string[] {
+  // Find the first non-option argument (the command)
+  const expanded = [...argv];
+  for (let i = 0; i < expanded.length; i++) {
+    const arg = expanded[i];
+    if (!arg || arg.startsWith('-')) continue;
+    // Check if this is an alias
+    const alias = COMMAND_ALIASES[arg];
+    if (alias) {
+      expanded[i] = alias;
+      break;
+    }
+    // Not an alias, stop looking
+    break;
+  }
+  return expanded;
+}
+
 export function run(argv: string[]): void {
-  cli.parse(argv, { run: false });
-  const runPromise = cli.runMatchedCommand() as Promise<void>;
-  runPromise.catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
+  const expandedArgv = expandAliases(argv);
+  cli.parse(expandedArgv, { run: false });
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const runPromise: Promise<unknown> | undefined = cli.runMatchedCommand();
+  // runMatchedCommand returns undefined when no command matches (e.g., --help)
+  if (runPromise instanceof Promise) {
+    runPromise.catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
+  }
 }
 
 async function handlePrOpen(options: CliOptions): Promise<void> {
