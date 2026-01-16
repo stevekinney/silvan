@@ -14,7 +14,7 @@ type TaskProvider = 'github' | 'linear' | 'local';
 
 type InitAnswers = {
   worktreeDir: string;
-  provider: TaskProvider;
+  enabledProviders: TaskProvider[];
   verifyCommands: Array<{ name: string; cmd: string }>;
 };
 
@@ -105,25 +105,35 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { label: 'Neither (local only)', value: 'local' },
 ];
 
-async function selectProvider(): Promise<TaskProvider> {
+async function selectProviders(): Promise<TaskProvider[]> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-  console.log(chalk.cyan('Task provider:'));
+  console.log(chalk.cyan('Task providers (multi-select):'));
   for (let i = 0; i < PROVIDER_OPTIONS.length; i++) {
     const option = PROVIDER_OPTIONS[i]!;
     console.log(`  ${chalk.dim(`${i + 1})`)} ${option.label}`);
   }
 
   try {
-    const response = await rl.question(chalk.dim('Enter choice (1-3): '));
-    const choice = parseInt(response.trim(), 10);
+    const response = await rl.question(
+      chalk.dim('Enter choices (e.g., 1,3). Leave blank for local only: '),
+    );
+    const trimmed = response.trim();
+    if (!trimmed) return ['local'];
 
-    if (choice >= 1 && choice <= PROVIDER_OPTIONS.length) {
-      return PROVIDER_OPTIONS[choice - 1]!.value;
+    const selected = new Set<number>();
+    for (const token of trimmed.split(/[\s,]+/)) {
+      const choice = parseInt(token, 10);
+      if (!Number.isNaN(choice)) {
+        selected.add(choice);
+      }
     }
 
-    // Default to local if invalid input
-    return 'local';
+    const ordered = PROVIDER_OPTIONS.filter((_, index) => selected.has(index + 1)).map(
+      (option) => option.value,
+    );
+
+    return ordered.length > 0 ? ordered : ['local'];
   } finally {
     rl.close();
   }
@@ -142,7 +152,7 @@ export async function promptInitAnswers(repoRoot: string): Promise<InitAnswers> 
   console.log('');
 
   // Single provider selection
-  const provider = await selectProvider();
+  const enabledProviders = await selectProviders();
   console.log('');
 
   // Auto-detect verify scripts
@@ -159,7 +169,7 @@ export async function promptInitAnswers(repoRoot: string): Promise<InitAnswers> 
 
   return {
     worktreeDir,
-    provider,
+    enabledProviders,
     verifyCommands,
   };
 }
@@ -173,8 +183,7 @@ function formatStringArray(values: string[]): string {
 }
 
 function formatConfig(answers: InitAnswers): string {
-  const enabledProviders: TaskProvider[] =
-    answers.provider === 'local' ? ['local'] : ['local', answers.provider];
+  const enabledProviders = normalizeProviders(answers.enabledProviders);
 
   const lines: string[] = [
     "import { defineConfig } from 'silvan/config';",
@@ -220,8 +229,7 @@ export async function writeInitConfig(
     // File doesn't exist, proceed
   }
 
-  const enabledProviders: Array<'local' | 'github' | 'linear'> =
-    answers.provider === 'local' ? ['local'] : ['local', answers.provider];
+  const enabledProviders = normalizeProviders(answers.enabledProviders);
 
   const config: ConfigInput = {
     naming: { worktreeDir: answers.worktreeDir },
@@ -253,8 +261,19 @@ export function getInitDefaults(repoRoot: string): Promise<InitAnswers> {
 
     return {
       worktreeDir,
-      provider: 'local' as TaskProvider,
+      enabledProviders: ['local'],
       verifyCommands,
     };
   })();
+}
+
+function normalizeProviders(
+  values: TaskProvider[],
+): Array<'local' | 'github' | 'linear'> {
+  const unique = new Set<TaskProvider>(values);
+  if (unique.size === 0) {
+    unique.add('local');
+  }
+  const order: TaskProvider[] = ['local', 'github', 'linear'];
+  return order.filter((provider) => unique.has(provider));
 }
