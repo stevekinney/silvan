@@ -3,6 +3,22 @@ import type { Event } from '../schema';
 export class HeadlessRenderer {
   render(event: Event): void {
     switch (event.type) {
+      case 'log.message': {
+        if (event.level === 'debug' && !process.env['SILVAN_DEBUG']) {
+          return;
+        }
+        const message = event.message ?? event.payload.message;
+        if (event.level === 'error') {
+          console.error(message);
+          return;
+        }
+        if (event.level === 'warn') {
+          console.warn(message);
+          return;
+        }
+        console.log(message);
+        return;
+      }
       case 'run.started':
         console.log(`Starting ${event.payload.command} in ${event.payload.repoRoot}`);
         return;

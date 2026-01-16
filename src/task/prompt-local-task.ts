@@ -1,17 +1,29 @@
 import { createInterface } from 'node:readline/promises';
 
+import { SilvanError } from '../core/errors';
 import type { LocalTaskInput } from './providers/local';
 
 export async function promptLocalTaskInput(): Promise<LocalTaskInput> {
   if (!process.stdin.isTTY) {
-    throw new Error('Task prompt requires a TTY.');
+    throw new SilvanError({
+      code: 'tty.required',
+      message: 'Task prompt requires a TTY.',
+      userMessage: 'Task prompt requires a TTY.',
+      kind: 'validation',
+      nextSteps: ['Run without --yes or provide --title/--desc.'],
+    });
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const titleAnswer = await rl.question('Task title: ');
     const title = titleAnswer.trim();
     if (!title) {
-      throw new Error('Task title is required.');
+      throw new SilvanError({
+        code: 'task.title.required',
+        message: 'Task title is required.',
+        userMessage: 'Task title is required.',
+        kind: 'validation',
+      });
     }
     const descriptionAnswer = await rl.question('Task description (optional): ');
     const description = descriptionAnswer.trim();

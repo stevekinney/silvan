@@ -1,5 +1,7 @@
 import { LinearClient } from '@linear/sdk';
 
+import { SilvanError } from '../core/errors';
+
 export type LinearTicket = {
   id: string;
   identifier: string;
@@ -16,9 +18,16 @@ export type LinearTicket = {
 function getLinearClient(apiKey?: string): LinearClient {
   const resolved = apiKey ?? Bun.env['LINEAR_API_KEY'];
   if (!resolved) {
-    throw new Error(
-      'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
-    );
+    throw new SilvanError({
+      code: 'auth.linear.missing_token',
+      message: 'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
+      userMessage: 'Missing Linear token.',
+      kind: 'auth',
+      nextSteps: [
+        'Set LINEAR_API_KEY in your environment.',
+        'Or configure linear.token in silvan.config.ts.',
+      ],
+    });
   }
   return new LinearClient({ apiKey: resolved });
 }
@@ -30,7 +39,12 @@ export async function fetchLinearTicket(
   const client = getLinearClient(token);
   const issue = await client.issue(idOrKey);
   if (!issue) {
-    throw new Error(`Linear ticket not found: ${idOrKey}`);
+    throw new SilvanError({
+      code: 'linear.ticket.not_found',
+      message: `Linear ticket not found: ${idOrKey}`,
+      userMessage: `Linear ticket not found: ${idOrKey}.`,
+      kind: 'not_found',
+    });
   }
 
   const state = await issue.state;
@@ -61,12 +75,22 @@ export async function moveLinearTicket(
   const client = getLinearClient(token);
   const issue = await client.issue(idOrKey);
   if (!issue) {
-    throw new Error(`Linear ticket not found: ${idOrKey}`);
+    throw new SilvanError({
+      code: 'linear.ticket.not_found',
+      message: `Linear ticket not found: ${idOrKey}`,
+      userMessage: `Linear ticket not found: ${idOrKey}.`,
+      kind: 'not_found',
+    });
   }
 
   const team = await issue.team;
   if (!team) {
-    throw new Error('Linear ticket team not found');
+    throw new SilvanError({
+      code: 'linear.team.not_found',
+      message: 'Linear ticket team not found',
+      userMessage: 'Linear ticket team not found.',
+      kind: 'not_found',
+    });
   }
 
   const states = await team.states();
@@ -74,7 +98,12 @@ export async function moveLinearTicket(
     (state) => state.name.toLowerCase() === stateName.toLowerCase(),
   );
   if (!match) {
-    throw new Error(`Linear state not found: ${stateName}`);
+    throw new SilvanError({
+      code: 'linear.state.not_found',
+      message: `Linear state not found: ${stateName}`,
+      userMessage: `Linear state not found: ${stateName}.`,
+      kind: 'not_found',
+    });
   }
 
   await issue.update({ stateId: match.id });

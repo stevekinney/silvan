@@ -1,5 +1,6 @@
 import type { Config } from '../config/schema';
 import { requireGitHubConfig } from '../config/validate';
+import { SilvanError } from '../core/errors';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import type { StateStore } from '../state/store';
@@ -28,7 +29,13 @@ export async function resolveTask(
   const ref = parseTaskRef(taskRef, options.config);
   if (ref.provider === 'linear') {
     if (!options.config.task.providers.enabled.includes('linear')) {
-      throw new Error('Linear provider is disabled in config.');
+      throw new SilvanError({
+        code: 'task.provider_disabled',
+        message: 'Linear provider is disabled in config.',
+        userMessage: 'Linear task provider is disabled.',
+        kind: 'expected',
+        nextSteps: ['Enable Linear in silvan.config.ts task.providers.enabled.'],
+      });
     }
     const task = await fetchLinearTask(ref.id, options.config.linear.token);
     return { task, ref };
@@ -36,7 +43,13 @@ export async function resolveTask(
 
   if (ref.provider === 'local') {
     if (!options.config.task.providers.enabled.includes('local')) {
-      throw new Error('Local provider is disabled in config.');
+      throw new SilvanError({
+        code: 'task.provider_disabled',
+        message: 'Local provider is disabled in config.',
+        userMessage: 'Local task provider is disabled.',
+        kind: 'expected',
+        nextSteps: ['Enable local in silvan.config.ts task.providers.enabled.'],
+      });
     }
     const title =
       options.localInput?.title && options.localInput.title.trim().length > 0
@@ -74,7 +87,13 @@ export async function resolveTask(
   }
 
   if (!options.config.task.providers.enabled.includes('github')) {
-    throw new Error('GitHub provider is disabled in config.');
+    throw new SilvanError({
+      code: 'task.provider_disabled',
+      message: 'GitHub provider is disabled in config.',
+      userMessage: 'GitHub task provider is disabled.',
+      kind: 'expected',
+      nextSteps: ['Enable GitHub in silvan.config.ts task.providers.enabled.'],
+    });
   }
   const github = await requireGitHubConfig({
     config: options.config,
@@ -86,7 +105,13 @@ export async function resolveTask(
   const repo = ref.repo ?? github.repo;
   const number = ref.number ?? Number(ref.id.replace(/^gh-/i, ''));
   if (!owner || !repo || !Number.isFinite(number)) {
-    throw new Error('GitHub issue reference requires owner/repo and issue number.');
+    throw new SilvanError({
+      code: 'task.github.invalid_reference',
+      message: 'GitHub issue reference requires owner/repo and issue number.',
+      userMessage: 'Invalid GitHub issue reference.',
+      kind: 'validation',
+      nextSteps: ['Use gh-<number> or a full GitHub issue URL.'],
+    });
   }
   const task = await fetchGitHubTask(
     { owner, repo, number },
@@ -144,13 +169,25 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
     if (config.task.providers.enabled.includes('local')) {
       defaultProvider = 'local';
     } else {
-      throw new Error(`Default provider ${defaultProvider} is not enabled in config.`);
+      throw new SilvanError({
+        code: 'task.default_provider_disabled',
+        message: `Default provider ${defaultProvider} is not enabled in config.`,
+        userMessage: `Default provider ${defaultProvider} is not enabled.`,
+        kind: 'expected',
+        nextSteps: ['Enable the default provider in silvan.config.ts.'],
+      });
     }
   }
   if (defaultProvider === 'github') {
     const number = Number(trimmed.replace(/^#/, ''));
     if (!Number.isFinite(number)) {
-      throw new Error('GitHub task reference must be gh-<number> or an issue URL.');
+      throw new SilvanError({
+        code: 'task.github.invalid_reference',
+        message: 'GitHub task reference must be gh-<number> or an issue URL.',
+        userMessage: 'Invalid GitHub task reference.',
+        kind: 'validation',
+        nextSteps: ['Use gh-<number> or a full GitHub issue URL.'],
+      });
     }
     return {
       provider: 'github',

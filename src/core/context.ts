@@ -1,8 +1,11 @@
+import { join } from 'node:path';
+
 import { loadConfig } from '../config/load';
 import type { ConfigInput } from '../config/schema';
 import { createEnvelope, toEventError } from '../events/emit';
 import type { EventMode, RunFinished } from '../events/schema';
 import { initStateStore } from '../state/store';
+import { normalizeError, RunCanceledError } from './errors';
 import { initEvents } from './events';
 import { detectRepoContext } from './repo';
 
@@ -175,11 +178,17 @@ export async function withRunContext<T>(
   } catch (error) {
     finished = true;
     const isCanceled = cancelRequested || error instanceof RunCanceledError;
-    await emitRunFinished(isCanceled ? 'canceled' : 'failed', error);
-    if (isCanceled) {
-      process.exitCode = 130;
+    const normalized = normalizeError(error, {
+      runId: ctx.runId,
+      auditLogPath: join(ctx.state.auditDir, `${ctx.runId}.jsonl`),
+    });
+    await emitRunFinished(isCanceled ? 'canceled' : 'failed', normalized);
+    if (normalized.exitCode !== undefined) {
+      process.exitCode = normalized.exitCode;
+    } else if (!isCanceled && process.exitCode === undefined) {
+      process.exitCode = 1;
     }
-    throw error;
+    throw normalized;
   } finally {
     process.off('SIGINT', onSigint);
     if (options.lock !== false) {
@@ -225,11 +234,4 @@ async function buildRunSummary(
     ...(ci ? { ci } : {}),
     ...(unresolvedReviewCount !== undefined ? { unresolvedReviewCount } : {}),
   };
-}
-
-export class RunCanceledError extends Error {
-  constructor() {
-    super('Run canceled');
-    this.name = 'RunCanceledError';
-  }
 }

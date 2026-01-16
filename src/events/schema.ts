@@ -2,6 +2,14 @@ export type IsoTimestamp = string;
 
 export type EventLevel = 'debug' | 'info' | 'warn' | 'error';
 export type EventMode = 'headless' | 'ui' | 'json';
+export type ErrorKind =
+  | 'expected'
+  | 'validation'
+  | 'auth'
+  | 'not_found'
+  | 'conflict'
+  | 'canceled'
+  | 'internal';
 
 export type EventSource =
   | 'cli'
@@ -40,6 +48,8 @@ export type EventEnvelope<TType extends string, TPayload> = {
     message: string;
     stack?: string;
     code?: string;
+    kind?: ErrorKind;
+    details?: Record<string, unknown>;
     cause?: unknown;
   };
 
@@ -299,6 +309,11 @@ export type AiError = {
   details?: string;
 };
 
+export type LogMessage = {
+  message: string;
+  details?: Record<string, unknown>;
+};
+
 export type Event =
   | EventEnvelope<'run.started', RunStarted>
   | EventEnvelope<'run.phase_changed', RunPhaseChanged>
@@ -329,4 +344,5 @@ export type Event =
   | EventEnvelope<'ai.session_finished', AiSessionFinished>
   | EventEnvelope<'ai.tool_call_started', AiToolCall>
   | EventEnvelope<'ai.tool_call_finished', AiToolCallResult>
-  | EventEnvelope<'ai.error', AiError>;
+  | EventEnvelope<'ai.error', AiError>
+  | EventEnvelope<'log.message', LogMessage>;

@@ -1,5 +1,11 @@
 import { hashString } from '../utils/hash';
-import type { EventEnvelope, EventLevel, EventMode, EventSource } from './schema';
+import type {
+  ErrorKind,
+  EventEnvelope,
+  EventLevel,
+  EventMode,
+  EventSource,
+} from './schema';
 
 const schemaVersion = '1.0.0' as const;
 const schemaName = 'com.silvan.events' as const;
@@ -21,6 +27,7 @@ export function createEnvelope<TType extends string, TPayload>(options: {
   message?: string;
   context: EmitContext;
   error?: EventEnvelope<TType, TPayload>['error'];
+  span?: EventEnvelope<TType, TPayload>['span'];
 }): EventEnvelope<TType, TPayload> {
   const now = new Date().toISOString();
   const repoId = hashString(options.context.repoRoot);
@@ -59,19 +66,39 @@ export function createEnvelope<TType extends string, TPayload>(options: {
   if (options.error) {
     envelope.error = options.error;
   }
+  if (options.span) {
+    envelope.span = options.span;
+  }
 
   return envelope;
 }
 
 export function toEventError(error: unknown): EventEnvelope<string, unknown>['error'] {
   if (error instanceof Error) {
-    const err = error as Error & { code?: string; cause?: unknown };
+    const err = error as Error & {
+      code?: string;
+      cause?: unknown;
+      kind?: unknown;
+      details?: Record<string, unknown>;
+      userMessage?: string;
+    };
+    const message =
+      typeof err.userMessage === 'string' && err.userMessage.length > 0
+        ? err.userMessage
+        : err.message;
+    const details =
+      err.userMessage && err.userMessage !== err.message
+        ? { ...(err.details ?? {}), internalMessage: err.message }
+        : err.details;
+    const kind = isErrorKind(err.kind) ? err.kind : undefined;
     return {
       name: err.name,
-      message: err.message,
+      message,
       ...(err.stack ? { stack: err.stack } : {}),
       ...(err.code ? { code: String(err.code) } : {}),
-      ...(err.cause ? { cause: err.cause } : {}),
+      ...(kind ? { kind } : {}),
+      ...(details ? { details } : {}),
+      ...(err.cause ? { cause: toEventError(err.cause) } : {}),
     };
   }
 
@@ -80,4 +107,16 @@ export function toEventError(error: unknown): EventEnvelope<string, unknown>['er
   }
 
   return { name: 'UnknownError', message: 'Unknown error' };
+}
+
+function isErrorKind(value: unknown): value is ErrorKind {
+  return (
+    value === 'expected' ||
+    value === 'validation' ||
+    value === 'auth' ||
+    value === 'not_found' ||
+    value === 'conflict' ||
+    value === 'canceled' ||
+    value === 'internal'
+  );
 }

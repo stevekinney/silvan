@@ -13,12 +13,14 @@ import {
   renderConversationSummary,
   summarizeConversationSnapshot,
 } from '../ai/conversation';
-import { promptInitAnswers, writeInitConfig } from '../config/init';
+import { getInitDefaults, promptInitAnswers, writeInitConfig } from '../config/init';
 import { loadConfig } from '../config/load';
 import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
+import { SilvanError } from '../core/errors';
+import { createLogger } from '../core/logger';
 import { detectRepoContext } from '../core/repo';
 import {
   resumeRun,
@@ -28,8 +30,8 @@ import {
   runReviewLoop,
 } from '../core/run-controller';
 import { collectDoctorReport } from '../diagnostics/doctor';
-import { createEnvelope } from '../events/emit';
-import type { EventMode, RunStep } from '../events/schema';
+import { createEnvelope, type EmitContext } from '../events/emit';
+import type { Event, EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import {
   createWorktree,
@@ -69,6 +71,7 @@ import {
   generateFishCompletion,
   generateZshCompletion,
 } from './completion';
+import { renderCliError } from './errors';
 
 const cli = cac('silvan');
 
@@ -90,6 +93,8 @@ type CliOptions = {
   printCd?: boolean;
   openShell?: boolean;
   exec?: string;
+  debug?: boolean;
+  trace?: boolean;
   task?: string;
   githubToken?: string;
   linearToken?: string;
@@ -146,6 +151,8 @@ type CliOptions = {
 cli.option('--json', 'Output as JSON event stream');
 cli.option('--yes, -y', 'Skip all confirmation prompts');
 cli.option('--no-ui', 'Disable interactive UI');
+cli.option('--debug', 'Show stack traces for errors');
+cli.option('--trace', 'Show error causes and stack traces');
 
 // Auth tokens
 cli.option('--github-token <token>', 'GitHub token (env: GITHUB_TOKEN)');
@@ -211,29 +218,21 @@ cli
   .command('init', 'Initialize silvan.config.ts with guided prompts')
   .option('--yes', 'Skip prompts and use defaults')
   .action(async (options: CliOptions) => {
+    const chalk = await import('chalk').then((m) => m.default);
     const repo = await detectRepoContext({ cwd: process.cwd() });
-    const { config } = await loadConfig();
     const useDefaults = options.yes ?? false;
+
     const answers = useDefaults
-      ? {
-          branchPrefix: config.naming.branchPrefix,
-          worktreeDir: config.naming.worktreeDir,
-          enabledProviders: config.task.providers.enabled,
-          requestCopilot: config.github.requestCopilot,
-          verifyCommands: config.verify.commands.map((command) => ({
-            name: command.name,
-            cmd: command.cmd,
-          })),
-        }
+      ? await getInitDefaults(repo.repoRoot)
       : await promptInitAnswers(repo.repoRoot);
 
     const result = await writeInitConfig(repo.repoRoot, answers);
     if (!result) {
-      console.log('silvan.config.ts already exists.');
+      console.log(chalk.yellow('silvan.config.ts already exists.'));
       return;
     }
 
-    console.log(`Wrote ${result.path}`);
+    console.log(chalk.green('✓ ') + `Created ${result.path}`);
   });
 
 function parseNumberFlag(value: string | undefined): number | undefined {
@@ -469,6 +468,7 @@ cli
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const safeName = sanitizeName(name);
 
       const worktree = await runStep(
@@ -489,9 +489,10 @@ cli
 
       const installResult = await installDependencies({ worktreePath: worktree.path });
       if (!installResult.ok) {
-        console.warn(
-          `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
-        );
+        await logger.warn(`Warning: bun install failed in ${worktree.path}`, {
+          stderr: installResult.stderr,
+          stdout: installResult.stdout,
+        });
       }
     });
   });
@@ -963,6 +964,51 @@ cli.command('run list', 'List all recorded runs').action(async (options: CliOpti
 });
 
 cli
+  .command('logs <runId>', 'Show audit log for a run')
+  .option('--tail <n>', 'Show the last N events')
+  .action(async (runId: string, options: CliOptions & { tail?: string }) => {
+    const repo = await detectRepoContext({ cwd: process.cwd() });
+    const configResult = await loadConfig(buildConfigOverrides(options));
+    const state = await initStateStore(repo.repoRoot, {
+      lock: false,
+      mode: configResult.config.state.mode,
+      ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+    });
+    const logPath = join(state.auditDir, `${runId}.jsonl`);
+    const logFile = Bun.file(logPath);
+    if (!(await logFile.exists())) {
+      throw new SilvanError({
+        code: 'audit_log.not_found',
+        message: `Audit log not found for run ${runId} (${logPath}).`,
+        userMessage: `Audit log not found for run ${runId}.`,
+        kind: 'not_found',
+        details: { runId, logPath },
+        nextSteps: ['Check the run ID with `silvan run list`.'],
+      });
+    }
+
+    const content = await logFile.text();
+    const lines = content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const limit = parseNumberFlag(options.tail);
+    const selected = limit ? lines.slice(-limit) : lines;
+    const events = selected
+      .map((line) => parseAuditEvent(line))
+      .filter((event): event is Event => event !== null);
+
+    if (options.json) {
+      console.log(JSON.stringify({ runId, events }, null, 2));
+      return;
+    }
+
+    for (const event of events) {
+      console.log(formatAuditEvent(event));
+    }
+  });
+
+cli
   .command('run inspect <runId>', 'Inspect a run snapshot')
   .action(async (runId: string, options: CliOptions) => {
     const repo = await detectRepoContext({ cwd: process.cwd() });
@@ -1318,9 +1364,10 @@ cli
 
 cli.command('queue run', 'Process queued task requests').action((options: CliOptions) =>
   withCliContext(options, 'headless', async (ctx) => {
+    const logger = createCliLogger(ctx);
     const requests = await listQueueRequests({ state: ctx.state });
     if (requests.length === 0) {
-      console.log('No queued requests.');
+      await logger.info('No queued requests.');
       return;
     }
 
@@ -1407,17 +1454,23 @@ async function startTaskFlow(options: {
 }): Promise<void> {
   const ctx = options.ctx;
   const mode = ctx.events.mode;
-  const resolved = await resolveTask(options.taskRef, {
-    config: ctx.config,
-    repoRoot: ctx.repo.repoRoot,
-    state: ctx.state,
-    runId: ctx.runId,
-    ...(options.localInput ? { localInput: options.localInput } : {}),
-    bus: ctx.events.bus,
-    context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-  });
+  let logger = createCliLogger(ctx);
+  const resolved = await logger.withSpan(
+    'Resolve task',
+    () =>
+      resolveTask(options.taskRef, {
+        config: ctx.config,
+        repoRoot: ctx.repo.repoRoot,
+        state: ctx.state,
+        runId: ctx.runId,
+        ...(options.localInput ? { localInput: options.localInput } : {}),
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+    { taskRef: options.taskRef },
+  );
 
-  console.log(
+  await logger.info(
     `Task: ${resolved.task.key ?? resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
   );
 
@@ -1441,14 +1494,20 @@ async function startTaskFlow(options: {
     ctx.repo.branch = worktree.branch;
   }
   ctx.repo.isWorktree = true;
+  logger = createCliLogger(ctx);
 
   await normalizeClaudeSettings({ worktreePath: worktree.path });
 
-  const installResult = await installDependencies({ worktreePath: worktree.path });
+  const installResult = await logger.withSpan(
+    'Install dependencies',
+    () => installDependencies({ worktreePath: worktree.path }),
+    { worktreePath: worktree.path },
+  );
   if (!installResult.ok) {
-    console.warn(
-      `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
-    );
+    await logger.warn(`Warning: bun install failed in ${worktree.path}`, {
+      stderr: installResult.stderr,
+      stdout: installResult.stdout,
+    });
   }
 
   await runPlanner(ctx, {
@@ -1459,7 +1518,7 @@ async function startTaskFlow(options: {
   });
 
   if (options.printCd) {
-    console.log(`cd ${worktree.path}`);
+    await logger.info(`cd ${worktree.path}`);
   }
   if (options.exec) {
     runCommandInWorktree(options.exec, worktree.path);
@@ -1521,6 +1580,33 @@ async function loadRunSnapshotForCli(
   return { state, snapshot, config: configResult.config };
 }
 
+function parseAuditEvent(line: string): Event | null {
+  try {
+    return JSON.parse(line) as Event;
+  } catch {
+    return null;
+  }
+}
+
+function formatAuditEvent(event: Event): string {
+  const base = `${event.ts} [${event.level}] ${event.source} ${event.type}`;
+  const message =
+    event.message ?? (event.type === 'log.message' ? event.payload.message : undefined);
+  if (message) {
+    return `${base} - ${message}`;
+  }
+  if (event.error?.message) {
+    return `${base} - ${event.error.message}`;
+  }
+  if (event.type === 'run.step') {
+    return `${base} - ${event.payload.status}: ${event.payload.title}`;
+  }
+  if (event.type === 'run.finished') {
+    return `${base} - ${event.payload.status} (${event.payload.durationMs}ms)`;
+  }
+  return base;
+}
+
 function findLastSuccessfulStep(
   steps: Record<string, { status?: string; endedAt?: string }>,
 ) {
@@ -1549,6 +1635,7 @@ cli
   .action((options: CliOptions & { answer?: string | string[] }) =>
     withCliContext(options, 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
+        const logger = createCliLogger(ctx);
         const state = await ctx.state.readRunState(ctx.runId);
         const data = (state?.data as Record<string, unknown>) ?? {};
         const plan = data['plan'];
@@ -1565,7 +1652,7 @@ cli
           : [];
 
         if (questions.length === 0) {
-          console.log('No clarifications needed.');
+          await logger.info('No clarifications needed.');
           return;
         }
 
@@ -1858,34 +1945,147 @@ const COMMAND_ALIASES: Record<string, string> = {
 };
 
 function expandAliases(argv: string[]): string[] {
-  // Find the first non-option argument (the command)
+  // Find the first non-option argument starting from position 2 (skip "bun" and script path)
   const expanded = [...argv];
-  for (let i = 0; i < expanded.length; i++) {
+  for (let i = 2; i < expanded.length; i++) {
     const arg = expanded[i];
     if (!arg || arg.startsWith('-')) continue;
     // Check if this is an alias
     const alias = COMMAND_ALIASES[arg];
     if (alias) {
       expanded[i] = alias;
-      break;
     }
-    // Not an alias, stop looking
+    // Only process the first command word, then stop
     break;
   }
   return expanded;
 }
 
-export function run(argv: string[]): void {
+/**
+ * Get all registered command names from cac.
+ * cac stores commands internally with their full names (including spaces for subcommands).
+ */
+function getRegisteredCommandNames(): string[] {
+  return cli.commands?.map((c: { name: string }) => c.name) ?? [];
+}
+
+/**
+ * Match multi-word commands by finding the longest registered command name
+ * that matches the beginning of argv.
+ *
+ * For example, if registered commands include "task start" and "task",
+ * and argv is ["task", "start", "DEP-159"], this returns "task start"
+ * because it's the longest match.
+ */
+function findMatchingCommand(
+  args: string[],
+): { commandName: string; wordCount: number } | null {
+  const commandNames = getRegisteredCommandNames();
+
+  // Build a map of command names by word count for efficient lookup
+  const byWordCount = new Map<number, Set<string>>();
+  for (const name of commandNames) {
+    const count = name.split(' ').length;
+    if (!byWordCount.has(count)) {
+      byWordCount.set(count, new Set());
+    }
+    byWordCount.get(count)!.add(name);
+  }
+
+  // Find the maximum word count to check
+  const maxWords = Math.max(...byWordCount.keys(), 0);
+
+  // Try matching from longest to shortest (greedy matching)
+  for (let wordCount = Math.min(maxWords, args.length); wordCount >= 1; wordCount--) {
+    const candidate = args.slice(0, wordCount).join(' ');
+    const commandsAtLength = byWordCount.get(wordCount);
+    if (commandsAtLength?.has(candidate)) {
+      return { commandName: candidate, wordCount };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Transform argv to handle multi-word commands.
+ *
+ * cac only matches the first arg against command names, so "task start DEP-159"
+ * never matches "task start" because cac only sees "task".
+ *
+ * This function finds multi-word commands and combines them into a single
+ * argument that cac can match.
+ *
+ * Example:
+ *   Input:  ["bun", "cli.ts", "task", "start", "DEP-159"]
+ *   Output: ["bun", "cli.ts", "task start", "DEP-159"]
+ */
+function combineMultiWordCommand(argv: string[]): string[] {
+  // Find where the command args start (skip "bun", script path, and any leading options)
+  let commandStart = 2;
+  while (commandStart < argv.length && argv[commandStart]?.startsWith('-')) {
+    commandStart++;
+  }
+
+  if (commandStart >= argv.length) {
+    return argv; // No command found
+  }
+
+  // Get the args that might form a command
+  const potentialCommandArgs = argv.slice(commandStart);
+
+  // Find the matching command
+  const match = findMatchingCommand(potentialCommandArgs);
+  if (!match || match.wordCount <= 1) {
+    return argv; // No multi-word command or single-word command (cac handles these)
+  }
+
+  // Combine the multi-word command into a single argv element
+  return [
+    ...argv.slice(0, commandStart),
+    match.commandName,
+    ...argv.slice(commandStart + match.wordCount),
+  ];
+}
+
+export async function run(argv: string[]): Promise<void> {
+  const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
+  if (debugEnabled) {
+    process.env['SILVAN_DEBUG'] = '1';
+  }
+
+  // Step 1: Expand command aliases (t -> tree, r -> run, etc.)
   const expandedArgv = expandAliases(argv);
-  cli.parse(expandedArgv, { run: false });
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
+  // Step 2: Combine multi-word commands into single args for cac matching
+  // e.g., ["task", "start", "DEP-159"] -> ["task start", "DEP-159"]
+  const processedArgv = combineMultiWordCommand(expandedArgv);
+
+  // Step 3: Parse with cac
+  cli.parse(processedArgv, { run: false });
+
+  // Step 4: Run the matched command
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- cac's return type is untyped.
   const runPromise: Promise<unknown> | undefined = cli.runMatchedCommand();
+
   // runMatchedCommand returns undefined when no command matches (e.g., --help)
   if (runPromise instanceof Promise) {
-    runPromise.catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    });
+    try {
+      await runPromise;
+    } catch (error) {
+      const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
+      const traceEnabled = argv.includes('--trace');
+      const rendered = renderCliError(error, {
+        debug: debugEnabled,
+        trace: traceEnabled,
+      });
+      console.error(rendered.message);
+      if (rendered.error.exitCode !== undefined) {
+        process.exitCode = rendered.error.exitCode;
+      } else if (process.exitCode === undefined) {
+        process.exitCode = 1;
+      }
+    }
   }
 }
 
@@ -1997,6 +2197,23 @@ async function runStep<T>(
     );
     throw error;
   }
+}
+
+function buildEmitContext(ctx: RunContext): EmitContext {
+  return {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+    ...(ctx.repo.worktreePath ? { worktreePath: ctx.repo.worktreePath } : {}),
+  };
+}
+
+function createCliLogger(ctx: RunContext) {
+  return createLogger({
+    bus: ctx.events.bus,
+    source: 'cli',
+    context: buildEmitContext(ctx),
+  });
 }
 
 async function persistRunState(

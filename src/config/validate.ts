@@ -1,3 +1,4 @@
+import { SilvanError } from '../core/errors';
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { runGit } from '../git/exec';
@@ -64,9 +65,17 @@ export function resolveGitHubToken(config: Config): string | undefined {
 export function requireGitHubAuth(config: Config): string {
   const token = resolveGitHubToken(config);
   if (!token) {
-    throw new Error(
-      'Missing GitHub token (configure github.token or set GITHUB_TOKEN/GH_TOKEN).',
-    );
+    throw new SilvanError({
+      code: 'auth.github.missing_token',
+      message:
+        'Missing GitHub token (configure github.token or set GITHUB_TOKEN/GH_TOKEN).',
+      userMessage: 'Missing GitHub token.',
+      kind: 'auth',
+      nextSteps: [
+        'Set GITHUB_TOKEN or GH_TOKEN in your environment.',
+        'Or configure github.token in silvan.config.ts.',
+      ],
+    });
   }
   return token;
 }
@@ -78,9 +87,16 @@ export function resolveLinearToken(config: Config): string | undefined {
 export function requireLinearAuth(config: Config): string {
   const token = resolveLinearToken(config);
   if (!token) {
-    throw new Error(
-      'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
-    );
+    throw new SilvanError({
+      code: 'auth.linear.missing_token',
+      message: 'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
+      userMessage: 'Missing Linear token.',
+      kind: 'auth',
+      nextSteps: [
+        'Set LINEAR_API_KEY in your environment.',
+        'Or configure linear.token in silvan.config.ts.',
+      ],
+    });
   }
   return token;
 }
