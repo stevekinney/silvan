@@ -1,4 +1,5 @@
 import type { CiState, Event, Phase, StepStatus } from '../events/schema';
+import type { RunConvergence } from '../run/convergence';
 
 export type RunStatus = 'running' | 'success' | 'failed' | 'canceled' | 'unknown';
 
@@ -59,6 +60,16 @@ export type RunRecord = {
     commands: string[];
     askUser: boolean;
   };
+  localGate?: {
+    ok: boolean;
+    blockers: number;
+    warnings: number;
+    generatedAt?: string;
+  };
+  aiReview?: {
+    shipIt: boolean;
+    issues: number;
+  };
   recoverySummary?: {
     nextAction: string;
     reason: string;
@@ -74,6 +85,7 @@ export type RunRecord = {
   taskUrl?: string;
   blockedReason?: string;
   promptSummaries?: string[];
+  convergence?: RunConvergence;
   lastError?: RunError;
   lastMessage?: string;
   stuck?: {

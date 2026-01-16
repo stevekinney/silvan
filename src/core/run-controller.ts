@@ -26,6 +26,8 @@ import {
   resolveReviewThread,
 } from '../github/review';
 import { hashPrompt, renderPromptSummary } from '../prompts';
+import { runAiReviewer } from '../review/ai-reviewer';
+import { formatLocalGateSummary, generateLocalGateReport } from '../review/local-gate';
 import {
   buildReviewPlanThreads,
   type ReviewThreadFingerprint,
@@ -850,6 +852,82 @@ export async function runImplementation(
     throw new Error('Verification failed');
   }
 
+  const localGateConfig = ctx.config.review.localGate;
+  const gateBaseBranch = ctx.config.github.baseBranch ?? ctx.config.repo.defaultBranch;
+  const localGateRunWhen = localGateConfig.runWhen;
+  const shouldRunLocalGateBeforePr =
+    localGateConfig.enabled &&
+    (localGateRunWhen === 'beforePrOpen' || localGateRunWhen === 'both');
+  const localGateStep = getStepRecord(data, 'review.local_gate');
+  const existingLocalGateEntry = getArtifactEntry(data, 'review.local_gate', 'report');
+  let localGateReport =
+    localGateStep?.status === 'done' && existingLocalGateEntry
+      ? await readArtifact<import('../review/local-gate').LocalGateReport>({
+          entry: existingLocalGateEntry,
+        })
+      : undefined;
+
+  if (shouldRunLocalGateBeforePr && !localGateReport) {
+    localGateReport = await runStep(
+      ctx,
+      'review.local_gate',
+      'Run local review gate',
+      () =>
+        generateLocalGateReport({
+          repoRoot: ctx.repo.repoRoot,
+          baseBranch: gateBaseBranch,
+          branchName: ctx.repo.branch,
+          ...(ctx.repo.worktreePath ? { worktreePath: ctx.repo.worktreePath } : {}),
+          config: ctx.config,
+          state: ctx.state,
+          runId: ctx.runId,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        artifacts: (report) => ({ report }),
+      },
+    );
+
+    const blockers = localGateReport.findings.filter(
+      (finding) => finding.severity === 'blocker',
+    ).length;
+    const warnings = localGateReport.findings.filter(
+      (finding) => finding.severity === 'warn',
+    ).length;
+
+    await updateState(ctx, (data) => ({
+      ...data,
+      localGateSummary: {
+        ok: localGateReport?.ok ?? false,
+        blockers,
+        warnings,
+        generatedAt: localGateReport?.generatedAt,
+      },
+      summary: {
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
+        ...(localGateReport
+          ? { localGate: formatLocalGateSummary(localGateReport) }
+          : {}),
+      },
+    }));
+
+    if (!localGateReport.ok && localGateConfig.blockPrOnFail) {
+      await updateState(ctx, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          blockedReason: 'Local review gate failed.',
+        },
+      }));
+      throw new Error('Local review gate failed');
+    }
+  }
+
   await changePhase(ctx, 'pr');
   let githubToken: string | undefined;
   let githubConfig: { owner: string; repo: string };
@@ -988,6 +1066,119 @@ export async function runImplementation(
     if (ciResult.state === 'failing') {
       throw new Error('CI failed before review request');
     }
+  }
+
+  const shouldRunLocalGateBeforeReview =
+    localGateConfig.enabled &&
+    (localGateRunWhen === 'beforeReviewRequest' || localGateRunWhen === 'both');
+  if (shouldRunLocalGateBeforeReview && !localGateReport) {
+    localGateReport = await runStep(
+      ctx,
+      'review.local_gate',
+      'Run local review gate',
+      () =>
+        generateLocalGateReport({
+          repoRoot: ctx.repo.repoRoot,
+          baseBranch: gateBaseBranch,
+          branchName: ctx.repo.branch,
+          ...(ctx.repo.worktreePath ? { worktreePath: ctx.repo.worktreePath } : {}),
+          config: ctx.config,
+          state: ctx.state,
+          runId: ctx.runId,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        artifacts: (report) => ({ report }),
+      },
+    );
+
+    const blockers = localGateReport.findings.filter(
+      (finding) => finding.severity === 'blocker',
+    ).length;
+    const warnings = localGateReport.findings.filter(
+      (finding) => finding.severity === 'warn',
+    ).length;
+
+    await updateState(ctx, (data) => ({
+      ...data,
+      localGateSummary: {
+        ok: localGateReport?.ok ?? false,
+        blockers,
+        warnings,
+        generatedAt: localGateReport?.generatedAt,
+      },
+      summary: {
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
+        ...(localGateReport
+          ? { localGate: formatLocalGateSummary(localGateReport) }
+          : {}),
+      },
+    }));
+
+    if (!localGateReport.ok && localGateConfig.blockPrOnFail) {
+      await updateState(ctx, (data) => ({
+        ...data,
+        summary: {
+          ...(typeof data['summary'] === 'object' && data['summary']
+            ? data['summary']
+            : {}),
+          blockedReason: 'Local review gate failed.',
+        },
+      }));
+      throw new Error('Local review gate failed');
+    }
+  }
+
+  if (localGateReport && localGateReport.ok && ctx.config.review.aiReviewer.enabled) {
+    const aiReviewStep = getStepRecord(data, 'review.ai_reviewer');
+    const existingAiReviewEntry = getArtifactEntry(data, 'review.ai_reviewer', 'report');
+    const existingAiReview =
+      aiReviewStep?.status === 'done' && existingAiReviewEntry
+        ? await readArtifact<import('../review/ai-reviewer').AiReviewReport>({
+            entry: existingAiReviewEntry,
+          })
+        : undefined;
+    const diffStat = await runGit(['diff', '--stat', `${gateBaseBranch}...HEAD`], {
+      cwd: ctx.repo.repoRoot,
+      bus: ctx.events.bus,
+      context: emitContext,
+    });
+    const aiReview =
+      existingAiReview ??
+      (await runStep(
+        ctx,
+        'review.ai_reviewer',
+        'Run AI reviewer',
+        () =>
+          runAiReviewer({
+            summary: {
+              diffStat: diffStat.stdout.trim(),
+              findings: localGateReport.findings.map((finding) => ({
+                severity: finding.severity,
+                title: finding.title,
+                ...(finding.file ? { file: finding.file } : {}),
+              })),
+            },
+            store: conversationStore,
+            config: ctx.config,
+            bus: ctx.events.bus,
+            context: emitContext,
+          }),
+        {
+          artifacts: (report) => ({ report }),
+        },
+      ));
+
+    await updateState(ctx, (data) => ({
+      ...data,
+      aiReviewSummary: {
+        shipIt: aiReview.shipIt,
+        issues: aiReview.issues.length,
+      },
+    }));
   }
   const reviewStep = getStepRecord(data, 'github.review.request');
   const requestKey = reviewRequestKey({

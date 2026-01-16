@@ -1,11 +1,9 @@
-import { createClaudeToolGate } from 'armorer/claude-agent-sdk';
-
 import type { ConversationSnapshot } from '../ai/conversation';
 import { invokeAgent } from '../ai/router';
 import type { EventBus } from '../events/bus';
-import type { EmitContext } from '../events/emit';
-import { createEnvelope } from '../events/emit';
+import { createEnvelope, type EmitContext } from '../events/emit';
 import type { StateStore } from '../state/store';
+import { createClaudeToolGate } from './claude-adapter';
 import { createToolRegistry } from './registry';
 import type { ClaudeSessionOptions } from './sdk';
 import { createToolHooks } from './sdk';

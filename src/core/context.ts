@@ -10,6 +10,7 @@ export type RunContext = {
   runId: string;
   repo: Awaited<ReturnType<typeof detectRepoContext>>;
   config: Awaited<ReturnType<typeof loadConfig>>['config'];
+  configSource: Awaited<ReturnType<typeof loadConfig>>['source'];
   state: Awaited<ReturnType<typeof initStateStore>>;
   events: Awaited<ReturnType<typeof initEvents>>;
 };
@@ -82,6 +83,7 @@ export async function createRunContext(options: {
     runId,
     repo,
     config: configResult.config,
+    configSource: configResult.source,
     state,
     events,
   };

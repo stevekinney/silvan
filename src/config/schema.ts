@@ -181,6 +181,7 @@ export const configSchema = z.object({
               reviewKickoff: z.string().optional(),
               reviewClassify: z.string().optional(),
               reviewCluster: z.string().optional(),
+              localReview: z.string().optional(),
               ciTriage: z.string().optional(),
               verificationSummary: z.string().optional(),
               recovery: z.string().optional(),
@@ -245,8 +246,68 @@ export const configSchema = z.object({
   review: z
     .object({
       maxIterations: z.number().int().positive().optional(),
+      localGate: z
+        .object({
+          enabled: z.boolean().default(true),
+          blockPrOnFail: z.boolean().default(true),
+          runWhen: z
+            .enum(['beforePrOpen', 'beforeReviewRequest', 'both'])
+            .default('beforeReviewRequest'),
+          requireVerifyBeforePr: z.boolean().default(true),
+          thresholds: z
+            .object({
+              filesChangedWarn: z.number().int().positive().default(20),
+              linesChangedWarn: z.number().int().positive().default(1500),
+            })
+            .default({ filesChangedWarn: 20, linesChangedWarn: 1500 }),
+          severities: z
+            .object({
+              diffstat: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              diffstatLines: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              configFiles: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              dependencyFiles: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              lockfile: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              envFile: z.enum(['blocker', 'warn', 'info']).default('blocker'),
+              consoleLog: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              debugger: z.enum(['blocker', 'warn', 'info']).default('blocker'),
+              todo: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              diffCheck: z.enum(['blocker', 'warn', 'info']).default('blocker'),
+              verifyFailed: z.enum(['blocker', 'warn', 'info']).default('blocker'),
+              verifyMissing: z.enum(['blocker', 'warn', 'info']).default('blocker'),
+              migration: z.enum(['blocker', 'warn', 'info']).default('warn'),
+              branchNaming: z.enum(['blocker', 'warn', 'info']).default('warn'),
+            })
+            .partial()
+            .default({}),
+          allowConsoleLogPatterns: z.array(z.string()).default([]),
+        })
+        .default({
+          enabled: true,
+          blockPrOnFail: true,
+          runWhen: 'beforeReviewRequest',
+          requireVerifyBeforePr: true,
+          thresholds: { filesChangedWarn: 20, linesChangedWarn: 1500 },
+          severities: {},
+          allowConsoleLogPatterns: [],
+        }),
+      aiReviewer: z
+        .object({
+          enabled: z.boolean().default(false),
+        })
+        .default({ enabled: false }),
     })
-    .default({}),
+    .default({
+      localGate: {
+        enabled: true,
+        blockPrOnFail: true,
+        runWhen: 'beforeReviewRequest',
+        requireVerifyBeforePr: true,
+        thresholds: { filesChangedWarn: 20, linesChangedWarn: 1500 },
+        severities: {},
+        allowConsoleLogPatterns: [],
+      },
+      aiReviewer: { enabled: false },
+    }),
 });
 
 export type Config = z.infer<typeof configSchema>;

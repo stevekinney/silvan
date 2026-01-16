@@ -1,6 +1,9 @@
-import type { ToolContext as ArmorerToolContext, ToolMetadata } from 'armorer';
-import { createArmorer, createTool } from 'armorer';
-import { createClaudeAgentSdkServer } from 'armorer/claude-agent-sdk';
+import {
+  createArmorer,
+  createTool,
+  type ToolContext as ArmorerToolContext,
+  type ToolMetadata,
+} from 'armorer';
 import { z } from 'zod';
 
 import type { Config } from '../config/schema';
@@ -15,6 +18,7 @@ import {
 } from '../github/review';
 import { type ArtifactEntry, readArtifact } from '../state/artifacts';
 import type { StateStore } from '../state/store';
+import { createClaudeAgentSdkServer } from './claude-adapter';
 
 export type ToolPolicy = {
   repoRoot: string;

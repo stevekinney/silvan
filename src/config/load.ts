@@ -213,6 +213,7 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     ['plan', 'SILVAN_COGNITION_MODEL_PLAN'],
     ['reviewKickoff', 'SILVAN_COGNITION_MODEL_REVIEW'],
     ['reviewCluster', 'SILVAN_COGNITION_MODEL_REVIEW'],
+    ['localReview', 'SILVAN_COGNITION_MODEL_REVIEW'],
     ['ciTriage', 'SILVAN_COGNITION_MODEL_CI'],
     ['verificationSummary', 'SILVAN_COGNITION_MODEL_VERIFY'],
     ['recovery', 'SILVAN_COGNITION_MODEL_RECOVERY'],

@@ -18,6 +18,7 @@ import {
   runRecovery,
   runReviewLoop,
 } from '../core/run-controller';
+import { collectDoctorReport } from '../diagnostics/doctor';
 import { createEnvelope } from '../events/emit';
 import type { EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
@@ -36,6 +37,12 @@ import {
 import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
+import {
+  deriveConvergenceFromSnapshot,
+  loadRunSnapshot,
+  markRunAborted,
+  writeOverrideArtifact,
+} from '../run/controls';
 import { initStateStore } from '../state/store';
 import { type LocalTaskInput, parseLocalTaskFile } from '../task/providers/local';
 import { inferTaskRefFromBranch, resolveTask } from '../task/resolve';
@@ -57,6 +64,7 @@ type CliOptions = {
   dryRun?: boolean;
   apply?: boolean;
   dangerous?: boolean;
+  network?: boolean;
   task?: string;
   githubToken?: string;
   linearToken?: string;
@@ -961,6 +969,176 @@ cli
     ),
   );
 
+cli
+  .command('run status <runId>', 'Show convergence status for a run')
+  .action(async (runId: string, options: CliOptions) => {
+    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const convergence = deriveConvergenceFromSnapshot(snapshot);
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            runId,
+            status: convergence.status,
+            reasonCode: convergence.reasonCode,
+            message: convergence.message,
+            nextActions: convergence.nextActions,
+            blockingArtifacts: convergence.blockingArtifacts ?? [],
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    console.log(`${runId} • ${convergence.status} • ${convergence.reasonCode}`);
+    console.log(convergence.message);
+    if (convergence.blockingArtifacts?.length) {
+      console.log(`Blocking artifacts: ${convergence.blockingArtifacts.join(', ')}`);
+    }
+    if (convergence.nextActions.length) {
+      console.log(`Next actions: ${convergence.nextActions.join(', ')}`);
+    }
+  });
+
+cli
+  .command('run explain <runId>', 'Explain why a run is waiting or blocked')
+  .action(async (runId: string, options: CliOptions) => {
+    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const data = snapshot.data as Record<string, unknown>;
+    const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
+      status?: string;
+      phase?: string;
+    };
+    const steps = (
+      typeof data['steps'] === 'object' && data['steps'] ? data['steps'] : {}
+    ) as Record<string, { status?: string; endedAt?: string }>;
+    const summary = (
+      typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}
+    ) as {
+      prUrl?: string;
+      ci?: string;
+      unresolvedReviewCount?: number;
+      blockedReason?: string;
+    };
+    const localGate = (data['localGateSummary'] as
+      | { ok?: boolean; blockers?: number; warnings?: number }
+      | undefined) ?? { ok: undefined };
+    const convergence = deriveConvergenceFromSnapshot(snapshot);
+    const lastStep = findLastSuccessfulStep(steps);
+
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            runId,
+            run: { status: run.status, phase: run.phase },
+            convergence,
+            lastSuccessfulStep: lastStep ?? null,
+            summaries: {
+              ci: summary.ci ?? null,
+              unresolvedReviewCount: summary.unresolvedReviewCount ?? null,
+              blockedReason: summary.blockedReason ?? null,
+              localGate,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    console.log(`${runId} • ${run.status ?? 'unknown'} • ${run.phase ?? 'unknown'}`);
+    console.log(`Convergence: ${convergence.status} • ${convergence.reasonCode}`);
+    console.log(convergence.message);
+    if (lastStep) {
+      console.log(`Last successful step: ${lastStep}`);
+    }
+    if (summary.prUrl) {
+      console.log(`PR: ${summary.prUrl}`);
+    }
+    if (summary.ci) {
+      console.log(`CI: ${summary.ci}`);
+    }
+    if (typeof summary.unresolvedReviewCount === 'number') {
+      console.log(`Unresolved review comments: ${summary.unresolvedReviewCount}`);
+    }
+    if (summary.blockedReason) {
+      console.log(`Blocked reason: ${summary.blockedReason}`);
+    }
+    if (localGate.ok === false) {
+      console.log(
+        `Local gate: ${localGate.blockers ?? 0} blockers, ${localGate.warnings ?? 0} warnings`,
+      );
+    }
+    if (convergence.blockingArtifacts?.length) {
+      console.log(`Blocking artifacts: ${convergence.blockingArtifacts.join(', ')}`);
+    }
+    if (convergence.nextActions.length) {
+      console.log(`Next actions: ${convergence.nextActions.join(', ')}`);
+    }
+  });
+
+cli
+  .command('run resume <runId>', 'Resume a run using convergence rules')
+  .option('--dry-run', 'Allow only read-only tools')
+  .option('--apply', 'Allow mutating tools')
+  .option('--dangerous', 'Allow dangerous tools (requires --apply)')
+  .action(async (runId: string, options: CliOptions) => {
+    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const convergence = deriveConvergenceFromSnapshot(snapshot);
+    if (convergence.status === 'converged' || convergence.status === 'aborted') {
+      console.log(
+        `Run ${runId} is ${convergence.status}; resume is not applicable (${convergence.reasonCode}).`,
+      );
+      return;
+    }
+    await withCliContext(
+      options,
+      'headless',
+      async (ctx) =>
+        withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
+          const runOptions = {
+            ...(options.dryRun ? { dryRun: true } : {}),
+            ...(options.apply ? { apply: true } : {}),
+            ...(options.dangerous ? { dangerous: true } : {}),
+            sessions,
+          };
+          await resumeRun(ctx, runOptions);
+        }),
+      { runId },
+    );
+  });
+
+cli
+  .command('run override <runId> <reason...>', 'Override a run gate with a reason')
+  .action(async (runId: string, reason: string[], options: CliOptions) => {
+    const message = reason.join(' ').trim();
+    if (!message) {
+      throw new Error('Override reason is required.');
+    }
+    const { state } = await loadRunSnapshotForCli(runId, options);
+    const entry = await writeOverrideArtifact({ state, runId, reason: message });
+    if (options.json) {
+      console.log(JSON.stringify({ runId, override: entry }, null, 2));
+      return;
+    }
+    console.log(`Override recorded for ${runId}: ${entry.path}`);
+  });
+
+cli
+  .command('run abort <runId> [reason]', 'Abort a run and mark it as canceled')
+  .action(async (runId: string, reason: string | undefined, options: CliOptions) => {
+    const { state } = await loadRunSnapshotForCli(runId, options);
+    const entry = await markRunAborted({ state, runId, ...(reason ? { reason } : {}) });
+    if (options.json) {
+      console.log(JSON.stringify({ runId, aborted: entry }, null, 2));
+      return;
+    }
+    console.log(`Run ${runId} marked as aborted.`);
+  });
+
 cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
   if (options.noUi) {
     throw new Error('The --no-ui flag cannot be used with silvan ui.');
@@ -1115,6 +1293,33 @@ async function buildLocalTaskInput(
   return merged;
 }
 
+async function loadRunSnapshotForCli(
+  runId: string,
+  options: CliOptions,
+): Promise<{
+  state: Awaited<ReturnType<typeof initStateStore>>;
+  snapshot: Awaited<ReturnType<typeof loadRunSnapshot>>;
+  config: Awaited<ReturnType<typeof loadConfig>>['config'];
+}> {
+  const repo = await detectRepoContext({ cwd: process.cwd() });
+  const configResult = await loadConfig(buildConfigOverrides(options));
+  const state = await initStateStore(repo.repoRoot, {
+    lock: false,
+    mode: configResult.config.state.mode,
+    ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+  });
+  const snapshot = await loadRunSnapshot(state, runId);
+  return { state, snapshot, config: configResult.config };
+}
+
+function findLastSuccessfulStep(
+  steps: Record<string, { status?: string; endedAt?: string }>,
+) {
+  return Object.entries(steps)
+    .filter(([, step]) => step?.status === 'done')
+    .sort((a, b) => (b[1]?.endedAt ?? '').localeCompare(a[1]?.endedAt ?? ''))[0]?.[0];
+}
+
 cli
   .command('agent plan', 'Generate plan')
   .option('--task <task>', 'Task reference (Linear ID, gh-<number>, or URL)')
@@ -1230,72 +1435,23 @@ cli
 
 cli
   .command('doctor', 'Check environment and configuration')
+  .option('--network', 'Check network connectivity to providers')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
-      const results: Array<{ name: string; ok: boolean; detail: string }> = [];
-
-      const gitVersion = await runGit(['--version'], {
-        cwd: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      const report = await collectDoctorReport(ctx, {
+        network: Boolean(options.network),
       });
-      results.push({
-        name: 'git.version',
-        ok: gitVersion.exitCode === 0,
-        detail: gitVersion.stdout.trim() || gitVersion.stderr.trim(),
-      });
-
-      try {
-        const github = await requireGitHubConfig({
-          config: ctx.config,
-          repoRoot: ctx.repo.repoRoot,
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        });
-        results.push({
-          name: 'github.remote',
-          ok: true,
-          detail: `${github.owner}/${github.repo} (${github.source})`,
-        });
-      } catch (error) {
-        results.push({
-          name: 'github.remote',
-          ok: false,
-          detail: error instanceof Error ? error.message : String(error),
-        });
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        for (const check of report.checks) {
+          const prefix = check.ok ? 'ok' : 'fail';
+          console.log(`${prefix} ${check.name} ${check.detail}`);
+        }
       }
-
-      if (ctx.config.task.providers.enabled.includes('github')) {
-        const ghTokenPresent = Boolean(ctx.config.github.token);
-        results.push({
-          name: 'github.token',
-          ok: ghTokenPresent,
-          detail: ghTokenPresent ? 'Found' : 'Missing github.token',
-        });
-      }
-
-      if (ctx.config.task.providers.enabled.includes('linear')) {
-        const linearTokenPresent = Boolean(ctx.config.linear.token);
-        results.push({
-          name: 'linear.token',
-          ok: linearTokenPresent,
-          detail: linearTokenPresent ? 'Found' : 'Missing linear.token',
-        });
-      }
-
-      const verifyConfigured = ctx.config.verify.commands.length > 0;
-      results.push({
-        name: 'verify.commands',
-        ok: verifyConfigured,
-        detail: verifyConfigured
-          ? `${ctx.config.verify.commands.length} command(s)`
-          : 'No verification commands configured',
-      });
-
-      for (const result of results) {
-        const prefix = result.ok ? 'ok' : 'fail';
-        console.log(`${prefix} ${result.name} ${result.detail}`);
+      if (!report.ok) {
+        process.exitCode = 1;
       }
     });
   });

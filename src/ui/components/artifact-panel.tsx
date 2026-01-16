@@ -4,6 +4,23 @@ import React from 'react';
 import type { RunRecord } from '../types';
 import { CiBadge, ReviewBadge, StatusBadge } from './badges';
 
+function convergenceColor(status: string): 'red' | 'yellow' | 'green' | 'gray' {
+  switch (status) {
+    case 'failed':
+    case 'aborted':
+    case 'blocked':
+      return 'red';
+    case 'waiting_for_user':
+    case 'waiting_for_ci':
+    case 'waiting_for_review':
+      return 'yellow';
+    case 'converged':
+      return 'green';
+    default:
+      return 'gray';
+  }
+}
+
 export function ArtifactPanel({ run }: { run: RunRecord }): React.ReactElement {
   return (
     <Box flexDirection="column" gap={0}>
@@ -12,6 +29,19 @@ export function ArtifactPanel({ run }: { run: RunRecord }): React.ReactElement {
         <Text>{run.phase}</Text>
         {run.step ? <Text color="gray">{run.step.title ?? run.step.stepId}</Text> : null}
       </Box>
+      {run.convergence ? (
+        <Text color={convergenceColor(run.convergence.status)}>
+          Convergence: {run.convergence.status} • {run.convergence.message}
+        </Text>
+      ) : null}
+      {run.convergence?.blockingArtifacts?.length ? (
+        <Text color="yellow">
+          Blocking artifacts: {run.convergence.blockingArtifacts.join(', ')}
+        </Text>
+      ) : null}
+      {run.convergence?.nextActions?.length ? (
+        <Text color="gray">Next actions: {run.convergence.nextActions.join(', ')}</Text>
+      ) : null}
       {run.taskId ? (
         <Text color="magenta">
           {run.taskKey ?? run.taskId} {run.taskTitle ? `• ${run.taskTitle}` : ''}
@@ -64,6 +94,18 @@ export function ArtifactPanel({ run }: { run: RunRecord }): React.ReactElement {
         <Text color="gray">
           Review plan: {run.reviewFixPlan.actionable} actionable,{' '}
           {run.reviewFixPlan.ignored} ignored
+        </Text>
+      ) : null}
+      {run.localGate ? (
+        <Text color={run.localGate.ok ? 'green' : 'red'}>
+          Local gate: {run.localGate.ok ? 'ok' : 'blocked'} • blockers{' '}
+          {run.localGate.blockers} • warnings {run.localGate.warnings}
+        </Text>
+      ) : null}
+      {run.aiReview ? (
+        <Text color={run.aiReview.shipIt ? 'green' : 'yellow'}>
+          AI review: {run.aiReview.shipIt ? 'ship it' : 'issues'} • {run.aiReview.issues}{' '}
+          issues
         </Text>
       ) : null}
       {run.verificationDecision ? (

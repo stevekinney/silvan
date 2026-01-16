@@ -18,6 +18,7 @@ export type CognitionTask =
   | 'plan'
   | 'reviewClassify'
   | 'reviewCluster'
+  | 'localReview'
   | 'reviewKickoff'
   | 'ciTriage'
   | 'verificationSummary'

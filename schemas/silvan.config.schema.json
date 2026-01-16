@@ -562,6 +562,9 @@
                 "reviewCluster": {
                   "type": "string"
                 },
+                "localReview": {
+                  "type": "string"
+                },
                 "ciTriage": {
                   "type": "string"
                 },
@@ -653,15 +656,197 @@
       "additionalProperties": false
     },
     "review": {
-      "default": {},
+      "default": {
+        "localGate": {
+          "enabled": true,
+          "blockPrOnFail": true,
+          "runWhen": "beforeReviewRequest",
+          "requireVerifyBeforePr": true,
+          "thresholds": {
+            "filesChangedWarn": 20,
+            "linesChangedWarn": 1500
+          },
+          "severities": {},
+          "allowConsoleLogPatterns": []
+        },
+        "aiReviewer": {
+          "enabled": false
+        }
+      },
       "type": "object",
       "properties": {
         "maxIterations": {
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
+        },
+        "localGate": {
+          "default": {
+            "enabled": true,
+            "blockPrOnFail": true,
+            "runWhen": "beforeReviewRequest",
+            "requireVerifyBeforePr": true,
+            "thresholds": {
+              "filesChangedWarn": 20,
+              "linesChangedWarn": 1500
+            },
+            "severities": {},
+            "allowConsoleLogPatterns": []
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "blockPrOnFail": {
+              "default": true,
+              "type": "boolean"
+            },
+            "runWhen": {
+              "default": "beforeReviewRequest",
+              "type": "string",
+              "enum": ["beforePrOpen", "beforeReviewRequest", "both"]
+            },
+            "requireVerifyBeforePr": {
+              "default": true,
+              "type": "boolean"
+            },
+            "thresholds": {
+              "default": {
+                "filesChangedWarn": 20,
+                "linesChangedWarn": 1500
+              },
+              "type": "object",
+              "properties": {
+                "filesChangedWarn": {
+                  "default": 20,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "linesChangedWarn": {
+                  "default": 1500,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["filesChangedWarn", "linesChangedWarn"],
+              "additionalProperties": false
+            },
+            "severities": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "diffstat": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "diffstatLines": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "configFiles": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "dependencyFiles": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "lockfile": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "envFile": {
+                  "default": "blocker",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "consoleLog": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "debugger": {
+                  "default": "blocker",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "todo": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "diffCheck": {
+                  "default": "blocker",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "verifyFailed": {
+                  "default": "blocker",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "verifyMissing": {
+                  "default": "blocker",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "migration": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                },
+                "branchNaming": {
+                  "default": "warn",
+                  "type": "string",
+                  "enum": ["blocker", "warn", "info"]
+                }
+              },
+              "additionalProperties": false
+            },
+            "allowConsoleLogPatterns": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "enabled",
+            "blockPrOnFail",
+            "runWhen",
+            "requireVerifyBeforePr",
+            "thresholds",
+            "severities",
+            "allowConsoleLogPatterns"
+          ],
+          "additionalProperties": false
+        },
+        "aiReviewer": {
+          "default": {
+            "enabled": false
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
         }
       },
+      "required": ["localGate", "aiReviewer"],
       "additionalProperties": false
     }
   },

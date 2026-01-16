@@ -1,4 +1,6 @@
 import type { CiState, Phase, StepStatus } from '../events/schema';
+import { deriveRunConvergence, flattenArtifactsIndex } from '../run/convergence';
+import type { ArtifactEntry } from '../state/artifacts';
 import type { RunSnapshot } from './loader';
 import type {
   AllEvents,
@@ -278,6 +280,12 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const verificationDecisionSummary = data['verificationDecisionSummary'] as
     | { commands?: string[]; askUser?: boolean }
     | undefined;
+  const localGateSummary = data['localGateSummary'] as
+    | { ok?: boolean; blockers?: number; warnings?: number; generatedAt?: string }
+    | undefined;
+  const aiReviewSummary = data['aiReviewSummary'] as
+    | { shipIt?: boolean; issues?: number }
+    | undefined;
   const recoverySummary = data['recoverySummary'] as
     | { nextAction?: string; reason?: string }
     | undefined;
@@ -308,6 +316,11 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
       ? (summary as { blockedReason?: string }).blockedReason
       : undefined;
   const promptSummaries = data['promptSummaries'] as Record<string, string> | undefined;
+  const artifactsIndex =
+    typeof data['artifactsIndex'] === 'object' && data['artifactsIndex']
+      ? (data['artifactsIndex'] as Record<string, Record<string, ArtifactEntry>>)
+      : undefined;
+  const convergence = deriveRunConvergence(data, flattenArtifactsIndex(artifactsIndex));
 
   const stuck = detectStuck(stepId, stepsRecord, snapshot.updatedAt);
 
@@ -378,6 +391,26 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
           },
         }
       : {}),
+    ...(localGateSummary?.ok !== undefined
+      ? {
+          localGate: {
+            ok: localGateSummary.ok,
+            blockers: localGateSummary.blockers ?? 0,
+            warnings: localGateSummary.warnings ?? 0,
+            ...(localGateSummary.generatedAt
+              ? { generatedAt: localGateSummary.generatedAt }
+              : {}),
+          },
+        }
+      : {}),
+    ...(aiReviewSummary?.shipIt !== undefined
+      ? {
+          aiReview: {
+            shipIt: aiReviewSummary.shipIt,
+            issues: aiReviewSummary.issues ?? 0,
+          },
+        }
+      : {}),
     ...(recoverySummary?.nextAction
       ? {
           recoverySummary: {
@@ -388,6 +421,7 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
       : {}),
     ...(blockedReason ? { blockedReason } : {}),
     ...(promptSummaries ? { promptSummaries: Object.values(promptSummaries) } : {}),
+    ...(convergence ? { convergence } : {}),
     ...(typeof toolCallSummary?.total === 'number'
       ? {
           toolCalls: {

@@ -304,6 +304,17 @@ Conversation pruning is configured under `ai.conversation.pruning`.
 - `runs list` - list recorded runs
 - `runs inspect <runId>` - inspect a run snapshot
 - `runs resume <runId>` - resume a run from state
+- `run status <runId>` - show convergence status and allowed next actions
+- `run explain <runId>` - explain why a run is waiting or blocked
+- `run resume <runId>` - resume using convergence rules (alias with intent)
+- `run override <runId> <reason...>` - record an explicit operator override
+- `run abort <runId> [reason]` - abort a run and mark it canceled
+
+### Run convergence and control
+
+Silvan derives a convergence status from run state and artifacts. Use `run status` or
+`run explain` to understand what a run is waiting for and which actions are safe
+to take (resume, override, wait, abort).
 
 ### Diagnostics
 
@@ -347,9 +358,40 @@ Silvan stores state in a global per-user location by default.
 - Planning produces a structured plan and stops if clarifications are required.
 - Execution pulls plan and task context via tools, keeping prompts smaller.
 - Verification failures are triaged deterministically; the verifier agent runs only when needed.
+- Local review gate runs deterministic checks before PR/review steps and can block unsafe changes.
 - Review loop waits for CI and re-requests reviewers after fixes.
 - Runs persist step cursors for resumability (`runs resume <runId>`).
 - Artifacts are stored outside the repo and indexed in run state (`runs inspect` or `silvan ui`).
+
+## Local Review Gate
+
+Silvan runs a deterministic local review gate before opening a PR or requesting review
+(configurable). It checks diff size, debug artifacts, whitespace issues, config/dependency
+changes, and verification status without spending tokens.
+
+Configure it under `review.localGate`:
+
+```ts
+review: {
+  localGate: {
+    enabled: true,
+    runWhen: 'beforeReviewRequest',
+    blockPrOnFail: true,
+  },
+}
+```
+
+## Doctor Command
+
+Run `silvan doctor` to diagnose setup issues. It reports:
+
+- git status/version
+- state directory paths + writability
+- config source and effective providers
+- token presence for enabled providers
+- verification command availability
+
+Use `--json` for machine output and `--network` to test provider connectivity.
 
 ## Prompt Schemas
 
