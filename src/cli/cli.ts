@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
@@ -11,6 +12,7 @@ import {
   renderConversationSummary,
   summarizeConversationSnapshot,
 } from '../ai/conversation';
+import { promptInitAnswers, writeInitConfig } from '../config/init';
 import { loadConfig } from '../config/load';
 import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
@@ -49,13 +51,18 @@ import {
   markRunAborted,
   writeOverrideArtifact,
 } from '../run/controls';
+import type { ArtifactEntry } from '../state/artifacts';
+import { readArtifact } from '../state/artifacts';
+import { deleteQueueRequest, listQueueRequests } from '../state/queue';
 import { initStateStore } from '../state/store';
+import { promptLocalTaskInput } from '../task/prompt-local-task';
 import { type LocalTaskInput, parseLocalTaskFile } from '../task/providers/local';
 import { inferTaskRefFromBranch, resolveTask } from '../task/resolve';
 import { mountDashboard, startPrSnapshotPoller } from '../ui';
 import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
+import { buildWorktreeName } from '../utils/worktree-name';
 
 const cli = cac('silvan');
 
@@ -71,6 +78,9 @@ type CliOptions = {
   apply?: boolean;
   dangerous?: boolean;
   network?: boolean;
+  printCd?: boolean;
+  openShell?: boolean;
+  exec?: string;
   task?: string;
   githubToken?: string;
   linearToken?: string;
@@ -177,6 +187,35 @@ cli.option('--max-review-loops <n>', 'Max review loop iterations');
 cli.option('--persist-sessions', 'Persist agent sessions across phases');
 cli.option('--verify-shell <path>', 'Shell used for verify commands');
 cli.option('--state-mode <mode>', 'Use repo or global state storage');
+
+cli
+  .command('init', 'Initialize silvan.config.ts with guided prompts')
+  .option('--yes', 'Skip prompts and use defaults')
+  .action(async (options: CliOptions) => {
+    const repo = await detectRepoContext({ cwd: process.cwd() });
+    const { config } = await loadConfig();
+    const useDefaults = options.yes ?? false;
+    const answers = useDefaults
+      ? {
+          branchPrefix: config.naming.branchPrefix,
+          worktreeDir: config.naming.worktreeDir,
+          enabledProviders: config.task.providers.enabled,
+          requestCopilot: config.github.requestCopilot,
+          verifyCommands: config.verify.commands.map((command) => ({
+            name: command.name,
+            cmd: command.cmd,
+          })),
+        }
+      : await promptInitAnswers(repo.repoRoot);
+
+    const result = await writeInitConfig(repo.repoRoot, answers);
+    if (!result) {
+      console.log('silvan.config.ts already exists.');
+      return;
+    }
+
+    console.log(`Wrote ${result.path}`);
+  });
 
 function parseNumberFlag(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -1087,6 +1126,49 @@ cli
   });
 
 cli
+  .command('learning show <runId>', 'Show learning notes for a run')
+  .action(async (runId: string, options: CliOptions) => {
+    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const data = snapshot.data as Record<string, unknown>;
+    const artifactsIndex =
+      typeof data['artifactsIndex'] === 'object' && data['artifactsIndex']
+        ? (data['artifactsIndex'] as Record<string, Record<string, unknown>>)
+        : undefined;
+    const notesEntry =
+      artifactsIndex?.['learning.notes']?.['notes'] ??
+      artifactsIndex?.['learning.notes']?.['data'];
+    if (!notesEntry || typeof notesEntry !== 'object') {
+      throw new Error('Learning notes not found for this run.');
+    }
+    if (!isArtifactEntry(notesEntry)) {
+      throw new Error('Learning notes artifact entry is invalid.');
+    }
+    const content = await readArtifact({ entry: notesEntry });
+    if (options.json) {
+      console.log(JSON.stringify(content, null, 2));
+      return;
+    }
+    if (notesEntry.kind === 'text') {
+      console.log(content);
+      return;
+    }
+    console.log(JSON.stringify(content, null, 2));
+  });
+
+function isArtifactEntry(value: unknown): value is ArtifactEntry {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record['path'] === 'string' &&
+    typeof record['stepId'] === 'string' &&
+    typeof record['name'] === 'string' &&
+    typeof record['digest'] === 'string' &&
+    typeof record['updatedAt'] === 'string' &&
+    (record['kind'] === 'json' || record['kind'] === 'text')
+  );
+}
+
+cli
   .command('run resume <runId>', 'Resume a run using convergence rules')
   .option('--dry-run', 'Allow only read-only tools')
   .option('--apply', 'Allow mutating tools')
@@ -1197,70 +1279,85 @@ cli
   .option('--desc <desc>', 'Local task description')
   .option('--ac <criteria>', 'Local task acceptance criteria (repeatable)')
   .option('--from-file <path>', 'Load local task details from a file')
+  .option('--print-cd', 'Print a cd command after creating the worktree', {
+    default: true,
+  })
+  .option('--open-shell', 'Open a subshell in the worktree')
+  .option('--exec <cmd>', 'Run a command in the worktree and exit')
   .action((taskRef: string | undefined, options: CliOptions) =>
     withCliContext(options, 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
-        const mode = ctx.events.mode;
-        const localInput = await buildLocalTaskInput(options);
-        const inferred =
+        let localInput = await buildLocalTaskInput(options);
+        let inferred =
           taskRef ??
           inferTaskRefFromBranch(ctx.repo.branch ?? '') ??
           localInput?.title ??
           '';
 
         if (!inferred) {
-          throw new Error(
-            'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-          );
+          if (!process.stdin.isTTY) {
+            throw new Error(
+              'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
+            );
+          }
+          localInput = await promptLocalTaskInput();
+          inferred = localInput.title;
         }
-
-        const resolved = await resolveTask(inferred, {
-          config: ctx.config,
-          repoRoot: ctx.repo.repoRoot,
-          state: ctx.state,
-          runId: ctx.runId,
-          ...(localInput ? { localInput } : {}),
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        });
-
-        console.log(
-          `Task: ${resolved.task.key ?? resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
-        );
-
-        const safeName = sanitizeName(resolved.task.key ?? resolved.task.id);
-        const worktree = await runStep(
+        await startTaskFlow({
           ctx,
-          'git.worktree.create',
-          'Create worktree',
-          async () =>
-            createWorktree({
-              repoRoot: ctx.repo.repoRoot,
-              name: safeName,
-              config: ctx.config,
-              bus: ctx.events.bus,
-              context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-            }),
-        );
-
-        await normalizeClaudeSettings({ worktreePath: worktree.path });
-
-        const installResult = await installDependencies({ worktreePath: worktree.path });
-        if (!installResult.ok) {
-          console.warn(
-            `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
-          );
-        }
-
-        await runPlanner(ctx, {
-          taskRef: resolved.ref.raw,
-          task: resolved.task,
-          worktreeName: safeName,
-          sessions,
+          ...(sessions ? { sessions } : {}),
+          taskRef: inferred,
+          ...(localInput ? { localInput } : {}),
+          printCd: options.printCd !== false,
+          ...(options.exec ? { exec: options.exec } : {}),
+          ...(options.openShell ? { openShell: options.openShell } : {}),
         });
       }),
     ),
   );
+
+cli.command('queue run', 'Process queued task requests').action((options: CliOptions) =>
+  withCliContext(options, 'headless', async (ctx) => {
+    const requests = await listQueueRequests({ state: ctx.state });
+    if (requests.length === 0) {
+      console.log('No queued requests.');
+      return;
+    }
+
+    for (const request of requests) {
+      await withRunContext(
+        {
+          cwd: process.cwd(),
+          mode: 'headless',
+          lock: true,
+          configOverrides: buildConfigOverrides(options),
+        },
+        async (runCtx) =>
+          withAgentSessions(
+            Boolean(runCtx.config.ai.sessions.persist),
+            async (sessions) => {
+              const localInput: LocalTaskInput = {
+                title: request.title,
+                ...(request.description ? { description: request.description } : {}),
+                ...(request.acceptanceCriteria?.length
+                  ? { acceptanceCriteria: request.acceptanceCriteria }
+                  : {}),
+              };
+              await startTaskFlow({
+                ctx: runCtx,
+                ...(sessions ? { sessions } : {}),
+                taskRef: request.title,
+                localInput,
+                printCd: false,
+              });
+            },
+          ),
+      );
+
+      await deleteQueueRequest({ state: ctx.state, requestId: request.id });
+    }
+  }),
+);
 
 async function buildLocalTaskInput(
   options: CliOptions,
@@ -1297,6 +1394,112 @@ async function buildLocalTaskInput(
   };
 
   return merged;
+}
+
+async function startTaskFlow(options: {
+  ctx: RunContext;
+  sessions?: ReturnType<typeof createSessionPool>;
+  taskRef: string;
+  localInput?: LocalTaskInput;
+  printCd: boolean;
+  exec?: string;
+  openShell?: boolean;
+}): Promise<void> {
+  const ctx = options.ctx;
+  const mode = ctx.events.mode;
+  const resolved = await resolveTask(options.taskRef, {
+    config: ctx.config,
+    repoRoot: ctx.repo.repoRoot,
+    state: ctx.state,
+    runId: ctx.runId,
+    ...(options.localInput ? { localInput: options.localInput } : {}),
+    bus: ctx.events.bus,
+    context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+  });
+
+  console.log(
+    `Task: ${resolved.task.key ?? resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
+  );
+
+  const safeName = buildWorktreeName(resolved.task);
+  const worktree = await runStep(
+    ctx,
+    'git.worktree.create',
+    'Create worktree',
+    async () =>
+      createWorktree({
+        repoRoot: ctx.repo.repoRoot,
+        name: safeName,
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+  );
+
+  ctx.repo.worktreePath = worktree.path;
+  if (worktree.branch) {
+    ctx.repo.branch = worktree.branch;
+  }
+  ctx.repo.isWorktree = true;
+
+  await normalizeClaudeSettings({ worktreePath: worktree.path });
+
+  const installResult = await installDependencies({ worktreePath: worktree.path });
+  if (!installResult.ok) {
+    console.warn(
+      `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+    );
+  }
+
+  await runPlanner(ctx, {
+    taskRef: resolved.ref.raw,
+    task: resolved.task,
+    worktreeName: safeName,
+    ...(options.sessions ? { sessions: options.sessions } : {}),
+  });
+
+  if (options.printCd) {
+    console.log(`cd ${worktree.path}`);
+  }
+  if (options.exec) {
+    runCommandInWorktree(options.exec, worktree.path);
+  }
+  if (options.openShell) {
+    openShellInWorktree(worktree.path);
+  }
+}
+
+function runCommandInWorktree(command: string, worktreePath: string): void {
+  if (!command.trim()) return;
+  const result = spawnSync(command, {
+    cwd: worktreePath,
+    stdio: 'inherit',
+    shell: true,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (typeof result.status === 'number' && result.status !== 0) {
+    process.exitCode = result.status;
+  }
+}
+
+function openShellInWorktree(worktreePath: string): void {
+  if (!process.stdin.isTTY) {
+    throw new Error('Cannot open a shell without a TTY.');
+  }
+  const shell =
+    process.platform === 'win32'
+      ? (process.env['COMSPEC'] ?? 'powershell.exe')
+      : (process.env['SHELL'] ?? '/bin/sh');
+  const result = spawnSync(shell, {
+    cwd: worktreePath,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  if (result.error) {
+    throw result.error;
+  }
 }
 
 async function loadRunSnapshotForCli(

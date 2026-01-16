@@ -70,6 +70,14 @@ export type RunRecord = {
     shipIt: boolean;
     issues: number;
   };
+  learning?: {
+    summary: string;
+    rules: number;
+    skills: number;
+    docs: number;
+    mode: string;
+    appliedTo?: string[];
+  };
   recoverySummary?: {
     nextAction: string;
     reason: string;

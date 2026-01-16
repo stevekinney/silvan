@@ -25,6 +25,11 @@ import {
   fetchUnresolvedReviewComments,
   resolveReviewThread,
 } from '../github/review';
+import {
+  applyLearningNotes,
+  generateLearningNotes,
+  renderLearningMarkdown,
+} from '../learning/notes';
 import { hashPrompt, renderPromptSummary } from '../prompts';
 import { runAiReviewer } from '../review/ai-reviewer';
 import { formatLocalGateSummary, generateLocalGateReport } from '../review/local-gate';
@@ -219,13 +224,14 @@ async function createCheckpointCommit(
   ctx: RunContext,
   message: string,
 ): Promise<{ committed: boolean; sha?: string }> {
+  const worktreeRoot = ctx.repo.worktreePath ?? ctx.repo.repoRoot;
   await runGit(['add', '-A'], {
-    cwd: ctx.repo.repoRoot,
+    cwd: worktreeRoot,
     context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
   });
 
   const diff = await runGit(['diff', '--cached', '--quiet'], {
-    cwd: ctx.repo.repoRoot,
+    cwd: worktreeRoot,
     context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
   });
 
@@ -234,7 +240,7 @@ async function createCheckpointCommit(
   }
 
   const commit = await runGit(['commit', '-m', message], {
-    cwd: ctx.repo.repoRoot,
+    cwd: worktreeRoot,
     context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
   });
 
@@ -243,7 +249,7 @@ async function createCheckpointCommit(
   }
 
   const shaResult = await runGit(['rev-parse', 'HEAD'], {
-    cwd: ctx.repo.repoRoot,
+    cwd: worktreeRoot,
     context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
   });
   const sha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : undefined;
@@ -653,6 +659,7 @@ export async function runImplementation(
   await changePhase(ctx, 'implement');
   const execModel = getModelForPhase(ctx.config, 'execute');
   const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
+  const worktreeRoot = ctx.repo.worktreePath ?? ctx.repo.repoRoot;
   const task = (data['task'] as Task | undefined) ?? undefined;
   const emitContext = {
     runId: ctx.runId,
@@ -717,7 +724,7 @@ export async function runImplementation(
             const result = await executePlan({
               snapshot: execSnapshot,
               model: execModel,
-              repoRoot: ctx.repo.repoRoot,
+              repoRoot: worktreeRoot,
               config: ctx.config,
               dryRun: Boolean(options.dryRun),
               allowDestructive: Boolean(options.apply),
@@ -788,7 +795,7 @@ export async function runImplementation(
           ctx,
           'verify.run',
           'Run verification',
-          () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+          () => runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
           {
             artifacts: (report) => ({ report }),
           },
@@ -1144,7 +1151,7 @@ export async function runImplementation(
           })
         : undefined;
     const diffStat = await runGit(['diff', '--stat', `${gateBaseBranch}...HEAD`], {
-      cwd: ctx.repo.repoRoot,
+      cwd: worktreeRoot,
       bus: ctx.events.bus,
       context: emitContext,
     });
@@ -1164,6 +1171,17 @@ export async function runImplementation(
                 ...(finding.file ? { file: finding.file } : {}),
               })),
             },
+            ...(task
+              ? {
+                  task: {
+                    ...(task.key ? { key: task.key } : {}),
+                    ...(task.title ? { title: task.title } : {}),
+                    ...(task.acceptanceCriteria.length > 0
+                      ? { acceptanceCriteria: task.acceptanceCriteria }
+                      : {}),
+                  },
+                }
+              : {}),
             store: conversationStore,
             config: ctx.config,
             bus: ctx.events.bus,
@@ -1213,6 +1231,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
   const githubToken = requireGitHubAuth(ctx.config);
   const execModel = getModelForPhase(ctx.config, 'execute');
   const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
+  const worktreeRoot = ctx.repo.worktreePath ?? ctx.repo.repoRoot;
   const headBranch = ctx.repo.branch;
   const reviewState = await ctx.state.readRunState(ctx.runId);
   const reviewData = (reviewState?.data as Record<string, unknown>) ?? {};
@@ -1339,7 +1358,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
             const result = await executePlan({
               snapshot: execSnapshot,
               model: execModel,
-              repoRoot: ctx.repo.repoRoot,
+              repoRoot: worktreeRoot,
               config: ctx.config,
               dryRun: Boolean(options.dryRun),
               allowDestructive: Boolean(options.apply),
@@ -1364,7 +1383,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         );
 
         const ciVerify = await runStep(ctx, 'ci.fix.verify', 'Verify CI fixes', () =>
-          runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+          runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
         );
         if (!ciVerify.ok) {
           throw new Error('Verification failed during CI fix');
@@ -1376,7 +1395,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
 
         await runStep(ctx, 'ci.fix.push', 'Push CI fixes', () =>
           runGit(['push', 'origin', headBranch], {
-            cwd: ctx.repo.repoRoot,
+            cwd: worktreeRoot,
             context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
           }),
         );
@@ -1742,7 +1761,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
             const result = await executePlan({
               snapshot: execSnapshot,
               model: execModel,
-              repoRoot: ctx.repo.repoRoot,
+              repoRoot: worktreeRoot,
               config: ctx.config,
               dryRun: Boolean(options.dryRun),
               allowDestructive: Boolean(options.apply),
@@ -1770,7 +1789,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           ctx,
           'review.verify',
           'Verify review fixes',
-          () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+          () => runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
           { artifacts: (report) => ({ report }) },
         );
         await updateState(ctx, (data) => ({
@@ -1811,7 +1830,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
 
         await runStep(ctx, 'review.push', 'Push review fixes', () =>
           runGit(['push', 'origin', headBranch], {
-            cwd: ctx.repo.repoRoot,
+            cwd: worktreeRoot,
             context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
           }),
         );
@@ -2012,9 +2031,168 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
   }
 }
 
+export async function runLearningNotes(ctx: RunContext): Promise<void> {
+  const config = ctx.config.learning;
+  if (!config.enabled) return;
+
+  const state = await ctx.state.readRunState(ctx.runId);
+  const data = getRunState((state?.data as Record<string, unknown>) ?? {});
+  const emitContext = {
+    runId: ctx.runId,
+    repoRoot: ctx.repo.repoRoot,
+    mode: ctx.events.mode,
+  };
+  const worktreeRoot = ctx.repo.worktreePath ?? ctx.repo.repoRoot;
+  const conversationStore = createConversationStore({
+    runId: ctx.runId,
+    state: ctx.state,
+    config: ctx.config,
+    bus: ctx.events.bus,
+    context: emitContext,
+  });
+
+  const task = data['task'] as Task | undefined;
+  const planResult = planSchema.safeParse(data['plan']);
+  const planSummary =
+    planResult.success && planResult.data.summary ? planResult.data.summary : undefined;
+  const summary =
+    typeof data['summary'] === 'object' && data['summary']
+      ? (data['summary'] as Record<string, unknown>)
+      : {};
+  const input = {
+    ...(task
+      ? { task: { key: task.key, title: task.title, provider: task.provider } }
+      : {}),
+    ...(planSummary ? { planSummary } : {}),
+    ...(typeof data['implementationSummary'] === 'string'
+      ? { implementationSummary: data['implementationSummary'] }
+      : {}),
+    ...(typeof data['verifySummary'] === 'object' && data['verifySummary']
+      ? { verification: data['verifySummary'] as { ok?: boolean } }
+      : {}),
+    ...(typeof data['localGateSummary'] === 'object' && data['localGateSummary']
+      ? { localGate: data['localGateSummary'] as { ok?: boolean } }
+      : {}),
+    ...(typeof data['reviewClassificationSummary'] === 'object' &&
+    data['reviewClassificationSummary']
+      ? {
+          review: {
+            unresolved:
+              typeof summary['unresolvedReviewCount'] === 'number'
+                ? summary['unresolvedReviewCount']
+                : 0,
+            actionable: (data['reviewClassificationSummary'] as { actionable?: number })
+              .actionable,
+          },
+        }
+      : {}),
+    ...(typeof data['ciFixSummary'] === 'object' && data['ciFixSummary']
+      ? { ciFixSummary: data['ciFixSummary'] as { summary?: string } }
+      : {}),
+    ...(typeof summary['blockedReason'] === 'string'
+      ? { blockedReason: summary['blockedReason'] }
+      : {}),
+    ...(typeof summary['prUrl'] === 'string' ? { pr: { url: summary['prUrl'] } } : {}),
+  } as import('../learning/notes').LearningInput;
+
+  const baseBranch = ctx.config.github.baseBranch ?? ctx.config.repo.defaultBranch;
+  const diffStat = await runGit(['diff', '--stat', `${baseBranch}...HEAD`], {
+    cwd: worktreeRoot,
+    bus: ctx.events.bus,
+    context: emitContext,
+  });
+  if (diffStat.stdout.trim()) {
+    input.diffStat = diffStat.stdout.trim();
+  }
+
+  const notesStep = getStepRecord(data, 'learning.notes');
+  const existingDataEntry = getArtifactEntry(data, 'learning.notes', 'data');
+  const existingNotes =
+    notesStep?.status === 'done' && existingDataEntry
+      ? await readArtifact<import('../learning/notes').LearningNotes>({
+          entry: existingDataEntry,
+        })
+      : undefined;
+
+  const notes =
+    existingNotes ??
+    (await runStep(
+      ctx,
+      'learning.notes',
+      'Generate learning notes',
+      () =>
+        generateLearningNotes({
+          input,
+          store: conversationStore,
+          config: ctx.config,
+          cacheDir: ctx.state.cacheDir,
+          bus: ctx.events.bus,
+          context: emitContext,
+        }),
+      {
+        inputs: { digest: hashString(JSON.stringify(input)) },
+        artifacts: (result) => ({ data: result }),
+      },
+    ));
+
+  const markdown = renderLearningMarkdown(ctx.runId, input, notes);
+  const notesEntry = getArtifactEntry(data, 'learning.notes', 'notes');
+  if (!notesEntry) {
+    await recordArtifacts(ctx, 'learning.notes', {
+      notes: markdown,
+    });
+  }
+
+  await updateState(ctx, (prev) => ({
+    ...prev,
+    learningSummary: {
+      summary: notes.summary,
+      rules: notes.rules.length,
+      skills: notes.skills.length,
+      docs: notes.docs.length,
+      mode: config.mode,
+    },
+  }));
+
+  if (config.mode === 'apply') {
+    const applyStep = getStepRecord(data, 'learning.apply');
+    if (applyStep?.status !== 'done') {
+      const applyTargets = {
+        ...(config.targets.rules ? { rules: config.targets.rules } : {}),
+        ...(config.targets.skills ? { skills: config.targets.skills } : {}),
+        ...(config.targets.docs ? { docs: config.targets.docs } : {}),
+      };
+      const applyResult = await runStep(
+        ctx,
+        'learning.apply',
+        'Apply learning updates',
+        () =>
+          applyLearningNotes({
+            runId: ctx.runId,
+            worktreeRoot,
+            notes,
+            targets: applyTargets,
+          }),
+        { artifacts: (result) => ({ result }) },
+      );
+      await updateState(ctx, (prev) => ({
+        ...prev,
+        learningSummary: {
+          ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
+            ? (prev['learningSummary'] as Record<string, unknown>)
+            : {}),
+          applied: true,
+          appliedTo: applyResult.appliedTo,
+        },
+      }));
+    }
+  }
+}
+
 export async function runRecovery(ctx: RunContext): Promise<void> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = (state?.data as Record<string, unknown>) ?? {};
+  const worktreeRoot = ctx.repo.worktreePath ?? ctx.repo.repoRoot;
   const emitContext = {
     runId: ctx.runId,
     repoRoot: ctx.repo.repoRoot,
@@ -2059,7 +2237,7 @@ export async function runRecovery(ctx: RunContext): Promise<void> {
         ctx,
         'recovery.verify',
         'Rerun verification',
-        () => runVerifyCommands(ctx.config, { cwd: ctx.repo.repoRoot }),
+        () => runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
         { artifacts: (report) => ({ report }) },
       );
       await updateState(ctx, (prev) => ({

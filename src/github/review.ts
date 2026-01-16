@@ -316,3 +316,43 @@ export async function resolveReviewThread(options: {
     throw error;
   }
 }
+
+export async function fetchReviewApprovals(options: {
+  pr: { owner: string; repo: string; number: number };
+  token: string;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<{ approvedCount: number }> {
+  const octokit = createOctokit(options.token);
+  let response;
+  try {
+    response = await octokit.rest.pulls.listReviews({
+      owner: options.pr.owner,
+      repo: options.pr.repo,
+      pull_number: options.pr.number,
+      per_page: 100,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'fetch_comments',
+      error,
+      details: 'Failed to fetch PR reviews',
+    });
+    throw error;
+  }
+
+  const latestByReviewer = new Map<string, string>();
+  for (const review of response.data) {
+    const login = review.user?.login;
+    if (!login) continue;
+    latestByReviewer.set(login, review.state ?? 'COMMENTED');
+  }
+
+  const approvedCount = Array.from(latestByReviewer.values()).filter(
+    (state) => state === 'APPROVED',
+  ).length;
+
+  return { approvedCount };
+}

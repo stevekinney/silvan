@@ -30,6 +30,7 @@ export type ConversationMessageKind =
   | 'verification'
   | 'recovery'
   | 'pr'
+  | 'learning'
   | 'error'
   | 'summary';
 

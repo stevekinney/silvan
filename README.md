@@ -65,6 +65,9 @@ Troubleshooting:
 ## Quick Start
 
 ```bash
+# Initialize a baseline silvan.config.ts
+silvan init
+
 # List worktrees
 silvan wt list
 
@@ -168,6 +171,9 @@ review: {
   },
 }
 ```
+
+Silvan can also run an optional AI reviewer after the local gate. It is enabled by
+default and can be disabled via `review.aiReviewer.enabled`.
 
 To override a blocked run, use `run override` with a reason.
 
@@ -281,6 +287,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 ### Agent workflows
 
 - `task start [task]` — create worktree + generate plan
+- `init` — scaffold a baseline `silvan.config.ts`
 - `agent plan` — generate a structured plan
 - `agent clarify` — answer required questions and re‑plan
 - `agent run` — execute plan (`--dry-run`, `--apply`, `--dangerous`)
@@ -297,7 +304,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 ### UI
 
-- `ui` — live Ink dashboard (read‑only)
+- `ui` — live Ink dashboard (read‑only). Start new work via `task start`.
 
 ## Safety Guarantees
 

@@ -108,6 +108,12 @@ export function ArtifactPanel({ run }: { run: RunRecord }): React.ReactElement {
           issues
         </Text>
       ) : null}
+      {run.learning ? (
+        <Text color="gray">
+          Learning: {run.learning.summary} • rules {run.learning.rules} • skills{' '}
+          {run.learning.skills} • docs {run.learning.docs} • {run.learning.mode}
+        </Text>
+      ) : null}
       {run.verificationDecision ? (
         <Text color="gray">
           Verify next: {run.verificationDecision.commands.join(', ') || 'none'}

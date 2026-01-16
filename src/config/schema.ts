@@ -57,8 +57,30 @@ export const configSchema = z.object({
       reviewers: z.array(z.string()).default([]),
       requestCopilot: z.boolean().default(true),
       baseBranch: z.string().optional(),
+      review: z
+        .object({
+          requireApproval: z.boolean().default(false),
+          requiredApprovals: z.number().int().positive().default(1),
+          pollIntervalMs: z.number().int().positive().default(15000),
+          timeoutMs: z.number().int().positive().default(900000),
+        })
+        .default({
+          requireApproval: false,
+          requiredApprovals: 1,
+          pollIntervalMs: 15000,
+          timeoutMs: 900000,
+        }),
     })
-    .default({ reviewers: [], requestCopilot: true }),
+    .default({
+      reviewers: [],
+      requestCopilot: true,
+      review: {
+        requireApproval: false,
+        requiredApprovals: 1,
+        pollIntervalMs: 15000,
+        timeoutMs: 900000,
+      },
+    }),
   verify: z
     .object({
       commands: z.array(verificationCommandSchema).default([]),
@@ -191,6 +213,7 @@ export const configSchema = z.object({
               verificationSummary: z.string().optional(),
               recovery: z.string().optional(),
               prDraft: z.string().optional(),
+              learningNotes: z.string().optional(),
               conversationSummary: z.string().optional(),
             })
             .default({}),
@@ -298,9 +321,9 @@ export const configSchema = z.object({
         }),
       aiReviewer: z
         .object({
-          enabled: z.boolean().default(false),
+          enabled: z.boolean().default(true),
         })
-        .default({ enabled: false }),
+        .default({ enabled: true }),
     })
     .default({
       localGate: {
@@ -312,7 +335,39 @@ export const configSchema = z.object({
         severities: {},
         allowConsoleLogPatterns: [],
       },
-      aiReviewer: { enabled: false },
+      aiReviewer: { enabled: true },
+    }),
+  learning: z
+    .object({
+      enabled: z.boolean().default(true),
+      mode: z.enum(['artifact', 'apply']).default('artifact'),
+      ai: z
+        .object({
+          enabled: z.boolean().default(false),
+        })
+        .default({ enabled: false }),
+      targets: z
+        .object({
+          rules: z.string().default('docs/rules.md'),
+          skills: z.string().default('docs/skills.md'),
+          docs: z.string().default('docs/learned.md'),
+        })
+        .partial()
+        .default({
+          rules: 'docs/rules.md',
+          skills: 'docs/skills.md',
+          docs: 'docs/learned.md',
+        }),
+    })
+    .default({
+      enabled: true,
+      mode: 'artifact',
+      ai: { enabled: false },
+      targets: {
+        rules: 'docs/rules.md',
+        skills: 'docs/skills.md',
+        docs: 'docs/learned.md',
+      },
     }),
 });
 

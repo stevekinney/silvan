@@ -135,7 +135,13 @@
     "github": {
       "default": {
         "reviewers": [],
-        "requestCopilot": true
+        "requestCopilot": true,
+        "review": {
+          "requireApproval": false,
+          "requiredApprovals": 1,
+          "pollIntervalMs": 15000,
+          "timeoutMs": 900000
+        }
       },
       "type": "object",
       "properties": {
@@ -161,9 +167,49 @@
         },
         "baseBranch": {
           "type": "string"
+        },
+        "review": {
+          "default": {
+            "requireApproval": false,
+            "requiredApprovals": 1,
+            "pollIntervalMs": 15000,
+            "timeoutMs": 900000
+          },
+          "type": "object",
+          "properties": {
+            "requireApproval": {
+              "default": false,
+              "type": "boolean"
+            },
+            "requiredApprovals": {
+              "default": 1,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "pollIntervalMs": {
+              "default": 15000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "timeoutMs": {
+              "default": 900000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "requireApproval",
+            "requiredApprovals",
+            "pollIntervalMs",
+            "timeoutMs"
+          ],
+          "additionalProperties": false
         }
       },
-      "required": ["reviewers", "requestCopilot"],
+      "required": ["reviewers", "requestCopilot", "review"],
       "additionalProperties": false
     },
     "verify": {
@@ -594,6 +640,9 @@
                 "prDraft": {
                   "type": "string"
                 },
+                "learningNotes": {
+                  "type": "string"
+                },
                 "conversationSummary": {
                   "type": "string"
                 }
@@ -688,7 +737,7 @@
           "allowConsoleLogPatterns": []
         },
         "aiReviewer": {
-          "enabled": false
+          "enabled": true
         }
       },
       "type": "object",
@@ -851,6 +900,48 @@
         },
         "aiReviewer": {
           "default": {
+            "enabled": true
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["localGate", "aiReviewer"],
+      "additionalProperties": false
+    },
+    "learning": {
+      "default": {
+        "enabled": true,
+        "mode": "artifact",
+        "ai": {
+          "enabled": false
+        },
+        "targets": {
+          "rules": "docs/rules.md",
+          "skills": "docs/skills.md",
+          "docs": "docs/learned.md"
+        }
+      },
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "artifact",
+          "type": "string",
+          "enum": ["artifact", "apply"]
+        },
+        "ai": {
+          "default": {
             "enabled": false
           },
           "type": "object",
@@ -862,9 +953,32 @@
           },
           "required": ["enabled"],
           "additionalProperties": false
+        },
+        "targets": {
+          "default": {
+            "rules": "docs/rules.md",
+            "skills": "docs/skills.md",
+            "docs": "docs/learned.md"
+          },
+          "type": "object",
+          "properties": {
+            "rules": {
+              "default": "docs/rules.md",
+              "type": "string"
+            },
+            "skills": {
+              "default": "docs/skills.md",
+              "type": "string"
+            },
+            "docs": {
+              "default": "docs/learned.md",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       },
-      "required": ["localGate", "aiReviewer"],
+      "required": ["enabled", "mode", "ai", "targets"],
       "additionalProperties": false
     }
   },
@@ -878,7 +992,8 @@
     "features",
     "state",
     "ai",
-    "review"
+    "review",
+    "learning"
   ],
   "additionalProperties": false
 }

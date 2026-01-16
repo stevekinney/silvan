@@ -2,10 +2,12 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { EventBus } from '../events/bus';
+import { writeQueueRequest } from '../state/queue';
 import type { StateStore } from '../state/store';
 import { FilterBar } from './components/filter-bar';
 import { HelpOverlay } from './components/help-overlay';
 import { OpenPrsPanel } from './components/open-prs-panel';
+import { RequestForm } from './components/request-form';
 import { RunDetails } from './components/run-details';
 import { RunList } from './components/run-list';
 import { loadRunSnapshots } from './loader';
@@ -25,6 +27,10 @@ export function Dashboard({
   const [filterActive, setFilterActive] = useState(false);
   const [filterValue, setFilterValue] = useState('');
   const [detailsView, setDetailsView] = useState(false);
+  const [requestActive, setRequestActive] = useState(false);
+  const [requestStep, setRequestStep] = useState<'title' | 'description'>('title');
+  const [requestTitle, setRequestTitle] = useState('');
+  const [requestDescription, setRequestDescription] = useState('');
   const { stdout } = useStdout();
   const isNarrow = (stdout?.columns ?? 100) < 100;
   const { exit } = useApp();
@@ -85,6 +91,16 @@ export function Dashboard({
     : undefined;
 
   useInput((input, key) => {
+    if (requestActive) {
+      if (key.escape) {
+        setRequestActive(false);
+        setRequestStep('title');
+        setRequestTitle('');
+        setRequestDescription('');
+        return;
+      }
+      return;
+    }
     if (filterActive) {
       if (key.escape) {
         setFilterActive(false);
@@ -99,6 +115,13 @@ export function Dashboard({
     }
     if (input === '?') {
       setSnapshot((prev) => ({ ...prev, helpVisible: !prev.helpVisible }));
+      return;
+    }
+    if (input === 'n') {
+      setRequestActive(true);
+      setRequestStep('title');
+      setRequestTitle('');
+      setRequestDescription('');
       return;
     }
     if (input === '/') {
@@ -131,6 +154,25 @@ export function Dashboard({
     }
   });
 
+  async function enqueueTaskRequest(): Promise<void> {
+    const title = requestTitle.trim();
+    if (!title) return;
+    await writeQueueRequest({
+      state: stateStore,
+      request: {
+        id: crypto.randomUUID(),
+        type: 'start-task',
+        title,
+        ...(requestDescription.trim() ? { description: requestDescription.trim() } : {}),
+        createdAt: new Date().toISOString(),
+      },
+    });
+    setRequestActive(false);
+    setRequestStep('title');
+    setRequestTitle('');
+    setRequestDescription('');
+  }
+
   function moveSelection(delta: number) {
     if (runs.length === 0) return;
     const index = runs.findIndex((run) => run.runId === selectedRunId);
@@ -159,8 +201,28 @@ export function Dashboard({
         />
       ) : null}
 
+      {requestActive ? (
+        <RequestForm
+          step={requestStep}
+          title={requestTitle}
+          description={requestDescription}
+          onTitleChange={setRequestTitle}
+          onDescriptionChange={setRequestDescription}
+          onSubmit={() => {
+            if (requestStep === 'title') {
+              if (!requestTitle.trim()) return;
+              setRequestStep('description');
+              return;
+            }
+            void enqueueTaskRequest();
+          }}
+        />
+      ) : null}
+
       {runs.length === 0 ? (
-        <Text color="gray">No runs yet. Start with `silvan task start`.</Text>
+        <Text color="gray">
+          No runs yet. Press n to queue a task, then run `silvan queue run`.
+        </Text>
       ) : isNarrow ? (
         detailsView && selectedRun ? (
           <RunDetails run={selectedRun} />

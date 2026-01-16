@@ -25,7 +25,8 @@ export type CognitionTask =
   | 'verificationSummary'
   | 'recovery'
   | 'prDraft'
-  | 'conversationSummary';
+  | 'conversationSummary'
+  | 'learningNotes';
 
 export type AiInvocation =
   | {

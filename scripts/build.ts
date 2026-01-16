@@ -12,6 +12,7 @@ await Bun.build({
   naming: '[dir]/[name].js',
   sourcemap: 'external',
   minify: true,
+  external: ['react-devtools-core'],
   loader: {
     '.graphql': 'text',
   },

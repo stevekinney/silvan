@@ -15,6 +15,7 @@ export type StateStore = {
   conversationsDir: string;
   artifactsDir: string;
   tasksDir: string;
+  queueDir: string;
   stateVersion: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: RunStateData) => Promise<string>;
@@ -55,8 +56,16 @@ export async function initStateStore(
     mode,
     ...(options?.root ? { stateRoot: options.root } : {}),
   });
-  const { root, runsDir, auditDir, cacheDir, metadataPath, artifactsDir, tasksDir } =
-    paths;
+  const {
+    root,
+    runsDir,
+    auditDir,
+    cacheDir,
+    metadataPath,
+    artifactsDir,
+    tasksDir,
+    queueDir,
+  } = paths;
 
   await mkdir(runsDir, { recursive: true });
   await mkdir(auditDir, { recursive: true });
@@ -64,6 +73,7 @@ export async function initStateStore(
   await mkdir(paths.conversationsDir, { recursive: true });
   await mkdir(artifactsDir, { recursive: true });
   await mkdir(tasksDir, { recursive: true });
+  await mkdir(queueDir, { recursive: true });
 
   const lockRelease =
     options?.lock === false
@@ -126,6 +136,7 @@ export async function initStateStore(
     conversationsDir: paths.conversationsDir,
     artifactsDir,
     tasksDir,
+    queueDir,
     stateVersion,
     lockRelease,
     writeRunState,

@@ -32,6 +32,11 @@ export async function runAiReviewer(options: {
     diffStat: string;
     findings: Array<{ severity: string; title: string; file?: string }>;
   };
+  task?: {
+    key?: string;
+    title?: string;
+    acceptanceCriteria?: string[];
+  };
   store: ConversationStore;
   config: Config;
   bus?: EventBus;
@@ -40,6 +45,7 @@ export async function runAiReviewer(options: {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are a code review assistant.');
   systemWriter.write('Review the summarized changes and local gate findings.');
+  systemWriter.write('Check whether the task acceptance criteria appear satisfied.');
   systemWriter.write(
     'Return JSON only: { shipIt: boolean, issues: [{severity, note, file?, line?, suggestion?}] }.',
   );
@@ -49,6 +55,7 @@ export async function runAiReviewer(options: {
   userWriter.write(
     JSON.stringify(
       {
+        task: options.task,
         diffStat: options.summary.diffStat,
         findings: options.summary.findings,
       },

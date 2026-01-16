@@ -286,6 +286,16 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const aiReviewSummary = data['aiReviewSummary'] as
     | { shipIt?: boolean; issues?: number }
     | undefined;
+  const learningSummary = data['learningSummary'] as
+    | {
+        summary?: string;
+        rules?: number;
+        skills?: number;
+        docs?: number;
+        mode?: string;
+        appliedTo?: string[];
+      }
+    | undefined;
   const recoverySummary = data['recoverySummary'] as
     | { nextAction?: string; reason?: string }
     | undefined;
@@ -408,6 +418,20 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
           aiReview: {
             shipIt: aiReviewSummary.shipIt,
             issues: aiReviewSummary.issues ?? 0,
+          },
+        }
+      : {}),
+    ...(learningSummary?.summary
+      ? {
+          learning: {
+            summary: learningSummary.summary,
+            rules: learningSummary.rules ?? 0,
+            skills: learningSummary.skills ?? 0,
+            docs: learningSummary.docs ?? 0,
+            mode: learningSummary.mode ?? 'artifact',
+            ...(learningSummary.appliedTo
+              ? { appliedTo: learningSummary.appliedTo }
+              : {}),
           },
         }
       : {}),
