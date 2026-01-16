@@ -141,7 +141,7 @@ Commands:
 - `run status <runId>` — show convergence status and next actions
 - `run explain <runId>` — show blocking reasons and relevant artifacts
 - `run resume <runId>` — resume using convergence rules
-- `run override <runId> <reason...>` — record an explicit operator override
+- `run override <runId> <reason…>` — record an explicit operator override
 - `run abort <runId> [reason]` — abort a run and mark it canceled
 
 “Blocked” means a deterministic gate failed and requires operator intent. “Waiting” means Silvan is waiting on CI or review state.
@@ -296,7 +296,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 ### Runs + operator control
 
 - `runs list` / `runs inspect <runId>` / `runs resume <runId>`
-- `run status <runId>` / `run explain <runId>` / `run override <runId> <reason...>` / `run abort <runId>`
+- `run status <runId>` / `run explain <runId>` / `run override <runId> <reason…>` / `run abort <runId>`
 
 ### Diagnostics
 

@@ -18,6 +18,11 @@ export type RunError = {
   ts?: string;
 };
 
+export type RunEventSummary = {
+  eventCount: number;
+  latestEventAt?: string;
+};
+
 export type RunRecord = {
   runId: string;
   repoId?: string;
@@ -86,6 +91,8 @@ export type RunRecord = {
     total: number;
     failed?: number;
   };
+  eventCount?: number;
+  latestEventAt?: string;
   taskId?: string;
   taskKey?: string;
   taskTitle?: string;

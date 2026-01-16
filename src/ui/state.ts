@@ -11,7 +11,6 @@ import type {
 } from './types';
 import { initialDashboardState } from './types';
 
-const DEFAULT_RUN_LIMIT = 25;
 const STUCK_LEASE_MS = 2 * 60 * 1000;
 
 export function reduceDashboard(state: DashboardState, event: AllEvents): DashboardState {
@@ -172,7 +171,7 @@ export function createDashboardState(): DashboardState {
 
 function upsertRun(state: DashboardState, run: RunRecord): DashboardState {
   const runs = { ...state.runs, [run.runId]: run };
-  const runIndex = buildRunIndex(runs, DEFAULT_RUN_LIMIT);
+  const runIndex = buildRunIndex(runs);
   const selection = state.selection ?? runIndex[0];
   return {
     ...state,
@@ -193,10 +192,9 @@ function createRunStub(runId: string, repoId: string, ts: string): RunRecord {
   };
 }
 
-function buildRunIndex(runs: Record<string, RunRecord>, limit: number): string[] {
+function buildRunIndex(runs: Record<string, RunRecord>): string[] {
   return Object.values(runs)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, limit)
     .map((run) => run.runId);
 }
 
@@ -230,6 +228,7 @@ function updateStep(
 
 function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const data = snapshot.data;
+  const eventSummary = snapshot.eventSummary;
   const runMeta = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
   const stepsRecord: Record<string, StepRecord> =
     typeof data['steps'] === 'object' && data['steps']
@@ -454,6 +453,14 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
               ? { failed: toolCallSummary.failed }
               : {}),
           },
+        }
+      : {}),
+    ...(eventSummary
+      ? {
+          eventCount: eventSummary.eventCount,
+          ...(eventSummary.latestEventAt
+            ? { latestEventAt: eventSummary.latestEventAt }
+            : {}),
         }
       : {}),
     ...(typeof (task as { id?: string }).id === 'string'

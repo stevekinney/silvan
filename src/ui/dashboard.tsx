@@ -10,11 +10,16 @@ import { OpenPrsPanel } from './components/open-prs-panel';
 import { RequestForm } from './components/request-form';
 import { RunDetails } from './components/run-details';
 import { RunList } from './components/run-list';
-import { loadRunSnapshots } from './loader';
+import {
+  createRunSnapshotCache,
+  loadRunSnapshots,
+  type RunSnapshotCursor,
+} from './loader';
 import { applyDashboardEvent, applyRunSnapshots, createDashboardState } from './state';
 import type { DashboardState, RunRecord } from './types';
 
 const EVENT_FLUSH_MS = 120;
+const PAGE_SIZE = 25;
 
 export function Dashboard({
   bus,
@@ -31,19 +36,17 @@ export function Dashboard({
   const [requestStep, setRequestStep] = useState<'title' | 'description'>('title');
   const [requestTitle, setRequestTitle] = useState('');
   const [requestDescription, setRequestDescription] = useState('');
+  const [nextCursor, setNextCursor] = useState<RunSnapshotCursor | null>(null);
   const { stdout } = useStdout();
   const isNarrow = (stdout?.columns ?? 100) < 100;
   const { exit } = useApp();
+  const loaderCache = useRef(createRunSnapshotCache());
 
   const queueRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventQueue = useRef([] as Parameters<typeof applyDashboardEvent>[1][]);
 
   useEffect(() => {
-    const refresh = async () => {
-      const runs = await loadRunSnapshots(stateStore, { limit: 25 });
-      setSnapshot((prev) => applyRunSnapshots(prev, runs));
-    };
-    void refresh();
+    void refreshRuns(PAGE_SIZE);
   }, [stateStore]);
 
   useEffect(() => {
@@ -130,9 +133,12 @@ export function Dashboard({
       return;
     }
     if (input === 'r') {
-      void loadRunSnapshots(stateStore, { limit: 25 }).then((runs) =>
-        setSnapshot((prev) => applyRunSnapshots(prev, runs)),
-      );
+      const limit = Math.max(PAGE_SIZE, snapshot.runIndex.length || 0);
+      void refreshRuns(limit);
+      return;
+    }
+    if (input === 'l') {
+      void loadMoreRuns();
       return;
     }
     if (input === 'b') {
@@ -183,11 +189,34 @@ export function Dashboard({
     }
   }
 
+  async function refreshRuns(limit: number): Promise<void> {
+    const page = await loadRunSnapshots(stateStore, {
+      limit,
+      cache: loaderCache.current,
+    });
+    setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
+    setNextCursor(page.nextCursor ?? null);
+  }
+
+  async function loadMoreRuns(): Promise<void> {
+    if (!nextCursor) return;
+    const page = await loadRunSnapshots(stateStore, {
+      limit: PAGE_SIZE,
+      cursor: nextCursor,
+      cache: loaderCache.current,
+    });
+    setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
+    setNextCursor(page.nextCursor ?? null);
+  }
+
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text>Silvan Mission Control</Text>
-        <Text color="gray">{runs.length} runs • / filter • ? help</Text>
+        <Text color="gray">
+          {runs.length} runs • / filter • ? help
+          {nextCursor ? ' • l load more' : ''}
+        </Text>
       </Box>
 
       {filterActive ? (
@@ -225,7 +254,7 @@ export function Dashboard({
         </Text>
       ) : isNarrow ? (
         detailsView && selectedRun ? (
-          <RunDetails run={selectedRun} />
+          <RunDetails run={selectedRun} stateStore={stateStore} />
         ) : (
           <RunList runs={runs} {...(selectedRunId ? { selectedRunId } : {})} />
         )
@@ -239,7 +268,9 @@ export function Dashboard({
             </Box>
           </Box>
           <Box flexGrow={1} flexDirection="column">
-            {selectedRun ? <RunDetails run={selectedRun} /> : null}
+            {selectedRun ? (
+              <RunDetails run={selectedRun} stateStore={stateStore} />
+            ) : null}
           </Box>
         </Box>
       )}

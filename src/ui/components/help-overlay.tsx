@@ -10,6 +10,7 @@ export function HelpOverlay(): React.ReactElement {
       <Text color="gray">b: back</Text>
       <Text color="gray">/: filter runs</Text>
       <Text color="gray">n: new task request</Text>
+      <Text color="gray">l: load more runs</Text>
       <Text color="gray">r: refresh from disk</Text>
       <Text color="gray">?: toggle help</Text>
       <Text color="gray">q: quit</Text>

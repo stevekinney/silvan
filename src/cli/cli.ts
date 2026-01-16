@@ -1243,7 +1243,7 @@ cli
   });
 
 cli
-  .command('run override <runId> <reason...>', 'Override a run gate with a reason')
+  .command('run override <runId> <reason…>', 'Override a run gate with a reason')
   .action(async (runId: string, reason: string[], options: CliOptions) => {
     const message = reason.join(' ').trim();
     if (!message) {
@@ -2064,27 +2064,39 @@ export async function run(argv: string[]): Promise<void> {
   // Step 3: Parse with cac
   cli.parse(processedArgv, { run: false });
 
-  // Step 4: Run the matched command
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- cac's return type is untyped.
-  const runPromise: Promise<unknown> | undefined = cli.runMatchedCommand();
-
-  // runMatchedCommand returns undefined when no command matches (e.g., --help)
-  if (runPromise instanceof Promise) {
-    try {
-      await runPromise;
-    } catch (error) {
-      const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
-      const traceEnabled = argv.includes('--trace');
-      const rendered = renderCliError(error, {
-        debug: debugEnabled,
-        trace: traceEnabled,
+  try {
+    if (!cli.matchedCommand && cli.args.length > 0) {
+      const unknownCommand = cli.args.join(' ');
+      throw new SilvanError({
+        code: 'unknown_command',
+        message: `Unknown command: ${unknownCommand}`,
+        userMessage: `Unknown command: ${unknownCommand}`,
+        kind: 'validation',
+        exitCode: 1,
+        nextSteps: ['Run `silvan --help` to see available commands.'],
       });
-      console.error(rendered.message);
-      if (rendered.error.exitCode !== undefined) {
-        process.exitCode = rendered.error.exitCode;
-      } else if (process.exitCode === undefined) {
-        process.exitCode = 1;
-      }
+    }
+
+    // Step 4: Run the matched command
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- cac's return type is untyped.
+    const runPromise: Promise<unknown> | undefined = cli.runMatchedCommand();
+
+    // runMatchedCommand returns undefined when no command matches (e.g., --help)
+    if (runPromise instanceof Promise) {
+      await runPromise;
+    }
+  } catch (error) {
+    const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
+    const traceEnabled = argv.includes('--trace');
+    const rendered = renderCliError(error, {
+      debug: debugEnabled,
+      trace: traceEnabled,
+    });
+    console.error(rendered.message);
+    if (rendered.error.exitCode !== undefined) {
+      process.exitCode = rendered.error.exitCode;
+    } else if (process.exitCode === undefined) {
+      process.exitCode = 1;
     }
   }
 }
