@@ -54,10 +54,12 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.7",
+    "@lasercat/homogenaize": "^1.2.41",
     "@linear/sdk": "^70.0.0",
     "armorer": "^0.4.0",
     "cac": "^6.7.14",
     "change-case": "^5.4.4",
+    "conversationalist": "^0.0.10",
     "cosmiconfig": "^9.0.0",
     "env-paths": "^3.0.0",
     "ink": "^6.6.0",
