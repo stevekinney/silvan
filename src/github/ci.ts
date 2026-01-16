@@ -13,10 +13,11 @@ async function findPrForBranch(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<PrWithHead> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   let response;
   try {
     response = await octokit.rest.pulls.list({
@@ -80,10 +81,11 @@ export async function getCiStatus(options: {
   repo: string;
   headSha: string;
   pr: PrIdent;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<CiResult> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   let checks;
   try {
     checks = await octokit.rest.checks.listForRef({
@@ -133,6 +135,7 @@ export async function waitForCi(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  token?: string;
   pollIntervalMs: number;
   timeoutMs: number;
   onHeartbeat?: () => Promise<void>;
@@ -165,6 +168,7 @@ export async function waitForCi(options: {
       repo: options.repo,
       headSha,
       pr,
+      ...(options.token ? { token: options.token } : {}),
       ...(options.bus ? { bus: options.bus } : {}),
       context: options.context,
     });

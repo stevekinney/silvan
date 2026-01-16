@@ -1,3 +1,5 @@
+import { ProseWriter } from 'prose-writer';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
@@ -20,13 +22,14 @@ export async function generateCiFixPlan(input: {
   bus?: EventBus;
   context: EmitContext;
 }): Promise<Plan> {
-  const prompt = [
-    'You are the CI triage agent for Silvan.',
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the CI triage agent for Silvan.');
+  promptWriter.write(
     'Given failing CI status, produce a structured fix plan in JSON only.',
-    'Return JSON with shape: { summary, steps, verification }.',
-    '',
-    JSON.stringify(input.ci, null, 2),
-  ].join('\n');
+  );
+  promptWriter.write('Return JSON with shape: { summary, steps, verification }.');
+  promptWriter.write(JSON.stringify(input.ci, null, 2));
+  const prompt = promptWriter.toString().trimEnd();
 
   const result = await runClaudePrompt({
     message: prompt,

@@ -25,7 +25,7 @@ export async function runVerifyCommands(
   for (const cmd of commands) {
     const argv = cmd.args?.length
       ? [cmd.cmd, ...cmd.args]
-      : [Bun.env['SHELL'] ?? 'sh', '-lc', cmd.cmd];
+      : [config.verify.shell ?? Bun.env['SHELL'] ?? 'sh', '-lc', cmd.cmd];
     const proc = Bun.spawn(argv, { cwd: options?.cwd ?? process.cwd() });
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();

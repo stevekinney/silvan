@@ -1,17 +1,19 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ProseWriter } from 'prose-writer';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
-import { fetchLinearTicket } from '../linear/linear';
+import type { Task } from '../task/types';
 import { hashString } from '../utils/hash';
 import { type Plan, planSchema } from './schemas';
 import type { ClaudeSession } from './sdk';
 import { runClaudePrompt } from './sdk';
 
 export type PlannerInput = {
-  ticketId?: string;
+  task?: Task;
   worktreeName?: string;
   repoRoot: string;
   model: string;
@@ -48,30 +50,36 @@ async function summarizeRepo(repoRoot: string): Promise<RepoSummary> {
 }
 
 export async function generatePlan(input: PlannerInput): Promise<Plan> {
-  const ticket = input.ticketId ? await fetchLinearTicket(input.ticketId) : undefined;
   const repoSummary = await summarizeRepo(input.repoRoot);
+  const task = input.task;
 
-  const prompt = [
-    'You are a planning agent for the Silvan CLI.',
-    'Generate a structured plan in JSON only (no Markdown).',
-    '',
-    `Ticket: ${ticket ? `${ticket.identifier} ${ticket.title}` : 'None'}`,
-    `Description: ${ticket?.description ?? 'N/A'}`,
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are a planning agent for the Silvan CLI.');
+  promptWriter.write('Generate a structured plan in JSON only (no Markdown).');
+  promptWriter.write(`Task: ${task ? `${task.id} ${task.title}` : 'None'}`);
+  promptWriter.write(`Description: ${task?.description ?? 'N/A'}`);
+  promptWriter.write(
+    `Acceptance criteria: ${task?.acceptanceCriteria?.join('; ') ?? 'N/A'}`,
+  );
+  promptWriter.write(
     `Clarifications: ${JSON.stringify(input.clarifications ?? {}, null, 2)}`,
-    `Repo package: ${repoSummary.packageName ?? 'unknown'}`,
-    `Repo root entries: ${repoSummary.rootEntries.join(', ')}`,
-    `Worktree: ${input.worktreeName ?? 'current'}`,
-    '',
-    'Plan requirements:',
-    '- Ordered steps with ids.',
-    '- Explicit verification steps.',
-    '- Explicit files/areas likely touched.',
-    '- Explicit risk/edge-case checks.',
-    '- Explicit stop conditions.',
-    '',
-    'Return JSON with shape:',
+  );
+  promptWriter.write(`Repo package: ${repoSummary.packageName ?? 'unknown'}`);
+  promptWriter.write(`Repo root entries: ${repoSummary.rootEntries.join(', ')}`);
+  promptWriter.write(`Worktree: ${input.worktreeName ?? 'current'}`);
+  promptWriter.write('Plan requirements:');
+  promptWriter.list(
+    'Ordered steps with ids.',
+    'Explicit verification steps.',
+    'Explicit files/areas likely touched.',
+    'Explicit risk/edge-case checks.',
+    'Explicit stop conditions.',
+  );
+  promptWriter.write('Return JSON with shape:');
+  promptWriter.write(
     '{ summary: string, steps: [{id,title,description,files,verification,risks,stopConditions}], verification: string[], questions?: [{id,text,required}] }',
-  ].join('\n');
+  );
+  const prompt = promptWriter.toString().trimEnd();
 
   const result = await runClaudePrompt({
     message: prompt,
@@ -104,7 +112,7 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
         context: input.context,
         payload: {
           model: { provider: 'anthropic', model: input.model },
-          planKind: 'ticket_plan' as const,
+          planKind: 'task_plan' as const,
           planDigest,
         },
       }),

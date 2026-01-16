@@ -57,10 +57,30 @@ export async function requireGitHubConfig(options: {
   return { ...parsed, source: 'origin' };
 }
 
-export function requireGitHubAuth(): void {
-  if (!Bun.env['GITHUB_TOKEN'] && !Bun.env['GH_TOKEN']) {
+export function resolveGitHubToken(config: Config): string | undefined {
+  return config.github.token;
+}
+
+export function requireGitHubAuth(config: Config): string {
+  const token = resolveGitHubToken(config);
+  if (!token) {
     throw new Error(
-      'Missing GITHUB_TOKEN or GH_TOKEN (needs repo scopes for private repositories).',
+      'Missing GitHub token (configure github.token or set GITHUB_TOKEN/GH_TOKEN).',
     );
   }
+  return token;
+}
+
+export function resolveLinearToken(config: Config): string | undefined {
+  return config.linear.token;
+}
+
+export function requireLinearAuth(config: Config): string {
+  const token = resolveLinearToken(config);
+  if (!token) {
+    throw new Error(
+      'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
+    );
+  }
+  return token;
 }

@@ -1,3 +1,4 @@
+import { ProseWriter } from 'prose-writer';
 import { z } from 'zod';
 
 import type { EventBus } from '../events/bus';
@@ -28,13 +29,16 @@ export async function decideVerification(input: {
   bus?: EventBus;
   context: EmitContext;
 }): Promise<VerificationDecision> {
-  const prompt = [
-    'You are the verification agent for Silvan.',
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the verification agent for Silvan.');
+  promptWriter.write(
     'Given the verification report, decide which command(s) to run next.',
+  );
+  promptWriter.write(
     'Return JSON only with: { commands: string[], rationale: string, askUser?: boolean }.',
-    '',
-    JSON.stringify(input.report, null, 2),
-  ].join('\n');
+  );
+  promptWriter.write(JSON.stringify(input.report, null, 2));
+  const prompt = promptWriter.toString().trimEnd();
 
   const result = await runClaudePrompt({
     message: prompt,

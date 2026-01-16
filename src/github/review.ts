@@ -4,6 +4,9 @@ import { createEnvelope } from '../events/emit';
 import type { PrIdent } from '../events/schema';
 import { createOctokit } from './client';
 import { emitGitHubError } from './errors';
+import resolveThreadMutation from './queries/resolve-thread.graphql';
+import reviewThreadQuery from './queries/review-thread.graphql';
+import reviewThreadsQuery from './queries/review-threads.graphql';
 
 export type ReviewComment = {
   id: string;
@@ -20,72 +23,9 @@ export type ReviewCommentsResult = {
   comments: ReviewComment[];
 };
 
-const RESOLVE_THREAD_MUTATION = `
-  mutation ResolveReviewThread($threadId: ID!) {
-    resolveReviewThread(input: { threadId: $threadId }) {
-      thread {
-        id
-        isResolved
-      }
-    }
-  }
-`;
-
-const REVIEW_THREADS_QUERY = `
-  query UnresolvedReviewThreads(
-    $owner: String!
-    $repo: String!
-    $number: Int!
-    $after: String
-  ) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $number) {
-        reviewThreads(first: 100, after: $after) {
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-          nodes {
-            id
-            isResolved
-            isOutdated
-            comments(first: 100) {
-              nodes {
-                id
-                body
-                path
-                line
-                url
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-const REVIEW_THREAD_QUERY = `
-  query ReviewThread($id: ID!) {
-    node(id: $id) {
-      __typename
-      ... on PullRequestReviewThread {
-        id
-        isResolved
-        isOutdated
-        comments(first: 100) {
-          nodes {
-            id
-            body
-            path
-            line
-            url
-          }
-        }
-      }
-    }
-  }
-`;
+const RESOLVE_THREAD_MUTATION = resolveThreadMutation;
+const REVIEW_THREADS_QUERY = reviewThreadsQuery;
+const REVIEW_THREAD_QUERY = reviewThreadQuery;
 
 type ReviewThreadsResponse = {
   repository: {
@@ -150,10 +90,11 @@ async function findPrForBranch(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<PrIdent> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   let prs;
   try {
     prs = await octokit.rest.pulls.list({
@@ -198,10 +139,11 @@ async function fetchReviewThreads(options: {
   owner: string;
   repo: string;
   prNumber: number;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<ReviewThreadList> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   const nodes: ReviewThreadList = [];
   let after: string | null = null;
 
@@ -244,10 +186,11 @@ async function fetchReviewThreads(options: {
 
 export async function fetchReviewThreadById(options: {
   threadId: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<ReviewThreadNode> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   let response;
   try {
     response = await octokit.graphql<ReviewThreadResponse>(REVIEW_THREAD_QUERY, {
@@ -275,6 +218,7 @@ export async function fetchUnresolvedReviewComments(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<ReviewCommentsResult> {
@@ -283,6 +227,7 @@ export async function fetchUnresolvedReviewComments(options: {
     owner: options.owner,
     repo: options.repo,
     prNumber: pr.number,
+    ...(options.token ? { token: options.token } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     context: options.context,
   });
@@ -331,10 +276,11 @@ export async function fetchUnresolvedReviewComments(options: {
 export async function resolveReviewThread(options: {
   threadId: string;
   pr?: PrIdent;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<{ resolved: boolean }> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   try {
     const response = await octokit.graphql<ResolveThreadResponse>(
       RESOLVE_THREAD_MUTATION,

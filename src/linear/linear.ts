@@ -7,19 +7,27 @@ export type LinearTicket = {
   description: string | null;
   url: string;
   state?: string | null;
+  status?: string | null;
   teamKey?: string | null;
+  labels?: string[];
+  assignee?: string | null;
 };
 
-function getLinearClient(): LinearClient {
-  const apiKey = Bun.env['LINEAR_API_KEY'];
-  if (!apiKey) {
-    throw new Error('Missing LINEAR_API_KEY');
+function getLinearClient(apiKey?: string): LinearClient {
+  const resolved = apiKey ?? Bun.env['LINEAR_API_KEY'];
+  if (!resolved) {
+    throw new Error(
+      'Missing Linear token (configure linear.token or set LINEAR_API_KEY).',
+    );
   }
-  return new LinearClient({ apiKey });
+  return new LinearClient({ apiKey: resolved });
 }
 
-export async function fetchLinearTicket(idOrKey: string): Promise<LinearTicket> {
-  const client = getLinearClient();
+export async function fetchLinearTicket(
+  idOrKey: string,
+  token?: string,
+): Promise<LinearTicket> {
+  const client = getLinearClient(token);
   const issue = await client.issue(idOrKey);
   if (!issue) {
     throw new Error(`Linear ticket not found: ${idOrKey}`);
@@ -27,6 +35,9 @@ export async function fetchLinearTicket(idOrKey: string): Promise<LinearTicket> 
 
   const state = await issue.state;
   const team = await issue.team;
+  const assignee = await issue.assignee;
+  const labels = await issue.labels();
+  const labelNames = labels?.nodes?.map((label) => label.name) ?? [];
 
   return {
     id: issue.id,
@@ -35,15 +46,19 @@ export async function fetchLinearTicket(idOrKey: string): Promise<LinearTicket> 
     description: issue.description ?? null,
     url: issue.url,
     state: state?.name ?? null,
+    status: state?.name ?? null,
     teamKey: team?.key ?? null,
+    labels: labelNames,
+    assignee: assignee?.name ?? null,
   };
 }
 
 export async function moveLinearTicket(
   idOrKey: string,
   stateName: string,
+  token?: string,
 ): Promise<void> {
-  const client = getLinearClient();
+  const client = getLinearClient(token);
   const issue = await client.issue(idOrKey);
   if (!issue) {
     throw new Error(`Linear ticket not found: ${idOrKey}`);

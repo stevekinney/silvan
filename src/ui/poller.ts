@@ -8,6 +8,7 @@ import { fetchUnresolvedReviewComments } from '../github/review';
 export function startPrSnapshotPoller(options: {
   owner: string;
   repo: string;
+  token?: string;
   bus: EventBus;
   context: EmitContext;
   intervalMs?: number;
@@ -20,6 +21,7 @@ export function startPrSnapshotPoller(options: {
     const prs = await listOpenPullRequests({
       owner: options.owner,
       repo: options.repo,
+      ...(options.token ? { token: options.token } : {}),
       bus: options.bus,
       context: options.context,
     });
@@ -31,6 +33,7 @@ export function startPrSnapshotPoller(options: {
         repo: options.repo,
         headSha: pr.headSha,
         pr: pr.pr,
+        ...(options.token ? { token: options.token } : {}),
         bus: options.bus,
         context: options.context,
       });
@@ -38,6 +41,7 @@ export function startPrSnapshotPoller(options: {
         owner: options.owner,
         repo: options.repo,
         headBranch: pr.headBranch,
+        ...(options.token ? { token: options.token } : {}),
         context: options.context,
       });
       snapshots.push({

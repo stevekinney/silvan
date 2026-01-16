@@ -1,109 +1,119 @@
-import type { AllEvents, DashboardState } from './types';
+import type { CiState, Phase, StepStatus } from '../events/schema';
+import type { RunSnapshot } from './loader';
+import type {
+  AllEvents,
+  DashboardState,
+  RunRecord,
+  RunStatus,
+  RunStepSummary,
+} from './types';
 import { initialDashboardState } from './types';
+
+const DEFAULT_RUN_LIMIT = 25;
+const STUCK_LEASE_MS = 2 * 60 * 1000;
 
 export function reduceDashboard(state: DashboardState, event: AllEvents): DashboardState {
   switch (event.type) {
     case 'run.started':
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [event.payload.runId]: {
-            runId: event.payload.runId,
-            phase: 'idle',
-            updatedAt: event.ts,
-          },
-        },
-      };
+      return upsertRun(state, {
+        runId: event.payload.runId,
+        repoId: event.repoId,
+        repoLabel: event.repoId,
+        status: 'running',
+        phase: 'idle',
+        updatedAt: event.ts,
+      });
     case 'run.phase_changed': {
-      const run = state.runs[event.runId];
-      if (!run) return state;
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [event.runId]: {
-            ...run,
-            phase: event.payload.to,
-            updatedAt: event.ts,
-          },
-        },
-      };
+      const run =
+        state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
+      return upsertRun(state, {
+        ...run,
+        phase: event.payload.to,
+        updatedAt: event.ts,
+      });
     }
     case 'run.step': {
+      const run =
+        state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
+      const step = updateStep(run.steps, event.payload, event.ts);
+      return upsertRun(state, {
+        ...run,
+        step: step.current,
+        steps: step.steps,
+        updatedAt: event.ts,
+        ...(event.payload.status === 'failed'
+          ? {
+              lastError: {
+                message: `Step failed: ${event.payload.title}`,
+                source: event.source,
+                stepId: event.payload.stepId,
+                ts: event.ts,
+              },
+              status: 'failed',
+            }
+          : {}),
+      });
+    }
+    case 'run.finished': {
       const run = state.runs[event.runId];
       if (!run) return state;
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [event.runId]: {
-            ...run,
-            step: {
-              stepId: event.payload.stepId,
-              title: event.payload.title,
-              status: event.payload.status,
-            },
-            updatedAt: event.ts,
-          },
-        },
-      };
+      const status: RunStatus =
+        event.payload.status === 'success'
+          ? 'success'
+          : event.payload.status === 'failed'
+            ? 'failed'
+            : event.payload.status === 'canceled'
+              ? 'canceled'
+              : 'unknown';
+      return upsertRun(state, {
+        ...run,
+        status,
+        finishedAt: event.ts,
+        updatedAt: event.ts,
+      });
     }
     case 'github.pr_opened_or_updated': {
-      const run = state.runs[event.runId];
-      if (!run) return state;
+      const run =
+        state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
       const pr = {
         id: `${event.payload.pr.owner}/${event.payload.pr.repo}#${event.payload.pr.number}`,
-        ci: 'unknown' as const,
-        unresolvedReviewCount: 0,
         ...(event.payload.pr.url ? { url: event.payload.pr.url } : {}),
       };
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [event.runId]: {
-            ...run,
-            pr,
-            updatedAt: event.ts,
-          },
-        },
-      };
+      return upsertRun(state, {
+        ...run,
+        pr,
+        updatedAt: event.ts,
+      });
     }
     case 'ci.status': {
-      const run = state.runs[event.runId];
-      if (!run || !run.pr) return state;
-      return {
-        ...state,
-        runs: {
-          ...state.runs,
-          [event.runId]: {
-            ...run,
-            pr: {
-              ...run.pr,
-              ci: event.payload.state,
-            },
-            updatedAt: event.ts,
-          },
+      const run =
+        state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
+      return upsertRun(state, {
+        ...run,
+        ci: {
+          state: event.payload.state,
+          ...(event.payload.summary ? { summary: event.payload.summary } : {}),
         },
-      };
+        updatedAt: event.ts,
+      });
     }
     case 'github.review_comments_fetched': {
-      const run = state.runs[event.runId];
-      if (!run || !run.pr) return state;
+      const run =
+        state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
+      const iteration = run.review?.iteration;
+      return upsertRun(state, {
+        ...run,
+        review: {
+          unresolvedCount: event.payload.unresolvedCount,
+          ...(typeof iteration === 'number' ? { iteration } : {}),
+        },
+        updatedAt: event.ts,
+      });
+    }
+    case 'github.prs_snapshot': {
       return {
         ...state,
-        runs: {
-          ...state.runs,
-          [event.runId]: {
-            ...run,
-            pr: {
-              ...run.pr,
-              unresolvedReviewCount: event.payload.unresolvedCount,
-            },
-            updatedAt: event.ts,
-          },
-        },
+        openPrs: event.payload.prs,
       };
     }
     case 'worktree.listed': {
@@ -116,14 +126,23 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
         })),
       };
     }
-    case 'github.prs_snapshot': {
-      return {
-        ...state,
-        openPrs: event.payload.prs,
-      };
-    }
-    default:
+    default: {
+      if (event.level === 'error') {
+        const run =
+          state.runs[event.runId] ?? createRunStub(event.runId, event.repoId, event.ts);
+        return upsertRun(state, {
+          ...run,
+          lastError: {
+            message: event.error?.message ?? event.message ?? 'Unknown error',
+            source: event.source,
+            ts: event.ts,
+          },
+          status: run.status === 'unknown' ? 'failed' : run.status,
+          updatedAt: event.ts,
+        });
+      }
       return state;
+    }
   }
 }
 
@@ -134,6 +153,229 @@ export function applyDashboardEvent(
   return reduceDashboard(state, event);
 }
 
+export function applyRunSnapshots(
+  state: DashboardState,
+  snapshots: RunSnapshot[],
+): DashboardState {
+  let next = state;
+  for (const snapshot of snapshots) {
+    next = upsertRun(next, deriveRunFromSnapshot(snapshot));
+  }
+  return next;
+}
+
 export function createDashboardState(): DashboardState {
   return initialDashboardState();
+}
+
+function upsertRun(state: DashboardState, run: RunRecord): DashboardState {
+  const runs = { ...state.runs, [run.runId]: run };
+  const runIndex = buildRunIndex(runs, DEFAULT_RUN_LIMIT);
+  const selection = state.selection ?? runIndex[0];
+  return {
+    ...state,
+    runs,
+    runIndex,
+    ...(selection ? { selection } : {}),
+  };
+}
+
+function createRunStub(runId: string, repoId: string, ts: string): RunRecord {
+  return {
+    runId,
+    repoId,
+    repoLabel: repoId,
+    status: 'running',
+    phase: 'idle',
+    updatedAt: ts,
+  };
+}
+
+function buildRunIndex(runs: Record<string, RunRecord>, limit: number): string[] {
+  return Object.values(runs)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, limit)
+    .map((run) => run.runId);
+}
+
+function updateStep(
+  steps: RunStepSummary[] | undefined,
+  payload: { stepId: string; title: string; status: StepStatus },
+  ts: string,
+): { current: RunStepSummary; steps: RunStepSummary[] } {
+  const existing = steps ?? [];
+  const index = existing.findIndex((step) => step.stepId === payload.stepId);
+  const startedAt = payload.status === 'running' ? ts : existing[index]?.startedAt;
+  const endedAt =
+    payload.status === 'succeeded' || payload.status === 'failed'
+      ? ts
+      : existing[index]?.endedAt;
+  const next: RunStepSummary = {
+    stepId: payload.stepId,
+    title: payload.title,
+    status: payload.status,
+    ...(startedAt ? { startedAt } : {}),
+    ...(endedAt ? { endedAt } : {}),
+  };
+  const nextSteps = [...existing];
+  if (index >= 0) {
+    nextSteps[index] = { ...existing[index], ...next };
+  } else {
+    nextSteps.push(next);
+  }
+  return { current: next, steps: nextSteps };
+}
+
+function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
+  const data = snapshot.data;
+  const runMeta = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
+  const stepsRecord: Record<string, StepRecord> =
+    typeof data['steps'] === 'object' && data['steps']
+      ? (data['steps'] as Record<string, StepRecord>)
+      : {};
+  const summary =
+    typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {};
+  const prData = typeof data['pr'] === 'object' && data['pr'] ? data['pr'] : undefined;
+  const task = typeof data['task'] === 'object' && data['task'] ? data['task'] : {};
+
+  const phase = (runMeta as { phase?: Phase }).phase ?? 'idle';
+  const status = mapRunStatus((runMeta as { status?: string }).status);
+  const stepId = (runMeta as { step?: string }).step;
+
+  const stepSummaries = mapStepSummaries(stepsRecord);
+  const currentStep = stepId
+    ? stepSummaries.find((step) => step.stepId === stepId)
+    : undefined;
+
+  const lastFailed = [...stepSummaries]
+    .filter((step) => step.status === 'failed')
+    .sort((a, b) => (b.endedAt ?? '').localeCompare(a.endedAt ?? ''))[0];
+  const lastFailedMessage =
+    lastFailed && stepsRecord[lastFailed.stepId]?.error?.message
+      ? stepsRecord[lastFailed.stepId]?.error?.message
+      : undefined;
+
+  const verifyReport = data['verifyReport'] as { ok?: boolean } | undefined;
+  const verifyStepRecord = stepsRecord['verify.run'];
+  const verifyRunAt = verifyStepRecord?.endedAt ?? verifyStepRecord?.startedAt;
+  const reviewIteration =
+    typeof data['reviewIteration'] === 'number' ? data['reviewIteration'] : undefined;
+  const toolCalls = Array.isArray(data['toolCalls']) ? data['toolCalls'] : undefined;
+  const ciState = (summary as { ci?: CiState }).ci;
+  const prUrl =
+    typeof (summary as { prUrl?: string }).prUrl === 'string'
+      ? (summary as { prUrl?: string }).prUrl
+      : undefined;
+  const prInfo = prData as
+    | { url?: string; number?: number; owner?: string; repo?: string }
+    | undefined;
+  const unresolvedValue = (summary as { unresolvedReviewCount?: number })
+    .unresolvedReviewCount;
+  const unresolved: number = typeof unresolvedValue === 'number' ? unresolvedValue : 0;
+
+  const stuck = detectStuck(stepId, stepsRecord, snapshot.updatedAt);
+
+  return {
+    runId: snapshot.runId,
+    ...(snapshot.repoId ? { repoId: snapshot.repoId } : {}),
+    ...(snapshot.repoLabel ? { repoLabel: snapshot.repoLabel } : {}),
+    status,
+    phase,
+    ...(currentStep ? { step: currentStep } : {}),
+    ...(stepSummaries.length > 0 ? { steps: stepSummaries } : {}),
+    ...((prInfo?.number && prInfo?.owner && prInfo?.repo
+      ? {
+          pr: {
+            id: `${prInfo.owner}/${prInfo.repo}#${prInfo.number}`,
+            ...(prInfo.url ? { url: prInfo.url } : {}),
+          },
+        }
+      : prUrl
+        ? { pr: { id: 'PR', url: prUrl } }
+        : {}) as Partial<Pick<RunRecord, 'pr'>>),
+    ...(ciState ? { ci: { state: ciState } } : {}),
+    review: {
+      unresolvedCount: unresolved,
+      ...(typeof reviewIteration === 'number' ? { iteration: reviewIteration } : {}),
+    },
+    ...(verifyReport?.ok !== undefined
+      ? {
+          verification: {
+            ok: verifyReport.ok,
+            ...(verifyRunAt ? { lastRunAt: verifyRunAt } : {}),
+          },
+        }
+      : {}),
+    ...(toolCalls ? { toolCalls: { total: toolCalls.length } } : {}),
+    ...(typeof (task as { id?: string }).id === 'string'
+      ? { taskId: (task as { id?: string }).id }
+      : {}),
+    ...(typeof (task as { title?: string }).title === 'string'
+      ? { taskTitle: (task as { title?: string }).title }
+      : {}),
+    ...(lastFailed
+      ? {
+          lastError: {
+            message: lastFailedMessage ?? `Step failed: ${lastFailed.stepId}`,
+            stepId: lastFailed.stepId,
+            ...(lastFailed.endedAt ? { ts: lastFailed.endedAt } : {}),
+          },
+        }
+      : {}),
+    ...(stuck ? { stuck } : {}),
+    updatedAt: snapshot.updatedAt,
+    ...((runMeta as { startedAt?: string }).startedAt
+      ? { startedAt: (runMeta as { startedAt?: string }).startedAt }
+      : {}),
+    ...((runMeta as { finishedAt?: string }).finishedAt
+      ? { finishedAt: (runMeta as { finishedAt?: string }).finishedAt }
+      : {}),
+  };
+}
+
+type StepRecord = {
+  status?: StepStatus;
+  startedAt?: string;
+  endedAt?: string;
+  error?: { message?: string };
+  lease?: { leaseId?: string; heartbeatAt?: string; startedAt?: string };
+};
+
+function mapRunStatus(value: string | undefined): RunStatus {
+  switch (value) {
+    case 'running':
+    case 'success':
+    case 'failed':
+    case 'canceled':
+      return value;
+    default:
+      return 'unknown';
+  }
+}
+
+function mapStepSummaries(steps: Record<string, StepRecord>): RunStepSummary[] {
+  return Object.entries(steps).map(([stepId, record]) => ({
+    stepId,
+    status: record.status ?? 'queued',
+    ...(record.startedAt ? { startedAt: record.startedAt } : {}),
+    ...(record.endedAt ? { endedAt: record.endedAt } : {}),
+  }));
+}
+
+function detectStuck(
+  stepId: string | undefined,
+  steps: Record<string, StepRecord>,
+  nowIso: string,
+): { reason: string; since?: string } | undefined {
+  if (!stepId) return undefined;
+  const record = steps[stepId];
+  if (!record || record.status !== 'running') return undefined;
+  const heartbeat = record.lease?.heartbeatAt ?? record.startedAt;
+  if (!heartbeat) return { reason: 'running without heartbeat' };
+  const now = Date.parse(nowIso);
+  const last = Date.parse(heartbeat);
+  if (Number.isFinite(now) && Number.isFinite(last) && now - last > STUCK_LEASE_MS) {
+    return { reason: 'lease stale', since: heartbeat };
+  }
+  return undefined;
 }

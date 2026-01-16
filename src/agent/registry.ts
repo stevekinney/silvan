@@ -18,7 +18,6 @@ import {
   fetchUnresolvedReviewComments,
   resolveReviewThread,
 } from '../github/review';
-import { fetchLinearTicket, moveLinearTicket } from '../linear/linear';
 import type { StateStore } from '../state/store';
 
 export type ToolPolicy = {
@@ -94,6 +93,7 @@ async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> 
 
 export function createToolRegistry(context: ToolContext) {
   const toolsByName = new Map<string, ToolDefinition<z.ZodObject<z.ZodRawShape>>>();
+  const githubToken = context.config.github.token;
   const armorer = createArmorer([], {
     context,
     telemetry: true,
@@ -113,7 +113,7 @@ export function createToolRegistry(context: ToolContext) {
       runId: context.emitContext.runId,
       repoRoot: context.repoRoot,
       worktreePath: context.worktreePath,
-      ticketId: context.emitContext.ticketId,
+      taskId: context.emitContext.taskId,
       toolCallId: policyContext.toolCall.id,
       inputDigest: policyContext.inputDigest,
     }),
@@ -184,13 +184,13 @@ export function createToolRegistry(context: ToolContext) {
   });
 
   register({
-    name: 'silvan.ticket.read',
-    description: 'Read the current run ticket payload',
+    name: 'silvan.task.read',
+    description: 'Read the current run task payload',
     schema: z.object({}),
     metadata: withReadOnlyHint(),
     async execute() {
       const data = await readRunState(context);
-      return data['ticket'];
+      return data['task'];
     },
   });
 
@@ -225,6 +225,7 @@ export function createToolRegistry(context: ToolContext) {
         baseBranch,
         title,
         body,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });
@@ -247,6 +248,7 @@ export function createToolRegistry(context: ToolContext) {
         pr: { owner, repo, number },
         reviewers,
         requestCopilot: requestCopilot ?? true,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });
@@ -264,6 +266,7 @@ export function createToolRegistry(context: ToolContext) {
         owner,
         repo,
         headBranch,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });
@@ -278,6 +281,7 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ threadId }) {
       return await fetchReviewThreadById({
         threadId,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });
@@ -292,6 +296,7 @@ export function createToolRegistry(context: ToolContext) {
     async execute({ threadId }) {
       return await resolveReviewThread({
         threadId,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(context.bus ? { bus: context.bus } : {}),
         context: context.emitContext,
       });
@@ -316,29 +321,10 @@ export function createToolRegistry(context: ToolContext) {
         headBranch,
         pollIntervalMs: pollIntervalMs ?? 15000,
         timeoutMs: timeoutMs ?? 900000,
+        ...(githubToken ? { token: githubToken } : {}),
         ...(ctx.bus ? { bus: ctx.bus } : {}),
         context: ctx.emitContext,
       });
-    },
-  });
-
-  register({
-    name: 'linear.ticket.fetch',
-    description: 'Fetch a Linear ticket',
-    schema: z.object({ id: z.string() }),
-    metadata: withReadOnlyHint(),
-    async execute({ id }) {
-      return await fetchLinearTicket(id);
-    },
-  });
-
-  register({
-    name: 'linear.ticket.move',
-    description: 'Move a Linear ticket to a new state',
-    schema: z.object({ id: z.string(), state: z.string() }),
-    metadata: { mutates: true },
-    async execute({ id, state }) {
-      return await moveLinearTicket(id, state);
     },
   });
 

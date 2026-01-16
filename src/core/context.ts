@@ -1,4 +1,5 @@
 import { loadConfig } from '../config/load';
+import type { ConfigInput } from '../config/schema';
 import { createEnvelope, toEventError } from '../events/emit';
 import type { EventMode, RunFinished } from '../events/schema';
 import { initStateStore } from '../state/store';
@@ -18,12 +19,15 @@ export async function createRunContext(options: {
   mode: EventMode;
   lock?: boolean;
   runId?: string;
+  configOverrides?: ConfigInput;
 }): Promise<RunContext> {
   const runId = options.runId ?? crypto.randomUUID();
   const repo = await detectRepoContext({ cwd: options.cwd });
-  const configResult = await loadConfig();
+  const configResult = await loadConfig(options.configOverrides);
   const state = await initStateStore(repo.repoRoot, {
     ...(options.lock !== undefined ? { lock: options.lock } : {}),
+    mode: configResult.config.state.mode,
+    ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
   });
   const events = initEvents(state, options.mode);
 
@@ -84,7 +88,13 @@ export async function createRunContext(options: {
 }
 
 export async function withRunContext<T>(
-  options: { cwd: string; mode: EventMode; lock?: boolean; runId?: string },
+  options: {
+    cwd: string;
+    mode: EventMode;
+    lock?: boolean;
+    runId?: string;
+    configOverrides?: ConfigInput;
+  },
   fn: (ctx: RunContext) => Promise<T>,
 ): Promise<T> {
   const start = Date.now();

@@ -61,6 +61,6 @@
     "typeRoots": ["node_modules/@types", "./types"],
     "types": ["bun"]
   },
-  "include": ["src", "scripts"],
+  "include": ["src", "scripts", "silvan.config.ts", "tests/types"],
   "exclude": ["node_modules", "coverage", "**/dist/**", "**/build/**"]
 }

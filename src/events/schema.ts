@@ -26,7 +26,7 @@ export type EventEnvelope<TType extends string, TPayload> = {
   repoId: string;
   worktreeId?: string;
   prId?: string;
-  ticketId?: string;
+  taskId?: string;
 
   mode?: EventMode;
   actor?: 'user' | 'system' | 'ai';
@@ -55,7 +55,6 @@ export type EventEnvelope<TType extends string, TPayload> = {
 export type Phase =
   | 'idle'
   | 'worktree'
-  | 'linear'
   | 'plan'
   | 'implement'
   | 'verify'
@@ -244,7 +243,7 @@ export type AiModelInfo = {
 export type AiPlanGenerated = {
   model: AiModelInfo;
   planKind:
-    | 'ticket_plan'
+    | 'task_plan'
     | 'ci_fix_plan'
     | 'review_fix_plan'
     | 'recovery_plan'

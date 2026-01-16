@@ -1,4 +1,5 @@
 import type { SDKSessionOptions } from '@anthropic-ai/claude-agent-sdk';
+import { ProseWriter } from 'prose-writer';
 
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
@@ -61,17 +62,17 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     writeBuiltinTools.size +
     execBuiltinTools.size;
 
-  const prompt = [
-    'You are the implementation agent for Silvan.',
-    'Follow the plan step-by-step, using tools when needed.',
-    'Do not invent file contents; use fs.read before edits.',
-    'Keep changes minimal and aligned to the plan.',
-    'Use silvan.plan.read to fetch the full plan before making edits.',
-    'Return a brief summary of changes.',
-    '',
-    'Plan digest:',
-    input.planDigest ?? 'unknown',
-  ].join('\n');
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the implementation agent for Silvan.');
+  promptWriter.write('Follow the plan step-by-step, using tools when needed.');
+  promptWriter.write('Do not invent file contents; use fs.read before edits.');
+  promptWriter.write('Keep changes minimal and aligned to the plan.');
+  promptWriter.write('Use silvan.plan.read to fetch the full plan before making edits.');
+  promptWriter.write('Use silvan.task.read to fetch the task details as needed.');
+  promptWriter.write('Return a brief summary of changes.');
+  promptWriter.write('Plan digest:');
+  promptWriter.write(input.planDigest ?? 'unknown');
+  const prompt = promptWriter.toString().trimEnd();
 
   const start = performance.now();
   if (input.bus) {

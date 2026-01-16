@@ -15,14 +15,22 @@ import { runGit } from '../git/exec';
 import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments, resolveReviewThread } from '../github/review';
-import { fetchLinearTicket, moveLinearTicket, type LinearTicket } from '../linear/linear';
+import {
+  commentOnPrOpen,
+  completeTask,
+  moveTaskToInProgress,
+  moveTaskToInReview,
+} from '../task/lifecycle';
+import { resolveTask } from '../task/resolve';
+import type { Task } from '../task/types';
 import { hashString } from '../utils/hash';
 import { runVerifyCommands } from '../verify/run';
 import { triageVerificationFailures } from '../verify/triage';
 import type { RunContext } from './context';
 
 type RunControllerOptions = {
-  ticketId?: string;
+  taskRef?: string;
+  task?: Task;
   worktreeName?: string;
   clarifications?: Record<string, string>;
   dryRun?: boolean;
@@ -64,30 +72,43 @@ const leaseStaleMs = 2 * 60 * 1000;
 
 type ModelPhase = 'plan' | 'execute' | 'review' | 'pr' | 'recovery' | 'verify';
 
-function getModelForPhase(phase: ModelPhase): string {
-  const key = `SILVAN_MODEL_${phase.toUpperCase()}` as const;
-  return Bun.env[key] ?? Bun.env['CLAUDE_MODEL'] ?? 'claude-sonnet-4-5-20250929';
+function getModelForPhase(config: RunContext['config'], phase: ModelPhase): string {
+  const models = config.ai.models;
+  return models[phase] ?? models.default ?? 'claude-sonnet-4-5-20250929';
 }
 
-function getBudgetsForPhase(phase: ModelPhase): {
+function getBudgetsForPhase(
+  config: RunContext['config'],
+  phase: ModelPhase,
+): {
   maxTurns?: number;
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
 } {
-  const suffix = phase.toUpperCase();
-  const maxTurns =
-    Bun.env[`SILVAN_MAX_TURNS_${suffix}`] ?? Bun.env['SILVAN_MAX_TURNS'];
-  const maxBudgetUsd =
-    Bun.env[`SILVAN_MAX_BUDGET_USD_${suffix}`] ??
-    Bun.env['SILVAN_MAX_BUDGET_USD'];
-  const maxThinkingTokens =
-    Bun.env[`SILVAN_MAX_THINKING_TOKENS_${suffix}`] ??
-    Bun.env['SILVAN_MAX_THINKING_TOKENS'];
-
+  const defaults = config.ai.budgets.default;
+  const phaseBudget = config.ai.budgets[phase];
+  const maxTurns = phaseBudget.maxTurns ?? defaults.maxTurns;
+  const maxBudgetUsd = phaseBudget.maxBudgetUsd ?? defaults.maxBudgetUsd;
+  const maxThinkingTokens = phaseBudget.maxThinkingTokens ?? defaults.maxThinkingTokens;
   return {
-    ...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
-    ...(maxBudgetUsd ? { maxBudgetUsd: Number(maxBudgetUsd) } : {}),
-    ...(maxThinkingTokens ? { maxThinkingTokens: Number(maxThinkingTokens) } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
+    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+    ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
+  };
+}
+
+function getToolBudget(config: RunContext['config']): {
+  toolBudget?: { maxCalls?: number; maxDurationMs?: number };
+} {
+  const limits = config.ai.toolLimits;
+  if (!limits.maxCalls && !limits.maxDurationMs) {
+    return {};
+  }
+  return {
+    toolBudget: {
+      ...(limits.maxCalls ? { maxCalls: limits.maxCalls } : {}),
+      ...(limits.maxDurationMs ? { maxDurationMs: limits.maxDurationMs } : {}),
+    },
   };
 }
 
@@ -95,10 +116,7 @@ function getRunState(data: Record<string, unknown>): RunStateData {
   return data as RunStateData;
 }
 
-function getStepRecord(
-  data: RunStateData,
-  stepId: string,
-): StepRecord | undefined {
+function getStepRecord(data: RunStateData, stepId: string): StepRecord | undefined {
   return data.steps?.[stepId];
 }
 
@@ -150,8 +168,7 @@ async function updateState(
 ): Promise<void> {
   const snapshotId = await ctx.state.updateRunState(ctx.runId, (data) => {
     const now = new Date().toISOString();
-    const existingRun =
-      typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
+    const existingRun = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
     const run = existingRun as Partial<RunMeta>;
     const next = updater({
       ...data,
@@ -163,8 +180,7 @@ async function updateState(
         attempt: run.attempt ?? 0,
         updatedAt: now,
       },
-      steps:
-        typeof data['steps'] === 'object' && data['steps'] ? data['steps'] : {},
+      steps: typeof data['steps'] === 'object' && data['steps'] ? data['steps'] : {},
     });
     const nextRun =
       typeof next['run'] === 'object' && next['run'] ? (next['run'] as RunMeta) : null;
@@ -238,7 +254,9 @@ async function runStep<T>(
   const startedAt = new Date().toISOString();
   const leaseId = crypto.randomUUID();
   const inputsDigest =
-    options?.inputs !== undefined ? hashString(JSON.stringify(options.inputs)) : undefined;
+    options?.inputs !== undefined
+      ? hashString(JSON.stringify(options.inputs))
+      : undefined;
 
   await updateState(ctx, (prev) => {
     const steps = (prev['steps'] as Record<string, StepRecord>) ?? {};
@@ -246,7 +264,9 @@ async function runStep<T>(
     return {
       ...prev,
       run: {
-        ...(typeof prev['run'] === 'object' && prev['run'] ? (prev['run'] as RunMeta) : {}),
+        ...(typeof prev['run'] === 'object' && prev['run']
+          ? (prev['run'] as RunMeta)
+          : {}),
         status: 'running',
         step: stepId,
         attempt: ((prev['run'] as RunMeta | undefined)?.attempt ?? 0) + 1,
@@ -284,7 +304,9 @@ async function runStep<T>(
       return {
         ...prev,
         run: {
-          ...(typeof prev['run'] === 'object' && prev['run'] ? (prev['run'] as RunMeta) : {}),
+          ...(typeof prev['run'] === 'object' && prev['run']
+            ? (prev['run'] as RunMeta)
+            : {}),
           step: undefined,
         },
         steps: {
@@ -317,7 +339,9 @@ async function runStep<T>(
       return {
         ...prev,
         run: {
-          ...(typeof prev['run'] === 'object' && prev['run'] ? (prev['run'] as RunMeta) : {}),
+          ...(typeof prev['run'] === 'object' && prev['run']
+            ? (prev['run'] as RunMeta)
+            : {}),
           step: undefined,
         },
         steps: {
@@ -365,16 +389,37 @@ async function heartbeatStep(ctx: RunContext, stepId: string): Promise<void> {
 
 export async function runPlanner(ctx: RunContext, options: RunControllerOptions) {
   await changePhase(ctx, 'plan');
-  const model = getModelForPhase('plan');
-  const planBudgets = getBudgetsForPhase('plan');
+  const model = getModelForPhase(ctx.config, 'plan');
+  const planBudgets = getBudgetsForPhase(ctx.config, 'plan');
   const planSession = options.sessions?.get('plan', {
     model,
     permissionMode: 'plan',
   });
+  const taskResult = options.task
+    ? {
+        task: options.task,
+        ref: {
+          provider: options.task.provider,
+          id: options.task.id,
+          raw: options.taskRef ?? options.task.id,
+        },
+      }
+    : options.taskRef
+      ? await resolveTask(options.taskRef, {
+          config: ctx.config,
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
+        })
+      : undefined;
 
   const plan = await runStep(ctx, 'agent.plan.generate', 'Generate plan', () =>
     generatePlan({
-      ...(options.ticketId ? { ticketId: options.ticketId } : {}),
+      ...(taskResult ? { task: taskResult.task } : {}),
       ...(options.worktreeName ? { worktreeName: options.worktreeName } : {}),
       repoRoot: ctx.repo.repoRoot,
       model,
@@ -382,15 +427,20 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
       ...(options.clarifications ? { clarifications: options.clarifications } : {}),
       ...(planSession ? { session: planSession } : {}),
       bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      context: {
+        runId: ctx.runId,
+        repoRoot: ctx.repo.repoRoot,
+        mode: ctx.events.mode,
+        ...(taskResult?.task ? { taskId: taskResult.task.id } : {}),
+      },
     }),
   );
 
-  const ticket = options.ticketId ? await fetchLinearTicket(options.ticketId) : undefined;
   await updateState(ctx, (data) => ({
     ...data,
     plan,
-    ticket,
+    task: taskResult?.task,
+    ...(taskResult?.ref ? { taskRef: taskResult.ref } : {}),
     ...(options.clarifications ? { clarifications: options.clarifications } : {}),
     summary: {
       ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
@@ -429,21 +479,18 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   }
 
   await changePhase(ctx, 'implement');
-  const execModel = getModelForPhase('execute');
-  const verifyModel = getModelForPhase('verify');
-  const prModel = getModelForPhase('pr');
-  const execBudgets = getBudgetsForPhase('execute');
-  const verifyBudgets = getBudgetsForPhase('verify');
-  const prBudgets = getBudgetsForPhase('pr');
-  const ticket = (data['ticket'] as LinearTicket | undefined) ?? undefined;
-  const linearStates = ctx.config.linear.states;
-  const inProgress = linearStates?.inProgress;
-  const inReview = linearStates?.inReview;
-  if (ctx.config.linear.enabled && ticket?.identifier && inProgress) {
-    const moveStep = getStepRecord(data, 'linear.ticket.move_in_progress');
+  const execModel = getModelForPhase(ctx.config, 'execute');
+  const verifyModel = getModelForPhase(ctx.config, 'verify');
+  const prModel = getModelForPhase(ctx.config, 'pr');
+  const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
+  const verifyBudgets = getBudgetsForPhase(ctx.config, 'verify');
+  const prBudgets = getBudgetsForPhase(ctx.config, 'pr');
+  const task = (data['task'] as Task | undefined) ?? undefined;
+  if (task) {
+    const moveStep = getStepRecord(data, 'task.move_in_progress');
     if (moveStep?.status !== 'done') {
-      await runStep(ctx, 'linear.ticket.move_in_progress', 'Move ticket to In Progress', () =>
-        moveLinearTicket(ticket.identifier, inProgress),
+      await runStep(ctx, 'task.move_in_progress', 'Move task to In Progress', () =>
+        moveTaskToInProgress(task, ctx.config),
       );
     }
   }
@@ -463,34 +510,33 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   const summary =
     execStep?.status === 'done' && existingSummary
       ? existingSummary
-      : await runStep(ctx, 'agent.execute', 'Execute plan', () =>
-          executePlan({
-            model: execModel,
-            repoRoot: ctx.repo.repoRoot,
-            config: ctx.config,
-            dryRun: Boolean(options.dryRun),
-            allowDestructive: Boolean(options.apply),
-            allowDangerous: Boolean(options.dangerous),
-            planDigest,
-            ...(options.sessions ? { sessionPool: options.sessions } : {}),
-            bus: ctx.events.bus,
-            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-            state: ctx.state,
-            ...execBudgets,
-            ...(() => {
-              const maxCalls = Bun.env['SILVAN_MAX_TOOL_CALLS'];
-              const maxDurationMs = Bun.env['SILVAN_MAX_TOOL_MS'];
-              if (!maxCalls && !maxDurationMs) return {};
-              return {
-                toolBudget: {
-                  ...(maxCalls ? { maxCalls: Number(maxCalls) } : {}),
-                  ...(maxDurationMs ? { maxDurationMs: Number(maxDurationMs) } : {}),
-                },
-              };
-            })(),
-            heartbeat: () => heartbeatStep(ctx, 'agent.execute'),
-            toolCallLog,
-          }),
+      : await runStep(
+          ctx,
+          'agent.execute',
+          'Execute plan',
+          () =>
+            executePlan({
+              model: execModel,
+              repoRoot: ctx.repo.repoRoot,
+              config: ctx.config,
+              dryRun: Boolean(options.dryRun),
+              allowDestructive: Boolean(options.apply),
+              allowDangerous: Boolean(options.dangerous),
+              planDigest,
+              ...(options.sessions ? { sessionPool: options.sessions } : {}),
+              bus: ctx.events.bus,
+              context: {
+                runId: ctx.runId,
+                repoRoot: ctx.repo.repoRoot,
+                mode: ctx.events.mode,
+                ...(task ? { taskId: task.id } : {}),
+              },
+              state: ctx.state,
+              ...execBudgets,
+              ...getToolBudget(ctx.config),
+              heartbeat: () => heartbeatStep(ctx, 'agent.execute'),
+              toolCallLog,
+            }),
           { inputs: { planDigest } },
         );
 
@@ -526,11 +572,13 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   await updateState(ctx, (data) => ({ ...data, verifyReport }));
 
   if (!verifyReport.ok) {
-    const results = (verifyReport.results as Array<{
-      name: string;
-      exitCode: number;
-      stderr: string;
-    }>).map((result) => ({
+    const results = (
+      verifyReport.results as Array<{
+        name: string;
+        exitCode: number;
+        stderr: string;
+      }>
+    ).map((result) => ({
       name: result.name,
       exitCode: result.exitCode,
       stderr: result.stderr,
@@ -562,9 +610,10 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   }
 
   await changePhase(ctx, 'pr');
-  requireGitHubAuth();
+  const githubToken = requireGitHubAuth(ctx.config);
   const planSummary = plan.summary ?? 'Plan';
-  const ticketUrl = ticket?.url;
+  const taskUrl = task?.url;
+  const taskId = task?.id;
   const prSession = options.sessions?.get('pr', {
     model: prModel,
     permissionMode: 'plan',
@@ -583,10 +632,15 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
             planSummary,
             changesSummary: summary,
             ...prBudgets,
-            ...(ticketUrl ? { ticketUrl } : {}),
+            ...(taskUrl ? { taskUrl } : {}),
+            ...(taskId ? { taskId } : {}),
             ...(prSession ? { session: prSession } : {}),
             bus: ctx.events.bus,
-            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
           }),
         );
   await updateState(ctx, (data) => ({ ...data, prDraft }));
@@ -603,7 +657,9 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
   const prStep = getStepRecord(data, 'github.pr.open');
   const existingPr =
     typeof data['pr'] === 'object' && data['pr']
-      ? (data['pr'] as { pr: { url?: string; number: number; owner: string; repo: string } })
+      ? (data['pr'] as {
+          pr: { url?: string; number: number; owner: string; repo: string };
+        })
       : undefined;
   const prResult =
     prStep?.status === 'done' && existingPr
@@ -616,17 +672,31 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
             baseBranch,
             title: prDraft.title,
             body: prDraft.body,
+            token: githubToken,
             bus: ctx.events.bus,
-            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+            context: {
+              runId: ctx.runId,
+              repoRoot: ctx.repo.repoRoot,
+              mode: ctx.events.mode,
+            },
           }),
         );
   await updateState(ctx, (data) => ({ ...data, pr: prResult }));
 
-  if (ctx.config.linear.enabled && ticket?.identifier && inReview) {
-    const moveStep = getStepRecord(data, 'linear.ticket.move_in_review');
+  if (task && prResult.pr.url) {
+    const commentStep = getStepRecord(data, 'task.comment_pr_open');
+    if (commentStep?.status !== 'done') {
+      await runStep(ctx, 'task.comment_pr_open', 'Comment on task with PR', () =>
+        commentOnPrOpen(task, ctx.config, prResult.pr.url ?? ''),
+      );
+    }
+  }
+
+  if (task) {
+    const moveStep = getStepRecord(data, 'task.move_in_review');
     if (moveStep?.status !== 'done') {
-      await runStep(ctx, 'linear.ticket.move_in_review', 'Move ticket to In Review', () =>
-        moveLinearTicket(ticket.identifier, inReview),
+      await runStep(ctx, 'task.move_in_review', 'Move task to In Review', () =>
+        moveTaskToInReview(task, ctx.config),
       );
     }
   }
@@ -638,6 +708,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
         owner,
         repo,
         headBranch,
+        token: githubToken,
         pollIntervalMs: 15000,
         timeoutMs: 900000,
         onHeartbeat: () => heartbeatStep(ctx, 'ci.wait.initial'),
@@ -648,7 +719,9 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
     await updateState(ctx, (data) => ({
       ...data,
       summary: {
-        ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
         ci: ciResult.state,
       },
     }));
@@ -663,6 +736,7 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
         pr: prResult.pr,
         reviewers: ctx.config.github.reviewers,
         requestCopilot: ctx.config.github.requestCopilot,
+        token: githubToken,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
@@ -675,13 +749,13 @@ export async function runImplementation(ctx: RunContext, options: RunControllerO
 
 export async function runReviewLoop(ctx: RunContext, options: RunControllerOptions) {
   await changePhase(ctx, 'review');
-  requireGitHubAuth();
-  const execModel = getModelForPhase('execute');
-  const reviewModel = getModelForPhase('review');
-  const verifyModel = getModelForPhase('verify');
-  const execBudgets = getBudgetsForPhase('execute');
-  const reviewBudgets = getBudgetsForPhase('review');
-  const verifyBudgets = getBudgetsForPhase('verify');
+  const githubToken = requireGitHubAuth(ctx.config);
+  const execModel = getModelForPhase(ctx.config, 'execute');
+  const reviewModel = getModelForPhase(ctx.config, 'review');
+  const verifyModel = getModelForPhase(ctx.config, 'verify');
+  const execBudgets = getBudgetsForPhase(ctx.config, 'execute');
+  const reviewBudgets = getBudgetsForPhase(ctx.config, 'review');
+  const verifyBudgets = getBudgetsForPhase(ctx.config, 'verify');
   const headBranch = ctx.repo.branch;
   const github = await requireGitHubConfig({
     config: ctx.config,
@@ -690,7 +764,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
     bus: ctx.events.bus,
   });
   const { owner, repo } = github;
-  const maxIterations = Number(Bun.env['SILVAN_MAX_REVIEW_LOOPS'] ?? 3);
+  const maxIterations = ctx.config.review.maxIterations ?? 3;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const ciResult = await runStep(ctx, 'ci.wait.review', 'Wait for CI', () =>
@@ -698,6 +772,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         owner,
         repo,
         headBranch,
+        token: githubToken,
         pollIntervalMs: 15000,
         timeoutMs: 900000,
         onHeartbeat: () => heartbeatStep(ctx, 'ci.wait.review'),
@@ -709,7 +784,9 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
     await updateState(ctx, (data) => ({
       ...data,
       summary: {
-        ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
         ci: ciResult.state,
       },
     }));
@@ -735,7 +812,11 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           ...verifyBudgets,
           ...(ciSession ? { session: ciSession } : {}),
           ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
         }),
       );
 
@@ -752,9 +833,14 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           allowDangerous: Boolean(options.dangerous),
           planDigest: ciPlanDigest,
           ...execBudgets,
+          ...getToolBudget(ctx.config),
           ...(options.sessions ? { sessionPool: options.sessions } : {}),
           bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
           state: ctx.state,
           heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
         }),
@@ -783,11 +869,16 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           owner,
           repo,
           headBranch,
+          token: githubToken,
           pollIntervalMs: 15000,
           timeoutMs: 900000,
           onHeartbeat: () => heartbeatStep(ctx, 'ci.wait.review'),
           bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
         }),
       );
       if (ciAfter.state === 'failing') {
@@ -805,6 +896,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           owner,
           repo,
           headBranch,
+          token: githubToken,
           bus: ctx.events.bus,
           context: {
             runId: ctx.runId,
@@ -817,7 +909,9 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
     await updateState(ctx, (data) => ({
       ...data,
       summary: {
-        ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
         unresolvedReviewCount: review.comments.length,
       },
     }));
@@ -826,12 +920,10 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       await changePhase(ctx, 'complete', 'review_loop_clean');
       const latest = await ctx.state.readRunState(ctx.runId);
       const latestData = getRunState((latest?.data as Record<string, unknown>) ?? {});
-      const ticket = latestData['ticket'] as LinearTicket | undefined;
-      const linearStates = ctx.config.linear.states;
-      const doneState = linearStates?.done;
-      if (ctx.config.linear.enabled && ticket?.identifier && doneState) {
-        await runStep(ctx, 'linear.ticket.move_done', 'Move ticket to Done', () =>
-          moveLinearTicket(ticket.identifier, doneState),
+      const task = latestData['task'] as Task | undefined;
+      if (task) {
+        await runStep(ctx, 'task.move_done', 'Move task to Done', () =>
+          completeTask(task, ctx.config),
         );
       }
       break;
@@ -884,7 +976,11 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       dryRun: true,
       allowDestructive: false,
       allowDangerous: false,
-      emitContext: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
+      emitContext: {
+        runId: ctx.runId,
+        repoRoot: ctx.repo.repoRoot,
+        mode: ctx.events.mode,
+      },
       ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
       state: ctx.state,
     });
@@ -928,6 +1024,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         allowDangerous: Boolean(options.dangerous),
         planDigest: reviewPlanDigest,
         ...execBudgets,
+        ...getToolBudget(ctx.config),
         ...(options.sessions ? { sessionPool: options.sessions } : {}),
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
@@ -951,11 +1048,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       ctx,
       'review.checkpoint',
       'Checkpoint review fixes',
-      () =>
-        createCheckpointCommit(
-          ctx,
-          `silvan: checkpoint review-${iteration + 1}`,
-        ),
+      () => createCheckpointCommit(ctx, `silvan: checkpoint review-${iteration + 1}`),
       {
         inputs: { iteration: iteration + 1 },
         artifacts: (result) => ({ checkpoint: result }),
@@ -974,6 +1067,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         owner,
         repo,
         headBranch,
+        token: githubToken,
         pollIntervalMs: 15000,
         timeoutMs: 900000,
         onHeartbeat: () => heartbeatStep(ctx, 'ci.wait'),
@@ -984,7 +1078,9 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
     await updateState(ctx, (data) => ({
       ...data,
       summary: {
-        ...(typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}),
+        ...(typeof data['summary'] === 'object' && data['summary']
+          ? data['summary']
+          : {}),
         ci: ciAfter.state,
       },
     }));
@@ -998,6 +1094,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           resolveReviewThread({
             threadId,
             pr: review.pr,
+            token: githubToken,
             bus: ctx.events.bus,
             context: {
               runId: ctx.runId,
@@ -1014,6 +1111,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         pr: review.pr,
         reviewers: ctx.config.github.reviewers,
         requestCopilot: ctx.config.github.requestCopilot,
+        token: githubToken,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
@@ -1027,8 +1125,8 @@ export async function runRecovery(
 ): Promise<void> {
   const state = await ctx.state.readRunState(ctx.runId);
   const data = (state?.data as Record<string, unknown>) ?? {};
-  const model = getModelForPhase('recovery');
-  const recoveryBudgets = getBudgetsForPhase('recovery');
+  const model = getModelForPhase(ctx.config, 'recovery');
+  const recoveryBudgets = getBudgetsForPhase(ctx.config, 'recovery');
   const recoverySession = options.sessions?.get('recovery', {
     model,
     permissionMode: 'plan',
@@ -1065,7 +1163,7 @@ export async function runRecovery(
     }
     case 'refetch_reviews': {
       await changePhase(ctx, 'review', 'recovery');
-      requireGitHubAuth();
+      const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
@@ -1081,6 +1179,7 @@ export async function runRecovery(
             owner: github.owner,
             repo: github.repo,
             headBranch: ctx.repo.branch,
+            token: githubToken,
             bus: ctx.events.bus,
             context: {
               runId: ctx.runId,
@@ -1144,13 +1243,17 @@ export async function resumeRun(
   }
 
   if (!data['plan'] || run?.phase === 'plan' || run?.phase === 'idle') {
-    const ticket = data['ticket'];
-    const ticketId =
-      typeof ticket === 'object' && ticket && 'identifier' in ticket
-        ? (ticket as { identifier?: string }).identifier
+    const taskRef =
+      typeof data['taskRef'] === 'object' && data['taskRef']
+        ? (data['taskRef'] as { raw?: string }).raw
+        : undefined;
+    const task = data['task'];
+    const taskId =
+      typeof task === 'object' && task && 'id' in task
+        ? (task as { id?: string }).id
         : undefined;
     await runPlanner(ctx, {
-      ...(ticketId ? { ticketId } : {}),
+      ...(taskRef ? { taskRef } : taskId ? { taskRef: taskId } : {}),
       ...(options.sessions ? { sessions: options.sessions } : {}),
     });
     return;

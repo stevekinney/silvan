@@ -1,8 +1,9 @@
 import { pathToFileURL } from 'node:url';
 
 import { cosmiconfig } from 'cosmiconfig';
+import { ProseWriter } from 'prose-writer';
 
-import type { Config } from './schema';
+import type { Config, ConfigInput } from './schema';
 import { configSchema } from './schema';
 
 export type ConfigResult = {
@@ -18,7 +19,200 @@ async function loadTsConfig(path: string): Promise<unknown> {
   return module.default ?? module.config ?? module;
 }
 
-export async function loadConfig(): Promise<ConfigResult> {
+type EnvValue = string | undefined;
+
+function parseNumber(value: EnvValue): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseBool(value: EnvValue): boolean | undefined {
+  if (!value) return undefined;
+  if (value === '1' || value.toLowerCase() === 'true') return true;
+  if (value === '0' || value.toLowerCase() === 'false') return false;
+  return undefined;
+}
+
+function mergeConfig(base: Config, override?: ConfigInput): Config {
+  if (!override) return base;
+  const output: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      output[key] = value;
+      continue;
+    }
+    if (typeof value === 'object' && value !== null) {
+      const baseValue = output[key];
+      if (
+        typeof baseValue === 'object' &&
+        baseValue !== null &&
+        !Array.isArray(baseValue)
+      ) {
+        output[key] = mergeConfig(baseValue as Config, value as ConfigInput);
+      } else {
+        output[key] = value;
+      }
+      continue;
+    }
+    output[key] = value;
+  }
+  return output as Config;
+}
+
+function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
+  const override: ConfigInput = {};
+
+  const githubToken = env['GITHUB_TOKEN'] ?? env['GH_TOKEN'];
+  if (githubToken) {
+    override.github = { ...(override.github ?? {}), token: githubToken };
+  }
+
+  if (env['LINEAR_API_KEY']) {
+    override.linear = { ...(override.linear ?? {}), token: env['LINEAR_API_KEY'] };
+  }
+
+  if (env['CLAUDE_MODEL']) {
+    override.ai = {
+      ...(override.ai ?? {}),
+      models: { ...(override.ai?.models ?? {}), default: env['CLAUDE_MODEL'] },
+    };
+  }
+
+  const phaseModels: Array<[keyof NonNullable<Config['ai']>['models'], string]> = [
+    ['plan', 'SILVAN_MODEL_PLAN'],
+    ['execute', 'SILVAN_MODEL_EXECUTE'],
+    ['review', 'SILVAN_MODEL_REVIEW'],
+    ['verify', 'SILVAN_MODEL_VERIFY'],
+    ['pr', 'SILVAN_MODEL_PR'],
+    ['recovery', 'SILVAN_MODEL_RECOVERY'],
+  ];
+  for (const [phase, key] of phaseModels) {
+    const value = env[key];
+    if (!value) continue;
+    override.ai = {
+      ...(override.ai ?? {}),
+      models: { ...(override.ai?.models ?? {}), [phase]: value },
+    };
+  }
+
+  const maxTurns = parseNumber(env['SILVAN_MAX_TURNS']);
+  const maxBudgetUsd = parseNumber(env['SILVAN_MAX_BUDGET_USD']);
+  const maxThinkingTokens = parseNumber(env['SILVAN_MAX_THINKING_TOKENS']);
+  if (maxTurns || maxBudgetUsd || maxThinkingTokens) {
+    override.ai = {
+      ...(override.ai ?? {}),
+      budgets: {
+        ...(override.ai?.budgets ?? {}),
+        default: {
+          ...(override.ai?.budgets?.default ?? {}),
+          ...(maxTurns ? { maxTurns } : {}),
+          ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+          ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
+        },
+      },
+    };
+  }
+
+  const phaseBudgets: Array<
+    [keyof NonNullable<Config['ai']>['budgets'], string, string, string]
+  > = [
+    [
+      'plan',
+      'SILVAN_MAX_TURNS_PLAN',
+      'SILVAN_MAX_BUDGET_USD_PLAN',
+      'SILVAN_MAX_THINKING_TOKENS_PLAN',
+    ],
+    [
+      'execute',
+      'SILVAN_MAX_TURNS_EXECUTE',
+      'SILVAN_MAX_BUDGET_USD_EXECUTE',
+      'SILVAN_MAX_THINKING_TOKENS_EXECUTE',
+    ],
+    [
+      'review',
+      'SILVAN_MAX_TURNS_REVIEW',
+      'SILVAN_MAX_BUDGET_USD_REVIEW',
+      'SILVAN_MAX_THINKING_TOKENS_REVIEW',
+    ],
+    [
+      'verify',
+      'SILVAN_MAX_TURNS_VERIFY',
+      'SILVAN_MAX_BUDGET_USD_VERIFY',
+      'SILVAN_MAX_THINKING_TOKENS_VERIFY',
+    ],
+    [
+      'pr',
+      'SILVAN_MAX_TURNS_PR',
+      'SILVAN_MAX_BUDGET_USD_PR',
+      'SILVAN_MAX_THINKING_TOKENS_PR',
+    ],
+    [
+      'recovery',
+      'SILVAN_MAX_TURNS_RECOVERY',
+      'SILVAN_MAX_BUDGET_USD_RECOVERY',
+      'SILVAN_MAX_THINKING_TOKENS_RECOVERY',
+    ],
+  ];
+  for (const [phase, turnsKey, budgetKey, thinkingKey] of phaseBudgets) {
+    const turns = parseNumber(env[turnsKey]);
+    const budget = parseNumber(env[budgetKey]);
+    const thinking = parseNumber(env[thinkingKey]);
+    if (!turns && !budget && !thinking) continue;
+    override.ai = {
+      ...(override.ai ?? {}),
+      budgets: {
+        ...(override.ai?.budgets ?? {}),
+        [phase]: {
+          ...(override.ai?.budgets?.[phase] ?? {}),
+          ...(turns ? { maxTurns: turns } : {}),
+          ...(budget ? { maxBudgetUsd: budget } : {}),
+          ...(thinking ? { maxThinkingTokens: thinking } : {}),
+        },
+      },
+    };
+  }
+
+  const maxCalls = parseNumber(env['SILVAN_MAX_TOOL_CALLS']);
+  const maxDurationMs = parseNumber(env['SILVAN_MAX_TOOL_MS']);
+  if (maxCalls || maxDurationMs) {
+    override.ai = {
+      ...(override.ai ?? {}),
+      toolLimits: {
+        ...(override.ai?.toolLimits ?? {}),
+        ...(maxCalls ? { maxCalls } : {}),
+        ...(maxDurationMs ? { maxDurationMs } : {}),
+      },
+    };
+  }
+
+  const persistSessions = parseBool(env['SILVAN_PERSIST_SESSIONS']);
+  if (persistSessions !== undefined) {
+    override.ai = {
+      ...(override.ai ?? {}),
+      sessions: { ...(override.ai?.sessions ?? {}), persist: persistSessions },
+    };
+  }
+
+  const reviewLoops = parseNumber(env['SILVAN_MAX_REVIEW_LOOPS']);
+  if (reviewLoops) {
+    override.review = { ...(override.review ?? {}), maxIterations: reviewLoops };
+  }
+
+  if (env['SHELL']) {
+    override.verify = { ...(override.verify ?? {}), shell: env['SHELL'] };
+  }
+
+  const stateMode = env['SILVAN_STATE_MODE'];
+  if (stateMode === 'global' || stateMode === 'repo') {
+    override.state = { ...(override.state ?? {}), mode: stateMode };
+  }
+
+  return override;
+}
+
+export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult> {
   const explorer = cosmiconfig('silvan', {
     searchPlaces: [
       'silvan.config.ts',
@@ -35,20 +229,29 @@ export async function loadConfig(): Promise<ConfigResult> {
 
   const result = await explorer.search();
 
-  if (!result) {
-    return { config: configSchema.parse({}), source: null };
-  }
-
-  const parsed = configSchema.safeParse(result.config ?? {});
+  const baseConfig: unknown = result ? (result.config ?? {}) : {};
+  const parsed = configSchema.safeParse(baseConfig);
   if (!parsed.success) {
-    const message = parsed.error.issues
-      .map((issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`)
-      .join('\n');
+    const writer = new ProseWriter();
+    const issueLines = parsed.error.issues.map(
+      (issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`,
+    );
+    const issueBlock = issueLines.reduce(
+      (acc, line, index) => `${acc}${index ? '\n' : ''}${line}`,
+      '',
+    );
+    writer.write(issueBlock);
+    const message = writer.toString().trimEnd();
     throw new Error(`Invalid config:\n${message}`);
   }
+  const envOverrides = configFromEnv(Bun.env);
+  const merged = mergeConfig(mergeConfig(parsed.data, envOverrides), overrides);
+  const finalConfig = configSchema.parse(merged);
 
   return {
-    config: parsed.data,
-    source: { path: result.filepath, format: result.isEmpty ? 'empty' : 'file' },
+    config: finalConfig,
+    source: result
+      ? { path: result.filepath, format: result.isEmpty ? 'empty' : 'file' }
+      : null,
   };
 }

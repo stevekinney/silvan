@@ -1,3 +1,5 @@
+import { ProseWriter } from 'prose-writer';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
@@ -29,12 +31,16 @@ export async function generateReviewFixPlan(input: {
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<ReviewFixPlan> {
-  const prompt = [
-    'You are the review response agent for Silvan.',
-    'Produce a structured fix plan for unresolved review threads.',
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the review response agent for Silvan.');
+  promptWriter.write('Produce a structured fix plan for unresolved review threads.');
+  promptWriter.write(
     'Use github.review.thread to fetch full thread details when needed.',
+  );
+  promptWriter.write(
     'Return JSON only with: { threads: [{threadId, actionable, summary, comments: [{id, action}]}], verification?, resolveThreads? }.',
-    '',
+  );
+  promptWriter.write(
     JSON.stringify(
       {
         threads: input.threads,
@@ -43,7 +49,8 @@ export async function generateReviewFixPlan(input: {
       null,
       2,
     ),
-  ].join('\n');
+  );
+  const prompt = promptWriter.toString().trimEnd();
 
   const hooks =
     input.bus && input.context

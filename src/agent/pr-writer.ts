@@ -1,3 +1,5 @@
+import { ProseWriter } from 'prose-writer';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
@@ -10,7 +12,8 @@ export async function draftPullRequest(input: {
   model: string;
   planSummary: string;
   changesSummary: string;
-  ticketUrl?: string;
+  taskId?: string;
+  taskUrl?: string;
   session?: ClaudeSession;
   maxTurns?: number;
   maxBudgetUsd?: number;
@@ -18,15 +21,17 @@ export async function draftPullRequest(input: {
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<PrDraft> {
-  const prompt = [
-    'You are the PR writer for Silvan.',
-    'Draft a PR title and body based on the plan and change summary.',
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the PR writer for Silvan.');
+  promptWriter.write('Draft a PR title and body based on the plan and change summary.');
+  promptWriter.write(
     'Return JSON only with: { title, body, checklist?, testing?, followUps? }.',
-    '',
-    `Plan summary: ${input.planSummary}`,
-    `Change summary: ${input.changesSummary}`,
-    `Ticket: ${input.ticketUrl ?? 'N/A'}`,
-  ].join('\n');
+  );
+  promptWriter.write(`Plan summary: ${input.planSummary}`);
+  promptWriter.write(`Change summary: ${input.changesSummary}`);
+  promptWriter.write(`Task: ${input.taskId ?? 'N/A'}`);
+  promptWriter.write(`Task URL: ${input.taskUrl ?? 'N/A'}`);
+  const prompt = promptWriter.toString().trimEnd();
 
   const result = await runClaudePrompt({
     message: prompt,

@@ -1,0 +1,542 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "task": {
+      "default": {
+        "providers": {
+          "enabled": ["linear"],
+          "default": "linear"
+        },
+        "github": {
+          "closeOnSuccess": false,
+          "commentOnPrOpen": false
+        },
+        "linear": {
+          "states": {
+            "inProgress": "In Progress"
+          }
+        }
+      },
+      "type": "object",
+      "properties": {
+        "providers": {
+          "default": {
+            "enabled": ["linear"],
+            "default": "linear"
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": ["linear"],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["linear", "github"]
+              }
+            },
+            "default": {
+              "default": "linear",
+              "type": "string",
+              "enum": ["linear", "github"]
+            }
+          },
+          "required": ["enabled", "default"],
+          "additionalProperties": false
+        },
+        "github": {
+          "default": {
+            "closeOnSuccess": false,
+            "commentOnPrOpen": false
+          },
+          "type": "object",
+          "properties": {
+            "closeOnSuccess": {
+              "default": false,
+              "type": "boolean"
+            },
+            "commentOnPrOpen": {
+              "default": false,
+              "type": "boolean"
+            },
+            "labelMapping": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": ["closeOnSuccess", "commentOnPrOpen"],
+          "additionalProperties": false
+        },
+        "linear": {
+          "default": {
+            "states": {
+              "inProgress": "In Progress"
+            }
+          },
+          "type": "object",
+          "properties": {
+            "states": {
+              "default": {
+                "inProgress": "In Progress"
+              },
+              "type": "object",
+              "properties": {
+                "inProgress": {
+                  "default": "In Progress",
+                  "type": "string"
+                },
+                "inReview": {
+                  "type": "string"
+                },
+                "done": {
+                  "type": "string"
+                }
+              },
+              "required": ["inProgress"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["states"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["providers", "github", "linear"],
+      "additionalProperties": false
+    },
+    "repo": {
+      "default": {
+        "defaultBranch": "main"
+      },
+      "type": "object",
+      "properties": {
+        "defaultBranch": {
+          "default": "main",
+          "type": "string"
+        }
+      },
+      "required": ["defaultBranch"],
+      "additionalProperties": false
+    },
+    "linear": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "github": {
+      "default": {
+        "reviewers": [],
+        "requestCopilot": true
+      },
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "reviewers": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requestCopilot": {
+          "default": true,
+          "type": "boolean"
+        },
+        "baseBranch": {
+          "type": "string"
+        }
+      },
+      "required": ["reviewers", "requestCopilot"],
+      "additionalProperties": false
+    },
+    "verify": {
+      "default": {
+        "commands": [],
+        "failFast": true
+      },
+      "type": "object",
+      "properties": {
+        "commands": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cmd": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["name", "cmd"],
+            "additionalProperties": false
+          }
+        },
+        "failFast": {
+          "default": true,
+          "type": "boolean"
+        },
+        "shell": {
+          "type": "string"
+        }
+      },
+      "required": ["commands", "failFast"],
+      "additionalProperties": false
+    },
+    "naming": {
+      "default": {
+        "branchPrefix": "feature/",
+        "worktreeDir": ".worktrees"
+      },
+      "type": "object",
+      "properties": {
+        "branchPrefix": {
+          "default": "feature/",
+          "type": "string"
+        },
+        "worktreeDir": {
+          "default": ".worktrees",
+          "type": "string"
+        }
+      },
+      "required": ["branchPrefix", "worktreeDir"],
+      "additionalProperties": false
+    },
+    "features": {
+      "default": {
+        "autoMode": false
+      },
+      "type": "object",
+      "properties": {
+        "autoMode": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": ["autoMode"],
+      "additionalProperties": false
+    },
+    "state": {
+      "default": {
+        "mode": "global"
+      },
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "global",
+          "type": "string",
+          "enum": ["global", "repo"]
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "required": ["mode"],
+      "additionalProperties": false
+    },
+    "ai": {
+      "default": {
+        "models": {},
+        "budgets": {
+          "default": {},
+          "plan": {},
+          "execute": {},
+          "review": {},
+          "verify": {},
+          "pr": {},
+          "recovery": {}
+        },
+        "toolLimits": {},
+        "sessions": {
+          "persist": false
+        }
+      },
+      "type": "object",
+      "properties": {
+        "models": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "default": {
+              "type": "string"
+            },
+            "plan": {
+              "type": "string"
+            },
+            "execute": {
+              "type": "string"
+            },
+            "review": {
+              "type": "string"
+            },
+            "verify": {
+              "type": "string"
+            },
+            "pr": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "budgets": {
+          "default": {
+            "default": {},
+            "plan": {},
+            "execute": {},
+            "review": {},
+            "verify": {},
+            "pr": {},
+            "recovery": {}
+          },
+          "type": "object",
+          "properties": {
+            "default": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "plan": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "execute": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "review": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "verify": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "pr": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "recovery": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxBudgetUsd": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "maxThinkingTokens": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "default",
+            "plan",
+            "execute",
+            "review",
+            "verify",
+            "pr",
+            "recovery"
+          ],
+          "additionalProperties": false
+        },
+        "toolLimits": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "maxCalls": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "maxDurationMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "additionalProperties": false
+        },
+        "sessions": {
+          "default": {
+            "persist": false
+          },
+          "type": "object",
+          "properties": {
+            "persist": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": ["persist"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["models", "budgets", "toolLimits", "sessions"],
+      "additionalProperties": false
+    },
+    "review": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "maxIterations": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "task",
+    "repo",
+    "linear",
+    "github",
+    "verify",
+    "naming",
+    "features",
+    "state",
+    "ai",
+    "review"
+  ],
+  "additionalProperties": false
+}

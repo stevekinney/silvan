@@ -1,3 +1,5 @@
+import { ProseWriter } from 'prose-writer';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
@@ -16,14 +18,15 @@ export async function generateRecoveryPlan(input: {
   bus?: EventBus;
   context?: EmitContext;
 }): Promise<RecoveryPlan> {
-  const prompt = [
-    'You are the recovery agent for Silvan.',
-    'Given the run state, propose the safest next step.',
+  const promptWriter = new ProseWriter();
+  promptWriter.write('You are the recovery agent for Silvan.');
+  promptWriter.write('Given the run state, propose the safest next step.');
+  promptWriter.write(
     'Allowed nextAction values: rerun_verification, refetch_reviews, restart_review_loop, ask_user.',
-    'Return JSON only with: { nextAction, reason, steps? }.',
-    '',
-    JSON.stringify(input.runState, null, 2),
-  ].join('\n');
+  );
+  promptWriter.write('Return JSON only with: { nextAction, reason, steps? }.');
+  promptWriter.write(JSON.stringify(input.runState, null, 2));
+  const prompt = promptWriter.toString().trimEnd();
 
   const result = await runClaudePrompt({
     message: prompt,

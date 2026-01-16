@@ -1,14 +1,16 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import * as lockfile from 'proper-lockfile/index.js';
 
 import { hashString } from '../utils/hash';
+import { resolveStatePaths, type StateMode } from './paths';
 
 export type StateStore = {
   root: string;
   runsDir: string;
   auditDir: string;
+  cacheDir: string;
   stateVersion: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: RunStateData) => Promise<string>;
@@ -27,18 +29,33 @@ export type RunStateEnvelope = {
   data: RunStateData;
 };
 
+export type StateStoreOptions = {
+  lock?: boolean;
+  mode?: StateMode;
+  root?: string;
+};
+
+type StateMetadata = {
+  notifiedAt?: string;
+};
+
 const stateVersion = '1.0.0';
 
 export async function initStateStore(
   repoRoot: string,
-  options?: { lock?: boolean },
+  options?: StateStoreOptions,
 ): Promise<StateStore> {
-  const root = join(repoRoot, '.silvan');
-  const runsDir = join(root, 'runs');
-  const auditDir = join(root, 'audit');
+  const mode = options?.mode ?? 'global';
+  const paths = resolveStatePaths({
+    repoRoot,
+    mode,
+    ...(options?.root ? { stateRoot: options.root } : {}),
+  });
+  const { root, runsDir, auditDir, cacheDir, metadataPath } = paths;
 
   await mkdir(runsDir, { recursive: true });
   await mkdir(auditDir, { recursive: true });
+  await mkdir(cacheDir, { recursive: true });
 
   const lockRelease =
     options?.lock === false
@@ -46,6 +63,13 @@ export async function initStateStore(
       : ((await lockfile.lock(root, {
           retries: { retries: 2, factor: 2, minTimeout: 100, maxTimeout: 1000 },
         })) as () => Promise<void>);
+
+  if (mode === 'global') {
+    await ensureGlobalNotice({
+      metadataPath,
+      dataRoot: paths.dataRoot,
+    });
+  }
 
   async function writeRunState(runId: string, data: RunStateData): Promise<string> {
     const envelope: RunStateEnvelope = {
@@ -70,11 +94,7 @@ export async function initStateStore(
       if (parsed && parsed.version && parsed.runId && 'data' in parsed) {
         return parsed;
       }
-      return {
-        version: '0.0.0',
-        runId,
-        data: typeof parsed === 'object' && parsed !== null ? parsed : {},
-      };
+      return null;
     } catch {
       return null;
     }
@@ -93,10 +113,47 @@ export async function initStateStore(
     root,
     runsDir,
     auditDir,
+    cacheDir,
     stateVersion,
     lockRelease,
     writeRunState,
     readRunState,
     updateRunState,
   };
+}
+
+async function ensureGlobalNotice(options: {
+  metadataPath: string;
+  dataRoot: string;
+}): Promise<void> {
+  const metadata = await readMetadata(options.metadataPath);
+  if (metadata.notifiedAt) return;
+
+  console.warn(`Silvan state is stored in ${options.dataRoot}.`);
+  await writeMetadata(options.metadataPath, {
+    notifiedAt: new Date().toISOString(),
+  });
+}
+
+async function readMetadata(path: string): Promise<StateMetadata> {
+  try {
+    const parsed = JSON.parse(await Bun.file(path).text()) as StateMetadata;
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeMetadata(path: string, update: StateMetadata): Promise<void> {
+  const current = await readMetadata(path);
+  const next: StateMetadata = {
+    ...current,
+    ...update,
+  };
+  const payload = JSON.stringify(next, null, 2);
+  await mkdir(dirname(path), { recursive: true });
+  const base = basename(path);
+  const temp = join(dirname(path), `${base}.${crypto.randomUUID()}.tmp`);
+  await writeFile(temp, payload, 'utf8');
+  await rename(temp, path);
 }

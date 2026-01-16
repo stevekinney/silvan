@@ -38,10 +38,11 @@ export async function openOrUpdatePr(options: {
   baseBranch: string;
   title: string;
   body: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<PrResult> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   const head = `${options.owner}:${options.headBranch}`;
 
   let existing;
@@ -193,10 +194,11 @@ export async function requestReviewers(options: {
   pr: PrIdent;
   reviewers: string[];
   requestCopilot: boolean;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<void> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
 
   const reviewers = options.reviewers.filter((reviewer) => reviewer.length > 0);
 
@@ -269,10 +271,11 @@ export async function findMergedPr(options: {
   owner: string;
   repo: string;
   headBranch: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<MergedPrInfo | null> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   const head = `${options.owner}:${options.headBranch}`;
 
   let closed;
@@ -313,10 +316,11 @@ export async function findMergedPr(options: {
 export async function listOpenPullRequests(options: {
   owner: string;
   repo: string;
+  token?: string;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<OpenPrInfo[]> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(options.token);
   let response;
   try {
     response = await octokit.rest.pulls.list({

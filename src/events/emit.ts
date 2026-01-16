@@ -10,7 +10,7 @@ export type EmitContext = {
   mode?: EventMode;
   worktreePath?: string;
   prId?: string;
-  ticketId?: string;
+  taskId?: string;
 };
 
 export function createEnvelope<TType extends string, TPayload>(options: {
@@ -47,8 +47,8 @@ export function createEnvelope<TType extends string, TPayload>(options: {
   if (options.context.prId) {
     envelope.prId = options.context.prId;
   }
-  if (options.context.ticketId) {
-    envelope.ticketId = options.context.ticketId;
+  if (options.context.taskId) {
+    envelope.taskId = options.context.taskId;
   }
   if (options.context.mode) {
     envelope.mode = options.context.mode;

@@ -10,3 +10,8 @@ declare module 'proper-lockfile/index.js' {
 
   export function lock(path: string, options?: LockOptions): Promise<() => Promise<void>>;
 }
+
+declare module '*.graphql' {
+  const content: string;
+  export default content;
+}

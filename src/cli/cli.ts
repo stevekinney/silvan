@@ -5,6 +5,8 @@ import { cac } from 'cac';
 
 import { collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
+import { loadConfig } from '../config/load';
+import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
@@ -36,11 +38,11 @@ import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { initStateStore } from '../state/store';
+import { inferTaskRefFromBranch, resolveTask } from '../task/resolve';
 import { mountDashboard, startPrSnapshotPoller } from '../ui';
 import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
-import { inferTicketFromRepo } from '../utils/ticket';
 
 const cli = cac('silvan');
 
@@ -55,16 +57,264 @@ type CliOptions = {
   dryRun?: boolean;
   apply?: boolean;
   dangerous?: boolean;
-  ticket?: string;
+  task?: string;
+  githubToken?: string;
+  linearToken?: string;
+  model?: string;
+  modelPlan?: string;
+  modelExecute?: string;
+  modelReview?: string;
+  modelVerify?: string;
+  modelPr?: string;
+  modelRecovery?: string;
+  maxTurns?: string;
+  maxTurnsPlan?: string;
+  maxTurnsExecute?: string;
+  maxTurnsReview?: string;
+  maxTurnsVerify?: string;
+  maxTurnsPr?: string;
+  maxTurnsRecovery?: string;
+  maxBudgetUsd?: string;
+  maxBudgetUsdPlan?: string;
+  maxBudgetUsdExecute?: string;
+  maxBudgetUsdReview?: string;
+  maxBudgetUsdVerify?: string;
+  maxBudgetUsdPr?: string;
+  maxBudgetUsdRecovery?: string;
+  maxThinkingTokens?: string;
+  maxThinkingTokensPlan?: string;
+  maxThinkingTokensExecute?: string;
+  maxThinkingTokensReview?: string;
+  maxThinkingTokensVerify?: string;
+  maxThinkingTokensPr?: string;
+  maxThinkingTokensRecovery?: string;
+  maxToolCalls?: string;
+  maxToolMs?: string;
+  maxReviewLoops?: string;
+  persistSessions?: boolean;
+  verifyShell?: string;
+  stateMode?: string;
 };
 
 cli.option('--json', 'Output JSON event stream');
 cli.option('--no-ui', 'Disable UI');
 cli.option('--yes', 'Skip confirmations');
+cli.option('--github-token <token>', 'GitHub token (overrides config/env)');
+cli.option('--linear-token <token>', 'Linear token (overrides config/env)');
+cli.option('--model <model>', 'Default Claude model');
+cli.option('--model-plan <model>', 'Planner model');
+cli.option('--model-execute <model>', 'Executor model');
+cli.option('--model-review <model>', 'Review model');
+cli.option('--model-verify <model>', 'Verify model');
+cli.option('--model-pr <model>', 'PR writer model');
+cli.option('--model-recovery <model>', 'Recovery model');
+cli.option('--max-turns <n>', 'Max turns per session');
+cli.option('--max-turns-plan <n>', 'Max turns for planner');
+cli.option('--max-turns-execute <n>', 'Max turns for executor');
+cli.option('--max-turns-review <n>', 'Max turns for review');
+cli.option('--max-turns-verify <n>', 'Max turns for verify');
+cli.option('--max-turns-pr <n>', 'Max turns for PR writer');
+cli.option('--max-turns-recovery <n>', 'Max turns for recovery');
+cli.option('--max-budget-usd <n>', 'Max budget in USD per session');
+cli.option('--max-budget-usd-plan <n>', 'Max USD budget for planner');
+cli.option('--max-budget-usd-execute <n>', 'Max USD budget for executor');
+cli.option('--max-budget-usd-review <n>', 'Max USD budget for review');
+cli.option('--max-budget-usd-verify <n>', 'Max USD budget for verify');
+cli.option('--max-budget-usd-pr <n>', 'Max USD budget for PR writer');
+cli.option('--max-budget-usd-recovery <n>', 'Max USD budget for recovery');
+cli.option('--max-thinking-tokens <n>', 'Max thinking tokens per session');
+cli.option('--max-thinking-tokens-plan <n>', 'Max thinking tokens for planner');
+cli.option('--max-thinking-tokens-execute <n>', 'Max thinking tokens for executor');
+cli.option('--max-thinking-tokens-review <n>', 'Max thinking tokens for review');
+cli.option('--max-thinking-tokens-verify <n>', 'Max thinking tokens for verify');
+cli.option('--max-thinking-tokens-pr <n>', 'Max thinking tokens for PR writer');
+cli.option('--max-thinking-tokens-recovery <n>', 'Max thinking tokens for recovery');
+cli.option('--max-tool-calls <n>', 'Max tool calls per session');
+cli.option('--max-tool-ms <n>', 'Max tool call duration (ms)');
+cli.option('--max-review-loops <n>', 'Max review loop iterations');
+cli.option('--persist-sessions', 'Persist agent sessions across phases');
+cli.option('--verify-shell <path>', 'Shell used for verify commands');
+cli.option('--state-mode <mode>', 'Use repo or global state storage');
+
+function parseNumberFlag(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function buildConfigOverrides(options: CliOptions): ConfigInput {
+  const overrides: ConfigInput = {};
+
+  if (options.githubToken) {
+    overrides.github = { ...(overrides.github ?? {}), token: options.githubToken };
+  }
+  if (options.linearToken) {
+    overrides.linear = { ...(overrides.linear ?? {}), token: options.linearToken };
+  }
+  if (options.verifyShell) {
+    overrides.verify = { ...(overrides.verify ?? {}), shell: options.verifyShell };
+  }
+  if (options.stateMode) {
+    if (options.stateMode !== 'global' && options.stateMode !== 'repo') {
+      throw new Error(`Invalid --state-mode value: ${options.stateMode}`);
+    }
+    overrides.state = { ...(overrides.state ?? {}), mode: options.stateMode };
+  }
+  if (options.persistSessions === true) {
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      sessions: { ...(overrides.ai?.sessions ?? {}), persist: options.persistSessions },
+    };
+  }
+
+  if (options.model) {
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      models: { ...(overrides.ai?.models ?? {}), default: options.model },
+    };
+  }
+  const phaseModels: Array<
+    [keyof NonNullable<Config['ai']>['models'], string | undefined]
+  > = [
+    ['plan', options.modelPlan],
+    ['execute', options.modelExecute],
+    ['review', options.modelReview],
+    ['verify', options.modelVerify],
+    ['pr', options.modelPr],
+    ['recovery', options.modelRecovery],
+  ];
+  for (const [phase, value] of phaseModels) {
+    if (!value) continue;
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      models: { ...(overrides.ai?.models ?? {}), [phase]: value },
+    };
+  }
+
+  const defaultBudget = {
+    maxTurns: parseNumberFlag(options.maxTurns),
+    maxBudgetUsd: parseNumberFlag(options.maxBudgetUsd),
+    maxThinkingTokens: parseNumberFlag(options.maxThinkingTokens),
+  };
+  if (
+    defaultBudget.maxTurns ||
+    defaultBudget.maxBudgetUsd ||
+    defaultBudget.maxThinkingTokens
+  ) {
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      budgets: {
+        ...(overrides.ai?.budgets ?? {}),
+        default: {
+          ...(overrides.ai?.budgets?.default ?? {}),
+          ...(defaultBudget.maxTurns ? { maxTurns: defaultBudget.maxTurns } : {}),
+          ...(defaultBudget.maxBudgetUsd
+            ? { maxBudgetUsd: defaultBudget.maxBudgetUsd }
+            : {}),
+          ...(defaultBudget.maxThinkingTokens
+            ? { maxThinkingTokens: defaultBudget.maxThinkingTokens }
+            : {}),
+        },
+      },
+    };
+  }
+
+  const phaseBudgets: Array<
+    [
+      keyof NonNullable<Config['ai']>['budgets'],
+      string | undefined,
+      string | undefined,
+      string | undefined,
+    ]
+  > = [
+    [
+      'plan',
+      options.maxTurnsPlan,
+      options.maxBudgetUsdPlan,
+      options.maxThinkingTokensPlan,
+    ],
+    [
+      'execute',
+      options.maxTurnsExecute,
+      options.maxBudgetUsdExecute,
+      options.maxThinkingTokensExecute,
+    ],
+    [
+      'review',
+      options.maxTurnsReview,
+      options.maxBudgetUsdReview,
+      options.maxThinkingTokensReview,
+    ],
+    [
+      'verify',
+      options.maxTurnsVerify,
+      options.maxBudgetUsdVerify,
+      options.maxThinkingTokensVerify,
+    ],
+    ['pr', options.maxTurnsPr, options.maxBudgetUsdPr, options.maxThinkingTokensPr],
+    [
+      'recovery',
+      options.maxTurnsRecovery,
+      options.maxBudgetUsdRecovery,
+      options.maxThinkingTokensRecovery,
+    ],
+  ];
+  for (const [phase, turns, budget, thinking] of phaseBudgets) {
+    const maxTurns = parseNumberFlag(turns);
+    const maxBudgetUsd = parseNumberFlag(budget);
+    const maxThinkingTokens = parseNumberFlag(thinking);
+    if (!maxTurns && !maxBudgetUsd && !maxThinkingTokens) continue;
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      budgets: {
+        ...(overrides.ai?.budgets ?? {}),
+        [phase]: {
+          ...(overrides.ai?.budgets?.[phase] ?? {}),
+          ...(maxTurns ? { maxTurns } : {}),
+          ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+          ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
+        },
+      },
+    };
+  }
+
+  const maxToolCalls = parseNumberFlag(options.maxToolCalls);
+  const maxToolMs = parseNumberFlag(options.maxToolMs);
+  if (maxToolCalls || maxToolMs) {
+    overrides.ai = {
+      ...(overrides.ai ?? {}),
+      toolLimits: {
+        ...(overrides.ai?.toolLimits ?? {}),
+        ...(maxToolCalls ? { maxCalls: maxToolCalls } : {}),
+        ...(maxToolMs ? { maxDurationMs: maxToolMs } : {}),
+      },
+    };
+  }
+
+  const maxReviewLoops = parseNumberFlag(options.maxReviewLoops);
+  if (maxReviewLoops) {
+    overrides.review = { ...(overrides.review ?? {}), maxIterations: maxReviewLoops };
+  }
+
+  return overrides;
+}
+
+async function withCliContext<T>(
+  options: CliOptions | undefined,
+  mode: EventMode,
+  fn: (ctx: RunContext) => Promise<T>,
+  extra?: { lock?: boolean; runId?: string },
+): Promise<T> {
+  const configOverrides = buildConfigOverrides(options ?? {});
+  return withRunContext(
+    { cwd: process.cwd(), mode, configOverrides, ...(extra ?? {}) },
+    fn,
+  );
+}
 
 cli.command('wt list', 'List worktrees').action(async (options: CliOptions) => {
   const mode: EventMode = options.json ? 'json' : 'headless';
-  await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+  await withCliContext(options, mode, async (ctx) => {
     await runStep(ctx, 'git.worktree.list', 'List worktrees', async () =>
       listWorktrees({
         repoRoot: ctx.repo.repoRoot,
@@ -80,7 +330,7 @@ cli
   .command('wt add <name>', 'Create a worktree and branch')
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       const safeName = sanitizeName(name);
 
       const worktree = await runStep(
@@ -116,14 +366,14 @@ cli
 cli
   .command('wt remove [name]', 'Remove a worktree')
   .option('--force', 'Force removal even if dirty')
-  .option('--ticket <ticket>', 'Remove worktree for a Linear ticket ID')
+  .option('--task <task>', 'Remove worktree for a task reference')
   .action(async (name: string | undefined, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-      const ticket = options.ticket ? sanitizeName(options.ticket) : undefined;
+    await withCliContext(options, mode, async (ctx) => {
+      const task = options.task ? sanitizeName(options.task) : undefined;
       const targetName = name ? sanitizeName(name) : undefined;
-      if (!ticket && !targetName) {
-        throw new Error('Worktree name or --ticket is required.');
+      if (!task && !targetName) {
+        throw new Error('Worktree name or --task is required.');
       }
 
       const worktrees = await runStep(
@@ -139,10 +389,10 @@ cli
           }),
       );
 
-      const expectedPath = ticket
-        ? join(ctx.repo.repoRoot, ctx.config.naming.worktreeDir, ticket)
+      const expectedPath = task
+        ? join(ctx.repo.repoRoot, ctx.config.naming.worktreeDir, task)
         : null;
-      const expectedBranch = ticket ? `${ctx.config.naming.branchPrefix}${ticket}` : null;
+      const expectedBranch = task ? `${ctx.config.naming.branchPrefix}${task}` : null;
       const targets = worktrees.filter((worktree) => {
         if (expectedPath && worktree.path === expectedPath) return true;
         if (expectedBranch && worktree.branch === expectedBranch) return true;
@@ -152,11 +402,11 @@ cli
       });
 
       if (targets.length === 0) {
-        throw new Error(`Worktree not found: ${ticket ?? targetName}`);
+        throw new Error(`Worktree not found: ${task ?? targetName}`);
       }
       if (targets.length > 1) {
         const paths = targets.map((target) => target.path).join(', ');
-        throw new Error(`Worktree name is ambiguous: ${ticket ?? targetName} (${paths})`);
+        throw new Error(`Worktree name is ambiguous: ${task ?? targetName} (${paths})`);
       }
 
       const target = targets[0]!;
@@ -191,8 +441,8 @@ cli
   .option('--all', 'Remove all merged worktrees without prompting')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-      requireGitHubAuth();
+    await withCliContext(options, mode, async (ctx) => {
+      const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
@@ -230,6 +480,7 @@ cli
           owner: github.owner,
           repo: github.repo,
           headBranch: worktree.branch,
+          token: githubToken,
           bus: ctx.events.bus,
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         });
@@ -282,7 +533,7 @@ cli
   .command('wt prune', 'Prune stale worktree data')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       await runStep(ctx, 'git.worktree.prune', 'Prune worktrees', async () =>
         pruneWorktrees({
           repoRoot: ctx.repo.repoRoot,
@@ -298,7 +549,7 @@ cli
   .option('--reason <reason>', 'Reason for locking')
   .action(async (name: string, options: CliOptions & { reason?: string }) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       const worktrees = await listWorktrees({
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
@@ -326,7 +577,7 @@ cli
   .command('wt unlock <name>', 'Unlock a worktree')
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       const worktrees = await listWorktrees({
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
@@ -353,7 +604,7 @@ cli
   .command('wt rebase', 'Rebase current branch onto base')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       const ok = await runStep(ctx, 'git.rebase', 'Rebase onto base', async () =>
         rebaseOntoBase({
           repoRoot: ctx.repo.repoRoot,
@@ -387,8 +638,8 @@ cli
   .option('--timeout <ms>', 'Timeout in ms', { default: '900000' })
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-      requireGitHubAuth();
+    await withCliContext(options, mode, async (ctx) => {
+      const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
@@ -412,6 +663,7 @@ cli
           owner,
           repo,
           headBranch,
+          token: githubToken,
           pollIntervalMs: intervalMs,
           timeoutMs,
           bus: ctx.events.bus,
@@ -445,8 +697,8 @@ cli
   .command('review unresolved', 'Fetch unresolved review comments')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-      requireGitHubAuth();
+    await withCliContext(options, mode, async (ctx) => {
+      const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
         repoRoot: ctx.repo.repoRoot,
@@ -471,6 +723,7 @@ cli
             owner,
             repo,
             headBranch,
+            token: githubToken,
             bus: ctx.events.bus,
             context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
           }),
@@ -521,7 +774,12 @@ cli
 
 cli.command('runs list', 'List recorded runs').action(async (options: CliOptions) => {
   const repo = await detectRepoContext({ cwd: process.cwd() });
-  const state = await initStateStore(repo.repoRoot, { lock: false });
+  const configResult = await loadConfig(buildConfigOverrides(options));
+  const state = await initStateStore(repo.repoRoot, {
+    lock: false,
+    mode: configResult.config.state.mode,
+    ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+  });
   const runEntries = await readdir(state.runsDir);
   const files = runEntries.filter((entry) => entry.endsWith('.json'));
   const runs = [];
@@ -537,9 +795,9 @@ cli.command('runs list', 'List recorded runs').action(async (options: CliOptions
       step?: string;
       updatedAt?: string;
     };
-    const summary = (typeof data['summary'] === 'object' && data['summary']
-      ? data['summary']
-      : {}) as { prUrl?: string };
+    const summary = (
+      typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}
+    ) as { prUrl?: string };
 
     runs.push({
       runId,
@@ -571,19 +829,26 @@ cli.command('runs list', 'List recorded runs').action(async (options: CliOptions
   }
 });
 
-cli.command('runs inspect <runId>', 'Inspect a run snapshot').action(async (runId: string, options: CliOptions) => {
-  const repo = await detectRepoContext({ cwd: process.cwd() });
-  const state = await initStateStore(repo.repoRoot, { lock: false });
-  const snapshot = await state.readRunState(runId);
-  if (!snapshot) {
-    throw new Error(`Run not found: ${runId}`);
-  }
-  if (options.json) {
+cli
+  .command('runs inspect <runId>', 'Inspect a run snapshot')
+  .action(async (runId: string, options: CliOptions) => {
+    const repo = await detectRepoContext({ cwd: process.cwd() });
+    const configResult = await loadConfig(buildConfigOverrides(options));
+    const state = await initStateStore(repo.repoRoot, {
+      lock: false,
+      mode: configResult.config.state.mode,
+      ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+    });
+    const snapshot = await state.readRunState(runId);
+    if (!snapshot) {
+      throw new Error(`Run not found: ${runId}`);
+    }
+    if (options.json) {
+      console.log(JSON.stringify(snapshot, null, 2));
+      return;
+    }
     console.log(JSON.stringify(snapshot, null, 2));
-    return;
-  }
-  console.log(JSON.stringify(snapshot, null, 2));
-});
+  });
 
 cli
   .command('runs resume <runId>', 'Resume a run from state')
@@ -591,16 +856,20 @@ cli
   .option('--apply', 'Allow mutating tools')
   .option('--dangerous', 'Allow dangerous tools (requires --apply)')
   .action((runId: string, options: CliOptions) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless', runId }, async (ctx) =>
-      withAgentSessions(async (sessions) => {
-        const runOptions = {
-          ...(options.dryRun ? { dryRun: true } : {}),
-          ...(options.apply ? { apply: true } : {}),
-          ...(options.dangerous ? { dangerous: true } : {}),
-          sessions,
-        };
-        await resumeRun(ctx, runOptions);
-      }),
+    withCliContext(
+      options,
+      'headless',
+      async (ctx) =>
+        withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
+          const runOptions = {
+            ...(options.dryRun ? { dryRun: true } : {}),
+            ...(options.apply ? { apply: true } : {}),
+            ...(options.dangerous ? { dangerous: true } : {}),
+            sessions,
+          };
+          await resumeRun(ctx, runOptions);
+        }),
+      { runId },
     ),
   );
 
@@ -608,97 +877,120 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
   if (options.noUi) {
     throw new Error('The --no-ui flag cannot be used with silvan ui.');
   }
-  await withRunContext({ cwd: process.cwd(), mode: 'ui', lock: false }, async (ctx) => {
-    let stopPolling = () => {};
-    try {
-      requireGitHubAuth();
-      const github = await requireGitHubConfig({
-        config: ctx.config,
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      });
-      stopPolling = startPrSnapshotPoller({
-        owner: github.owner,
-        repo: github.repo,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      });
-    } catch {
-      stopPolling = () => {};
-    }
+  await withCliContext(
+    options,
+    'ui',
+    async (ctx) => {
+      let stopPolling = () => {};
+      try {
+        const githubToken = requireGitHubAuth(ctx.config);
+        const github = await requireGitHubConfig({
+          config: ctx.config,
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
+        });
+        stopPolling = startPrSnapshotPoller({
+          owner: github.owner,
+          repo: github.repo,
+          token: githubToken,
+          bus: ctx.events.bus,
+          context: {
+            runId: ctx.runId,
+            repoRoot: ctx.repo.repoRoot,
+            mode: ctx.events.mode,
+          },
+        });
+      } catch {
+        stopPolling = () => {};
+      }
 
-    try {
-      await mountDashboard(ctx.events.bus, ctx.state);
-    } finally {
-      stopPolling();
-    }
-  });
+      try {
+        await mountDashboard(ctx.events.bus, ctx.state);
+      } finally {
+        stopPolling();
+      }
+    },
+    { lock: false },
+  );
 });
 
-cli.command('task start [ticket]', 'Start a task').action((ticket: string | undefined) =>
-  withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
-    withAgentSessions(async (sessions) => {
-      const mode = ctx.events.mode;
-      const inferredFromRepo = await inferTicketFromRepo({
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-      const inferred = ticket ?? inferredFromRepo?.ticketId;
+cli
+  .command('task start [taskRef]', 'Start a task')
+  .action((taskRef: string | undefined, options: CliOptions) =>
+    withCliContext(options, 'headless', async (ctx) =>
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
+        const mode = ctx.events.mode;
+        const inferred = taskRef ?? inferTaskRefFromBranch(ctx.repo.branch ?? '');
 
-      if (!inferred) {
-        throw new Error(
-          'Ticket ID required. Provide a ticket or use a branch with a ticket ID.',
+        if (!inferred) {
+          throw new Error(
+            'Task reference required. Provide a Linear ID, gh-<number>, or GitHub issue URL.',
+          );
+        }
+
+        const resolved = await resolveTask(inferred, {
+          config: ctx.config,
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        });
+
+        console.log(
+          `Task: ${resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
         );
-      }
 
-      const safeName = sanitizeName(inferred);
-      const worktree = await runStep(
-        ctx,
-        'git.worktree.create',
-        'Create worktree',
-        async () =>
-          createWorktree({
-            repoRoot: ctx.repo.repoRoot,
-            name: safeName,
-            config: ctx.config,
-            bus: ctx.events.bus,
-            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-          }),
-      );
-
-      await normalizeClaudeSettings({ worktreePath: worktree.path });
-      await ensureArtifactsIgnored({
-        worktreePath: worktree.path,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-
-      const installResult = await installDependencies({ worktreePath: worktree.path });
-      if (!installResult.ok) {
-        console.warn(
-          `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+        const safeName = sanitizeName(resolved.task.id);
+        const worktree = await runStep(
+          ctx,
+          'git.worktree.create',
+          'Create worktree',
+          async () =>
+            createWorktree({
+              repoRoot: ctx.repo.repoRoot,
+              name: safeName,
+              config: ctx.config,
+              bus: ctx.events.bus,
+              context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+            }),
         );
-      }
 
-      await runPlanner(ctx, {
-        ticketId: inferred,
-        worktreeName: safeName,
-        sessions,
-      });
-    }),
-  ),
-);
+        await normalizeClaudeSettings({ worktreePath: worktree.path });
+        await ensureArtifactsIgnored({
+          worktreePath: worktree.path,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        });
+
+        const installResult = await installDependencies({ worktreePath: worktree.path });
+        if (!installResult.ok) {
+          console.warn(
+            `Warning: bun install failed in ${worktree.path}\n${installResult.stderr || installResult.stdout}`,
+          );
+        }
+
+        await runPlanner(ctx, {
+          taskRef: resolved.ref.raw,
+          task: resolved.task,
+          worktreeName: safeName,
+          sessions,
+        });
+      }),
+    ),
+  );
 
 cli
   .command('agent plan', 'Generate plan')
-  .option('--ticket <ticket>', 'Linear ticket ID')
+  .option('--task <task>', 'Task reference (Linear ID, gh-<number>, or URL)')
   .action((options: CliOptions) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
-      withAgentSessions((sessions) =>
+    withCliContext(options, 'headless', async (ctx) =>
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), (sessions) =>
         runPlanner(ctx, {
-          ...(options.ticket ? { ticketId: options.ticket } : {}),
+          ...(options.task ? { taskRef: options.task } : {}),
           sessions,
         }),
       ),
@@ -709,8 +1001,8 @@ cli
   .command('agent clarify', 'Answer plan questions')
   .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
   .action((options: CliOptions & { answer?: string | string[] }) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
-      withAgentSessions(async (sessions) => {
+    withCliContext(options, 'headless', async (ctx) =>
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         const state = await ctx.state.readRunState(ctx.runId);
         const data = (state?.data as Record<string, unknown>) ?? {};
         const plan = data['plan'];
@@ -719,8 +1011,11 @@ cli
         }
 
         const questions = Array.isArray((plan as { questions?: unknown }).questions)
-          ? ((plan as { questions?: Array<{ id: string; text: string; required?: boolean }> })
-              .questions ?? [])
+          ? ((
+              plan as {
+                questions?: Array<{ id: string; text: string; required?: boolean }>;
+              }
+            ).questions ?? [])
           : [];
 
         if (questions.length === 0) {
@@ -752,14 +1047,18 @@ cli
           clarifications,
         }));
 
-        const ticket = data['ticket'];
-        const ticketId =
-          typeof ticket === 'object' && ticket && 'identifier' in ticket
-            ? (ticket as { identifier?: string }).identifier
+        const task = data['task'];
+        const taskRef =
+          typeof data['taskRef'] === 'object' && data['taskRef']
+            ? (data['taskRef'] as { raw?: string }).raw
+            : undefined;
+        const taskId =
+          typeof task === 'object' && task && 'id' in task
+            ? (task as { id?: string }).id
             : undefined;
 
         await runPlanner(ctx, {
-          ...(ticketId ? { ticketId } : {}),
+          ...(taskRef ? { taskRef } : taskId ? { taskRef: taskId } : {}),
           clarifications,
           sessions,
         });
@@ -773,8 +1072,8 @@ cli
   .option('--apply', 'Allow mutating tools')
   .option('--dangerous', 'Allow dangerous tools (requires --apply)')
   .action((options: CliOptions) =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
-      withAgentSessions(async (sessions) => {
+    withCliContext(options, 'headless', async (ctx) =>
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         const runOptions = {
           ...(options.dryRun ? { dryRun: true } : {}),
           ...(options.apply ? { apply: true } : {}),
@@ -789,9 +1088,11 @@ cli
 
 cli
   .command('agent resume', 'Resume agent')
-  .action(() =>
-    withRunContext({ cwd: process.cwd(), mode: 'headless' }, async (ctx) =>
-      withAgentSessions((sessions) => runRecovery(ctx, { sessions })),
+  .action((options: CliOptions) =>
+    withCliContext(options, 'headless', async (ctx) =>
+      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), (sessions) =>
+        runRecovery(ctx, { sessions }),
+      ),
     ),
   );
 
@@ -799,7 +1100,7 @@ cli
   .command('doctor', 'Check environment and configuration')
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
-    await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
+    await withCliContext(options, mode, async (ctx) => {
       const results: Array<{ name: string; ok: boolean; detail: string }> = [];
 
       const gitVersion = await runGit(['--version'], {
@@ -833,19 +1134,21 @@ cli
         });
       }
 
-      const ghTokenPresent = Boolean(Bun.env['GITHUB_TOKEN'] || Bun.env['GH_TOKEN']);
-      results.push({
-        name: 'github.token',
-        ok: ghTokenPresent,
-        detail: ghTokenPresent ? 'Found' : 'Missing GITHUB_TOKEN or GH_TOKEN',
-      });
+      if (ctx.config.task.providers.enabled.includes('github')) {
+        const ghTokenPresent = Boolean(ctx.config.github.token);
+        results.push({
+          name: 'github.token',
+          ok: ghTokenPresent,
+          detail: ghTokenPresent ? 'Found' : 'Missing github.token',
+        });
+      }
 
-      if (ctx.config.linear.enabled) {
-        const linearTokenPresent = Boolean(Bun.env['LINEAR_API_KEY']);
+      if (ctx.config.task.providers.enabled.includes('linear')) {
+        const linearTokenPresent = Boolean(ctx.config.linear.token);
         results.push({
           name: 'linear.token',
           ok: linearTokenPresent,
-          detail: linearTokenPresent ? 'Found' : 'Missing LINEAR_API_KEY',
+          detail: linearTokenPresent ? 'Found' : 'Missing linear.token',
         });
       }
 
@@ -876,8 +1179,8 @@ export function run(argv: string[]): void {
 
 async function handlePrOpen(options: CliOptions): Promise<void> {
   const mode: EventMode = options.json ? 'json' : 'headless';
-  await withRunContext({ cwd: process.cwd(), mode }, async (ctx) => {
-    requireGitHubAuth();
+  await withCliContext(options, mode, async (ctx) => {
+    const githubToken = requireGitHubAuth(ctx.config);
     const github = await requireGitHubConfig({
       config: ctx.config,
       repoRoot: ctx.repo.repoRoot,
@@ -904,6 +1207,7 @@ async function handlePrOpen(options: CliOptions): Promise<void> {
         baseBranch,
         title,
         body,
+        token: githubToken,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
       }),
@@ -914,6 +1218,7 @@ async function handlePrOpen(options: CliOptions): Promise<void> {
         pr: prResult.pr,
         reviewers: ctx.config.github.reviewers,
         requestCopilot: ctx.config.github.requestCopilot,
+        token: githubToken,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
       }),
@@ -1004,9 +1309,9 @@ async function persistRunState(
 }
 
 async function withAgentSessions<T>(
+  enabled: boolean,
   fn: (sessions: ReturnType<typeof createSessionPool>) => Promise<T>,
 ): Promise<T> {
-  const enabled = Bun.env['SILVAN_PERSIST_SESSIONS'] === '1';
   const sessions = createSessionPool(enabled);
   try {
     return await fn(sessions);
@@ -1015,9 +1320,7 @@ async function withAgentSessions<T>(
   }
 }
 
-function parseAnswerPairs(
-  raw: string | string[] | undefined,
-): Record<string, string> {
+function parseAnswerPairs(raw: string | string[] | undefined): Record<string, string> {
   if (!raw) return {};
   const entries = Array.isArray(raw) ? raw : [raw];
   const answers: Record<string, string> = {};

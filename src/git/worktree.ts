@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 import PQueue from 'p-queue';
+import { ProseWriter } from 'prose-writer';
 
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
@@ -537,7 +538,13 @@ export async function ensureArtifactsIgnored(options: {
 
   if (missing.length > 0) {
     const suffix = current.length === 0 || current.endsWith('\n') ? '' : '\n';
-    const updated = `${current}${suffix}${missing.join('\n')}\n`;
+    const writer = new ProseWriter();
+    const missingBlock = missing.reduce(
+      (acc, entry, index) => `${acc}${index ? '\n' : ''}${entry}`,
+      '',
+    );
+    writer.write(missingBlock);
+    const updated = `${current}${suffix}${writer.toString().trimEnd()}\n`;
     await writeFile(gitignorePath, updated);
   }
 

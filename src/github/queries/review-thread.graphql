@@ -1,0 +1,19 @@
+query ReviewThread($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewThread {
+      id
+      isResolved
+      isOutdated
+      comments(first: 100) {
+        nodes {
+          id
+          body
+          path
+          line
+          url
+        }
+      }
+    }
+  }
+}
