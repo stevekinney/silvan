@@ -47,6 +47,16 @@ bun run clean            # Clean build artifacts (dist/, coverage/, caches)
 
 2. **Lean Surface Area**: This template intentionally avoids framework-specific scaffolding (custom error classes, logger wrappers, etc.). Add only what you need for your project.
 
+### Silvan UX Best Practices
+
+When changing CLI output, errors, JSON behavior, onboarding/help, or UI surfaces, follow the canonical guidance in `skills/silvan-best-practices/references/best-practices.md`.
+
+Priority rules:
+
+- Keep output consistent (semantic colors, standard headers, no silent success).
+- Always provide actionable errors and next steps.
+- Ensure `--json` output is schema-stable and never mixed with text.
+
 ### Key Notes
 
 - **ESM + TypeScript**: Source files are TypeScript modules; build output targets Bun.
@@ -96,6 +106,7 @@ Prettier plus import sorting keeps imports consistent. A common order is:
 - The lockfile in this repo is `bun.lock`.
 - Bun provides native TypeScript execution without precompilation.
 - Use `bunx` for one-off package execution (like `npx`).
+- Keep this repo Bun-only; do not add or rely on Python scripts or tooling.
 
 ### Prefer Bun Built-ins Over Node
 

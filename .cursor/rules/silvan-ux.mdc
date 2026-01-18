@@ -1,0 +1,11 @@
+---
+description: Silvan UX and output conventions
+globs: ["src/**/*.ts", "src/**/*.tsx", "docs/**/*.md", "README.md", "ROADMAP.md"]
+alwaysApply: true
+---
+
+# Silvan UX and Output
+
+- Follow `skills/silvan-best-practices/references/best-practices.md` for CLI output, errors, JSON behavior, onboarding, and UI.
+- Prefer shared formatting utilities over one-off output changes.
+- Ensure success confirmations, actionable errors, and consistent next steps.

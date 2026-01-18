@@ -10,6 +10,7 @@ alwaysApply: false
 - Keep `bun.lock` as the only lockfile; do not add npm/yarn/pnpm locks.
 - Prefer Bun built-ins (Bun.serve, Bun.file, Bun.env, Bun.fetch) when they fit.
 - Use `bun run` for repo scripts; keep `package.json` scripts as the source of truth.
+- Keep the repo Bun-only; do not add or use Python scripts or dependencies.
 
 ## Common scripts
 

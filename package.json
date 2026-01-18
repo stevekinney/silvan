@@ -41,6 +41,7 @@
     "prepack": "bun run clean && bun run build",
     "prepare": "husky",
     "prepublishOnly": "bun run clean && bun run build",
+    "skill:package": "bun run scripts/package-skill.ts",
     "start": "bun run src/index.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
