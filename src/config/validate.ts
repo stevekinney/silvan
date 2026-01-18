@@ -7,7 +7,7 @@ import type { Config } from './schema';
 type GitHubOwnerRepo = { owner: string; repo: string };
 type GitHubRepo = GitHubOwnerRepo & { source: 'config' | 'origin' };
 
-function parseGitHubRemote(remoteUrl: string): GitHubOwnerRepo | null {
+export function parseGitHubRemote(remoteUrl: string): GitHubOwnerRepo | null {
   const cleaned = remoteUrl.trim().replace(/\.git$/, '');
 
   let match = cleaned.match(/^git@github\.com:([^/]+)\/(.+)$/);

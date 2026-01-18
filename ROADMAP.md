@@ -39,11 +39,11 @@ These issues fix the critical first-impression problems. A new user should be ab
 
   > **Why second**: Long-running commands with no feedback make users think the tool is broken. Spinners build trust.
 
-- [ ] [#3 - Improve silvan init with auto-detection](https://github.com/stevekinney/silvan/issues/3)
+- [x] [#3 - Improve silvan init with auto-detection](https://github.com/stevekinney/silvan/issues/3)
 
   > **Why third**: Smooth onboarding. Auto-detect repo settings so users don't have to manually configure.
 
-- [ ] [#2 - Support auto-loading .env files](https://github.com/stevekinney/silvan/issues/2)
+- [x] [#2 - Support auto-loading .env files](https://github.com/stevekinney/silvan/issues/2)
   > **Why fourth**: Removes the most common "silent failure" gotcha. Users forget to export tokens.
 
 ### Phase 2: Polish (Make Every Interaction Delightful)
@@ -240,7 +240,7 @@ $ silvan run list
 
 | Phase              | Issues                     | Status            |
 | ------------------ | -------------------------- | ----------------- |
-| Foundation         | #6, #14, #3, #2            | In progress (1/4) |
+| Foundation         | #6, #14, #3, #2            | In progress (3/4) |
 | Polish             | #15, #17, #16, #23, #20    | Not started       |
 | Discoverability    | #21, #22                   | Not started       |
 | Scripting          | #19, #18                   | Not started       |

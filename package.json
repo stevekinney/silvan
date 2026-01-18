@@ -74,6 +74,7 @@
     "change-case": "^5.4.4",
     "conversationalist": "^0.0.10",
     "cosmiconfig": "^9.0.0",
+    "dotenv": "^17.2.3",
     "env-paths": "^3.0.0",
     "ink": "^6.6.0",
     "ink-select-input": "^6.2.0",

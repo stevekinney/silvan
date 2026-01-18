@@ -1,41 +1,78 @@
-import { access, readdir, writeFile } from 'node:fs/promises';
+import { access, copyFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { pathToFileURL } from 'node:url';
 
 import chalk from 'chalk';
+import { cosmiconfig } from 'cosmiconfig';
 
+import { loadProjectEnv } from './env';
 import type { ConfigInput } from './schema';
-
-// -----------------------------------------------------------------------------
-// Types
-// -----------------------------------------------------------------------------
+import { parseGitHubRemote } from './validate';
 
 type TaskProvider = 'github' | 'linear' | 'local';
+type PackageManager = 'bun' | 'pnpm' | 'yarn' | 'npm';
 
-type InitAnswers = {
+type VerifyCommand = { name: string; cmd: string };
+
+export type InitAnswers = {
   worktreeDir: string;
   enabledProviders: TaskProvider[];
-  verifyCommands: Array<{ name: string; cmd: string }>;
+  defaultProvider: TaskProvider;
+  verifyCommands: VerifyCommand[];
 };
 
-// -----------------------------------------------------------------------------
-// UI Helpers
-// -----------------------------------------------------------------------------
-
-const ui = {
-  header: (text: string) => console.log(chalk.bold.blue(`\n  ${text}\n`)),
-  info: (text: string) => console.log(chalk.blue('ℹ ') + text),
-  success: (text: string) => console.log(chalk.green('✓ ') + text),
-  dim: (text: string) => chalk.dim(text),
-  bullet: (label: string, value: string) =>
-    console.log(
-      `  ${chalk.dim('•')} ${chalk.cyan(label.padEnd(12))} ${chalk.dim('→')} ${value}`,
-    ),
+export type InitContext = {
+  repoRoot: string;
+  detection: InitDetection;
+  existingConfig?: ConfigInput;
+  existingConfigPath?: string;
 };
 
-// -----------------------------------------------------------------------------
-// Detection Functions
-// -----------------------------------------------------------------------------
+export type InitResult = {
+  action: 'created' | 'updated' | 'skipped';
+  path?: string;
+  backupPath?: string;
+  changes?: string[];
+};
+
+type InitDetection = {
+  worktreeDir: string;
+  verifyCommands: VerifyCommand[];
+  packageManager: PackageManager;
+  defaultBranch: string;
+  github?: { owner: string; repo: string };
+};
+
+const CONFIG_CANDIDATES = ['silvan.config.ts', 'silvan.config.js', 'silvan.config.json'];
+
+async function gitStdout(args: string[], repoRoot: string): Promise<string | null> {
+  const proc = Bun.spawn(['git', ...args], {
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const trimmed = stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function detectGitHubRepo(
+  repoRoot: string,
+): Promise<{ owner: string; repo: string } | null> {
+  const remote = await gitStdout(['remote', 'get-url', 'origin'], repoRoot);
+  if (!remote) return null;
+  return parseGitHubRemote(remote);
+}
+
+async function detectDefaultBranch(repoRoot: string): Promise<string> {
+  const headRef = await gitStdout(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot);
+  if (!headRef) return 'main';
+  const parts = headRef.split('/');
+  return parts[parts.length - 1] || 'main';
+}
 
 async function detectWorktreeDir(repoRoot: string): Promise<string> {
   const candidates = ['.worktrees', 'worktrees', '.trees'];
@@ -45,14 +82,14 @@ async function detectWorktreeDir(repoRoot: string): Promise<string> {
     try {
       const entries = await readdir(path);
       if (entries.length >= 0) {
-        return dir; // Directory exists
+        return dir;
       }
     } catch {
-      // Directory doesn't exist, continue
+      // Directory doesn't exist, continue.
     }
   }
 
-  return '.worktrees'; // Default
+  return '.worktrees';
 }
 
 async function readPackageScripts(repoRoot: string): Promise<Record<string, string>> {
@@ -65,12 +102,47 @@ async function readPackageScripts(repoRoot: string): Promise<Record<string, stri
   }
 }
 
+async function detectPackageManager(repoRoot: string): Promise<PackageManager> {
+  const lockfiles: Array<[string, PackageManager]> = [
+    ['bun.lockb', 'bun'],
+    ['bun.lock', 'bun'],
+    ['pnpm-lock.yaml', 'pnpm'],
+    ['yarn.lock', 'yarn'],
+    ['package-lock.json', 'npm'],
+  ];
+
+  for (const [lockfile, manager] of lockfiles) {
+    try {
+      await access(join(repoRoot, lockfile));
+      return manager;
+    } catch {
+      // Not found, continue.
+    }
+  }
+
+  return 'bun';
+}
+
+function formatScriptCommand(manager: PackageManager, script: string): string {
+  switch (manager) {
+    case 'yarn':
+      return `yarn ${script}`;
+    case 'pnpm':
+      return `pnpm run ${script}`;
+    case 'npm':
+      return `npm run ${script}`;
+    case 'bun':
+    default:
+      return `bun run ${script}`;
+  }
+}
+
 async function detectVerifyScripts(
   repoRoot: string,
-): Promise<Array<{ name: string; cmd: string }>> {
+  manager: PackageManager,
+): Promise<VerifyCommand[]> {
   const scripts = await readPackageScripts(repoRoot);
 
-  // Priority order - first match wins for each category
   const categories: Record<string, string[]> = {
     lint: ['lint', 'lint:fix', 'eslint'],
     typecheck: ['typecheck', 'type-check', 'tsc', 'types'],
@@ -78,193 +150,49 @@ async function detectVerifyScripts(
     format: ['format', 'format:check', 'prettier'],
   };
 
-  const detected: Array<{ name: string; cmd: string }> = [];
+  const detected: VerifyCommand[] = [];
 
   for (const [category, candidates] of Object.entries(categories)) {
     const found = candidates.find((c) => scripts[c]);
     if (found) {
-      detected.push({ name: category, cmd: `bun run ${found}` });
+      detected.push({ name: category, cmd: formatScriptCommand(manager, found) });
     }
   }
 
   return detected;
 }
 
-// -----------------------------------------------------------------------------
-// Interactive Prompts
-// -----------------------------------------------------------------------------
-
-type ProviderOption = {
-  label: string;
-  value: TaskProvider;
-};
-
-const PROVIDER_OPTIONS: ProviderOption[] = [
-  { label: 'GitHub Issues', value: 'github' },
-  { label: 'Linear', value: 'linear' },
-  { label: 'Neither (local only)', value: 'local' },
-];
-
-async function selectProviders(): Promise<TaskProvider[]> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-
-  console.log(chalk.cyan('Task providers (multi-select):'));
-  for (let i = 0; i < PROVIDER_OPTIONS.length; i++) {
-    const option = PROVIDER_OPTIONS[i]!;
-    console.log(`  ${chalk.dim(`${i + 1})`)} ${option.label}`);
-  }
-
-  try {
-    const response = await rl.question(
-      chalk.dim('Enter choices (e.g., 1,3). Leave blank for local only: '),
-    );
-    const trimmed = response.trim();
-    if (!trimmed) return ['local'];
-
-    const selected = new Set<number>();
-    for (const token of trimmed.split(/[\s,]+/)) {
-      const choice = parseInt(token, 10);
-      if (!Number.isNaN(choice)) {
-        selected.add(choice);
-      }
+async function findExistingConfigPath(repoRoot: string): Promise<string | undefined> {
+  for (const candidate of CONFIG_CANDIDATES) {
+    const path = join(repoRoot, candidate);
+    try {
+      await access(path);
+      return path;
+    } catch {
+      // Not found, continue.
     }
-
-    const ordered = PROVIDER_OPTIONS.filter((_, index) => selected.has(index + 1)).map(
-      (option) => option.value,
-    );
-
-    return ordered.length > 0 ? ordered : ['local'];
-  } finally {
-    rl.close();
   }
+  return undefined;
 }
 
-// -----------------------------------------------------------------------------
-// Main Init Flow
-// -----------------------------------------------------------------------------
-
-export async function promptInitAnswers(repoRoot: string): Promise<InitAnswers> {
-  ui.header('Silvan Configuration');
-
-  // Auto-detect worktree directory
-  const worktreeDir = await detectWorktreeDir(repoRoot);
-  ui.info(`Using worktree directory: ${chalk.cyan(worktreeDir)}`);
-  console.log('');
-
-  // Single provider selection
-  const enabledProviders = await selectProviders();
-  console.log('');
-
-  // Auto-detect verify scripts
-  const verifyCommands = await detectVerifyScripts(repoRoot);
-  if (verifyCommands.length > 0) {
-    ui.info('Detected verification commands:');
-    for (const cmd of verifyCommands) {
-      ui.bullet(cmd.name, cmd.cmd);
-    }
-  } else {
-    ui.info('No verification scripts detected in package.json');
-  }
-  console.log('');
-
-  return {
-    worktreeDir,
-    enabledProviders,
-    verifyCommands,
-  };
-}
-
-// -----------------------------------------------------------------------------
-// Config Generation
-// -----------------------------------------------------------------------------
-
-function formatStringArray(values: string[]): string {
-  return `[${values.map((value) => `'${value}'`).join(', ')}]`;
-}
-
-function formatConfig(answers: InitAnswers): string {
-  const enabledProviders = normalizeProviders(answers.enabledProviders);
-
-  const lines: string[] = [
-    "import { defineConfig } from 'silvan/config';",
-    '',
-    'export default defineConfig({',
-    '  naming: {',
-    `    worktreeDir: '${answers.worktreeDir}',`,
-    '  },',
-  ];
-
-  lines.push('  task: {');
-  lines.push('    providers: {');
-  lines.push(`      enabled: ${formatStringArray(enabledProviders)},`);
-  lines.push(`      default: '${enabledProviders[0]}',`);
-  lines.push('    },');
-  lines.push('  },');
-
-  if (answers.verifyCommands.length > 0) {
-    lines.push('  verify: {');
-    lines.push('    commands: [');
-    for (const command of answers.verifyCommands) {
-      lines.push(`      { name: '${command.name}', cmd: '${command.cmd}' },`);
-    }
-    lines.push('    ],');
-    lines.push('  },');
-  }
-
-  lines.push('});');
-  lines.push('');
-
-  return `${lines.join('\n')}`;
-}
-
-export async function writeInitConfig(
-  repoRoot: string,
-  answers: InitAnswers,
-): Promise<{ path: string; config: ConfigInput } | null> {
-  const configPath = join(repoRoot, 'silvan.config.ts');
-  try {
-    await access(configPath);
-    return null;
-  } catch {
-    // File doesn't exist, proceed
-  }
-
-  const enabledProviders = normalizeProviders(answers.enabledProviders);
-
-  const config: ConfigInput = {
-    naming: { worktreeDir: answers.worktreeDir },
-    task: {
-      providers: {
-        enabled: enabledProviders,
-        default: enabledProviders[0] ?? 'local',
+async function loadConfigFile(path: string): Promise<ConfigInput | undefined> {
+  const explorer = cosmiconfig('silvan', {
+    loaders: {
+      '.ts': async (path) => {
+        const module = (await import(pathToFileURL(path).toString())) as {
+          default?: unknown;
+          config?: unknown;
+        };
+        return module.default ?? module.config ?? module;
       },
     },
-  };
+  });
 
-  if (answers.verifyCommands.length > 0) {
-    config.verify = { commands: answers.verifyCommands };
+  const result = await explorer.load(path);
+  if (!result || !result.config || typeof result.config !== 'object') {
+    return undefined;
   }
-
-  const contents = formatConfig(answers);
-  await writeFile(configPath, contents, 'utf-8');
-  return { path: configPath, config };
-}
-
-// -----------------------------------------------------------------------------
-// Defaults for --yes mode
-// -----------------------------------------------------------------------------
-
-export function getInitDefaults(repoRoot: string): Promise<InitAnswers> {
-  return (async () => {
-    const worktreeDir = await detectWorktreeDir(repoRoot);
-    const verifyCommands = await detectVerifyScripts(repoRoot);
-
-    return {
-      worktreeDir,
-      enabledProviders: ['local'],
-      verifyCommands,
-    };
-  })();
+  return result.config as ConfigInput;
 }
 
 function normalizeProviders(
@@ -276,4 +204,337 @@ function normalizeProviders(
   }
   const order: TaskProvider[] = ['local', 'github', 'linear'];
   return order.filter((provider) => unique.has(provider));
+}
+
+export async function collectInitContext(repoRoot: string): Promise<InitContext> {
+  const existingConfigPath = await findExistingConfigPath(repoRoot);
+  await loadProjectEnv({
+    cwd: repoRoot,
+    ...(existingConfigPath ? { configPath: existingConfigPath } : {}),
+  });
+
+  const [worktreeDir, packageManager, defaultBranch, githubResult] = await Promise.all([
+    detectWorktreeDir(repoRoot),
+    detectPackageManager(repoRoot),
+    detectDefaultBranch(repoRoot),
+    detectGitHubRepo(repoRoot),
+  ]);
+  const verifyCommands = await detectVerifyScripts(repoRoot, packageManager);
+  const github = githubResult ?? undefined;
+  const existingConfig = existingConfigPath
+    ? await loadConfigFile(existingConfigPath)
+    : undefined;
+
+  return {
+    repoRoot,
+    detection: {
+      worktreeDir,
+      verifyCommands,
+      packageManager,
+      defaultBranch,
+      ...(github ? { github } : {}),
+    },
+    ...(existingConfigPath ? { existingConfigPath } : {}),
+    ...(existingConfig ? { existingConfig } : {}),
+  };
+}
+
+export function getInitDefaults(context: InitContext): InitAnswers {
+  const enabled = new Set<TaskProvider>();
+  enabled.add('local');
+  if (context.detection.github) {
+    enabled.add('github');
+  }
+  if (Bun.env['LINEAR_API_KEY']) {
+    enabled.add('linear');
+  }
+  const normalized = normalizeProviders([...enabled]);
+
+  return {
+    worktreeDir: context.detection.worktreeDir,
+    enabledProviders: normalized,
+    defaultProvider: normalized[0] ?? 'local',
+    verifyCommands: context.detection.verifyCommands,
+  };
+}
+
+async function promptProviders(
+  rl: ReturnType<typeof createInterface>,
+  defaults: TaskProvider[],
+): Promise<TaskProvider[]> {
+  const options: Array<{ label: string; value: TaskProvider }> = [
+    { label: 'Local tasks', value: 'local' },
+    { label: 'GitHub Issues', value: 'github' },
+    { label: 'Linear', value: 'linear' },
+  ];
+
+  console.log('Task providers (comma-separated):');
+  options.forEach((option, index) => {
+    const enabled = defaults.includes(option.value) ? chalk.green('✓') : ' ';
+    console.log(`  ${index + 1}) [${enabled}] ${option.label}`);
+  });
+
+  const response = await rl.question(
+    chalk.dim(`Enter choices [${defaults.join(', ')}]: `),
+  );
+  const trimmed = response.trim();
+  if (!trimmed) return defaults;
+
+  const selected = new Set<number>();
+  for (const token of trimmed.split(/[\s,]+/)) {
+    const choice = parseInt(token, 10);
+    if (!Number.isNaN(choice)) {
+      selected.add(choice);
+    }
+  }
+
+  const enabledProviders = options
+    .filter((_, index) => selected.has(index + 1))
+    .map((option) => option.value);
+
+  return normalizeProviders(enabledProviders);
+}
+
+async function promptDefaultProvider(
+  rl: ReturnType<typeof createInterface>,
+  options: TaskProvider[],
+  defaultValue: TaskProvider,
+): Promise<TaskProvider> {
+  if (options.length <= 1) return options[0] ?? defaultValue;
+
+  console.log('');
+  console.log('Default provider:');
+  options.forEach((option, index) => {
+    const marker = option === defaultValue ? chalk.green('•') : ' ';
+    console.log(`  ${index + 1}) ${marker} ${option}`);
+  });
+  const response = await rl.question(chalk.dim(`Enter choice [${defaultValue}]: `));
+  const trimmed = response.trim();
+  if (!trimmed) return defaultValue;
+  const idx = Number.parseInt(trimmed, 10);
+  if (Number.isNaN(idx) || idx < 1 || idx > options.length) {
+    return defaultValue;
+  }
+  return options[idx - 1] ?? defaultValue;
+}
+
+async function promptWorktreeDir(
+  rl: ReturnType<typeof createInterface>,
+  defaultValue: string,
+): Promise<string> {
+  const response = await rl.question(chalk.dim(`Worktree directory [${defaultValue}]: `));
+  const trimmed = response.trim();
+  return trimmed.length > 0 ? trimmed : defaultValue;
+}
+
+export async function promptInitAnswers(context: InitContext): Promise<InitAnswers> {
+  const defaults = getInitDefaults(context);
+  const existing = context.existingConfig;
+
+  const answers: InitAnswers = {
+    worktreeDir: existing?.naming?.worktreeDir ?? defaults.worktreeDir,
+    enabledProviders: existing?.task?.providers?.enabled ?? defaults.enabledProviders,
+    defaultProvider: defaults.defaultProvider ?? 'local',
+    verifyCommands: existing?.verify?.commands ?? defaults.verifyCommands,
+  };
+  const fallbackDefault =
+    answers.enabledProviders[0] ?? defaults.defaultProvider ?? 'local';
+  answers.defaultProvider = existing?.task?.providers?.default ?? fallbackDefault;
+
+  const needsProviderPrompt = !existing?.task?.providers?.enabled;
+  const needsDefaultProviderPrompt = !existing?.task?.providers?.default;
+  const needsWorktreePrompt = !existing?.naming?.worktreeDir;
+
+  if (!needsProviderPrompt && !needsDefaultProviderPrompt && !needsWorktreePrompt) {
+    return answers;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (needsProviderPrompt) {
+      answers.enabledProviders = await promptProviders(rl, defaults.enabledProviders);
+      answers.defaultProvider =
+        answers.enabledProviders[0] ?? defaults.defaultProvider ?? 'local';
+    }
+    if (needsDefaultProviderPrompt) {
+      answers.defaultProvider = await promptDefaultProvider(
+        rl,
+        answers.enabledProviders,
+        answers.defaultProvider,
+      );
+    }
+    if (needsWorktreePrompt) {
+      answers.worktreeDir = await promptWorktreeDir(rl, defaults.worktreeDir);
+    }
+  } finally {
+    rl.close();
+  }
+
+  return {
+    ...answers,
+    enabledProviders: normalizeProviders(answers.enabledProviders),
+  };
+}
+
+function buildInitConfigValues(
+  answers: InitAnswers,
+  detection: InitDetection,
+): ConfigInput {
+  const enabledProviders = normalizeProviders(answers.enabledProviders);
+  const defaultProvider = enabledProviders.includes(answers.defaultProvider)
+    ? answers.defaultProvider
+    : (enabledProviders[0] ?? 'local');
+
+  const config: ConfigInput = {
+    naming: { worktreeDir: answers.worktreeDir },
+    task: {
+      providers: {
+        enabled: enabledProviders,
+        default: defaultProvider,
+      },
+    },
+    repo: {
+      defaultBranch: detection.defaultBranch,
+    },
+  };
+
+  if (detection.github) {
+    config.github = {
+      owner: detection.github.owner,
+      repo: detection.github.repo,
+    };
+  }
+
+  if (answers.verifyCommands.length > 0) {
+    config.verify = { commands: answers.verifyCommands };
+  }
+
+  return config;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function applyMissingConfig(
+  base: ConfigInput,
+  updates: ConfigInput,
+  prefix = '',
+  changes: string[] = [],
+): ConfigInput {
+  const output: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+
+  for (const [key, updateValue] of Object.entries(updates)) {
+    if (updateValue === undefined) continue;
+    const path = prefix ? `${prefix}.${key}` : key;
+    const baseValue = output[key];
+
+    if (Array.isArray(updateValue)) {
+      if (!Array.isArray(baseValue) || baseValue.length === 0) {
+        output[key] = updateValue;
+        changes.push(path);
+      }
+      continue;
+    }
+
+    if (isPlainObject(updateValue)) {
+      if (isPlainObject(baseValue)) {
+        output[key] = applyMissingConfig(
+          baseValue as ConfigInput,
+          updateValue as ConfigInput,
+          path,
+          changes,
+        );
+      } else if (baseValue === undefined || baseValue === null) {
+        applyMissingConfig({}, updateValue as ConfigInput, path, changes);
+        output[key] = updateValue;
+      }
+      continue;
+    }
+
+    if (baseValue === undefined || baseValue === null || baseValue === '') {
+      output[key] = updateValue;
+      changes.push(path);
+    }
+  }
+
+  return output as ConfigInput;
+}
+
+function formatString(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+function formatKey(key: string): string {
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)) {
+    return key;
+  }
+  return formatString(key);
+}
+
+function formatValue(value: unknown, indent: number): string {
+  const pad = ' '.repeat(indent);
+  const padInner = ' '.repeat(indent + 2);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    const items = value.map((item) => `${padInner}${formatValue(item, indent + 2)}`);
+    return `[\n${items.join(',\n')}\n${pad}]`;
+  }
+
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).filter(
+      ([, entryValue]) => entryValue !== undefined,
+    );
+    if (entries.length === 0) return '{}';
+    const lines = entries.map(
+      ([key, entryValue]) =>
+        `${padInner}${formatKey(key)}: ${formatValue(entryValue, indent + 2)}`,
+    );
+    return `{\n${lines.join(',\n')}\n${pad}}`;
+  }
+
+  if (typeof value === 'string') return formatString(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return 'null';
+  return 'undefined';
+}
+
+function formatConfig(config: ConfigInput): string {
+  const body = formatValue(config, 0);
+  return [
+    "import { defineConfig } from 'silvan/config';",
+    '',
+    `export default defineConfig(${body});`,
+    '',
+  ].join('\n');
+}
+
+export async function writeInitConfig(
+  context: InitContext,
+  answers: InitAnswers,
+  options?: { updateExisting?: boolean },
+): Promise<InitResult> {
+  const targetPath =
+    context.existingConfigPath ?? join(context.repoRoot, 'silvan.config.ts');
+  const updates = buildInitConfigValues(answers, context.detection);
+
+  if (context.existingConfigPath && context.existingConfig) {
+    const changes: string[] = [];
+    const merged = applyMissingConfig(context.existingConfig, updates, '', changes);
+    if (changes.length === 0) {
+      return { action: 'skipped', path: targetPath };
+    }
+    if (options?.updateExisting === false) {
+      return { action: 'skipped', path: targetPath, changes };
+    }
+
+    const backupPath = `${targetPath}.bak`;
+    await copyFile(targetPath, backupPath);
+    await writeFile(targetPath, formatConfig(merged), 'utf-8');
+    return { action: 'updated', path: targetPath, backupPath, changes };
+  }
+
+  await writeFile(targetPath, formatConfig(updates), 'utf-8');
+  return { action: 'created', path: targetPath };
 }

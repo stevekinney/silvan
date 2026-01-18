@@ -13,7 +13,12 @@ import {
   renderConversationSummary,
   summarizeConversationSnapshot,
 } from '../ai/conversation';
-import { getInitDefaults, promptInitAnswers, writeInitConfig } from '../config/init';
+import {
+  collectInitContext,
+  getInitDefaults,
+  promptInitAnswers,
+  writeInitConfig,
+} from '../config/init';
 import { loadConfig } from '../config/load';
 import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
@@ -72,6 +77,12 @@ import {
   generateZshCompletion,
 } from './completion';
 import { renderCliError } from './errors';
+import {
+  renderInitDetection,
+  renderInitExistingConfig,
+  renderInitHeader,
+  renderInitResult,
+} from './init-output';
 import {
   renderClarifications,
   renderNextSteps,
@@ -228,21 +239,48 @@ cli
   .command('init', 'Initialize silvan.config.ts with guided prompts')
   .option('--yes', 'Skip prompts and use defaults')
   .action(async (options: CliOptions) => {
-    const chalk = await import('chalk').then((m) => m.default);
     const repo = await detectRepoContext({ cwd: process.cwd() });
     const useDefaults = options.yes ?? false;
 
-    const answers = useDefaults
-      ? await getInitDefaults(repo.repoRoot)
-      : await promptInitAnswers(repo.repoRoot);
+    const context = await collectInitContext(repo.repoRoot);
+    console.log(renderInitHeader());
+    console.log(renderInitDetection(context));
 
-    const result = await writeInitConfig(repo.repoRoot, answers);
-    if (!result) {
-      console.log(chalk.yellow('silvan.config.ts already exists.'));
-      return;
+    const answers = useDefaults
+      ? getInitDefaults(context)
+      : await promptInitAnswers(context);
+
+    let result;
+    if (context.existingConfigPath && context.existingConfig) {
+      const preview = await writeInitConfig(context, answers, {
+        updateExisting: false,
+      });
+      console.log(renderInitExistingConfig(context, preview.changes));
+
+      if (preview.changes && preview.changes.length > 0) {
+        const shouldUpdate = useDefaults
+          ? true
+          : await confirmAction('Add missing settings to config?', {
+              defaultValue: true,
+            });
+        result = shouldUpdate
+          ? await writeInitConfig(context, answers, { updateExisting: true })
+          : preview;
+      } else {
+        result = preview;
+      }
+    } else {
+      result = await writeInitConfig(context, answers);
     }
 
-    console.log(chalk.green('✓ ') + `Created ${result.path}`);
+    console.log(renderInitResult(result));
+
+    const nextSteps = [
+      'Add tokens to .env (GITHUB_TOKEN, LINEAR_API_KEY, ANTHROPIC_API_KEY)',
+      'silvan doctor',
+      'silvan task start "Your first task"',
+    ];
+    console.log(renderNextSteps(nextSteps));
   });
 
 function parseNumberFlag(value: string | undefined): number | undefined {

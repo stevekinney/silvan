@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { cosmiconfig } from 'cosmiconfig';
 import { ProseWriter } from 'prose-writer';
 
+import { loadProjectEnv } from './env';
 import type { Config, ConfigInput } from './schema';
 import { configSchema } from './schema';
 
@@ -268,6 +269,10 @@ export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult>
   });
 
   const result = await explorer.search();
+  await loadProjectEnv({
+    cwd: process.cwd(),
+    ...(result?.filepath ? { configPath: result.filepath } : {}),
+  });
 
   const baseConfig: unknown = result ? (result.config ?? {}) : {};
   const parsed = configSchema.safeParse(baseConfig);

@@ -1,6 +1,7 @@
 import { access, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { getLoadedEnvSummary } from '../config/env';
 import type { Config } from '../config/schema';
 import type { RunContext } from '../core/context';
 import { runGit } from '../git/exec';
@@ -73,6 +74,7 @@ export async function collectDoctorReport(
   const repoRoot = ctx.repo.repoRoot;
   const branch = ctx.repo.branch;
   const isWorktree = Boolean(ctx.repo.worktreePath);
+  const envSummary = getLoadedEnvSummary();
 
   const gitVersion = await runGit(['--version'], {
     cwd: repoRoot,
@@ -121,10 +123,17 @@ export async function collectDoctorReport(
 
   if (providers.includes('github')) {
     const tokenPresent = Boolean(ctx.config.github.token);
+    const hasEnvToken = Boolean(
+      envSummary?.keys.some((key) => key === 'GITHUB_TOKEN' || key === 'GH_TOKEN'),
+    );
     checks.push({
       name: 'github.token',
       ok: tokenPresent,
-      detail: tokenPresent ? 'Found' : 'Missing github.token',
+      detail: tokenPresent
+        ? hasEnvToken
+          ? 'Found (from .env)'
+          : 'Found'
+        : 'Missing github.token',
       severity: tokenPresent ? 'info' : 'blocker',
     });
     const ghPath = Bun.which('gh');
@@ -158,10 +167,15 @@ export async function collectDoctorReport(
 
   if (providers.includes('linear')) {
     const tokenPresent = Boolean(ctx.config.linear.token);
+    const hasEnvToken = Boolean(envSummary?.keys.includes('LINEAR_API_KEY'));
     checks.push({
       name: 'linear.token',
       ok: tokenPresent,
-      detail: tokenPresent ? 'Found' : 'Missing linear.token',
+      detail: tokenPresent
+        ? hasEnvToken
+          ? 'Found (from .env)'
+          : 'Found'
+        : 'Missing linear.token',
       severity: tokenPresent ? 'info' : 'blocker',
     });
   }

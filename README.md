@@ -65,7 +65,7 @@ Troubleshooting:
 ## Quick Start
 
 ```bash
-# Initialize a baseline silvan.config.ts
+# Initialize a baseline silvan.config.ts (auto-detects repo settings)
 silvan init
 
 # List worktrees
@@ -278,6 +278,7 @@ Example `silvan.config.json` with schema:
 - `LINEAR_API_KEY`: Linear task access
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`: cognition lane providers
 - `SILVAN_STATE_MODE=global|repo`: override state storage mode
+- Silvan auto-loads `.env` from the config directory or repo root and overrides existing env values.
 
 See `silvan doctor` for a full diagnostic report of effective configuration.
 

@@ -47,4 +47,23 @@ describe('loadConfig', () => {
       return expect(loadConfig()).rejects.toThrow('Invalid config');
     });
   });
+
+  test('loads .env before reading environment overrides', async () => {
+    await withTempDir(async (dir) => {
+      const previous = Bun.env['GITHUB_TOKEN'];
+      try {
+        Bun.env['GITHUB_TOKEN'] = 'shell_token';
+        await writeFile(join(dir, '.env'), 'GITHUB_TOKEN=env_token');
+        await writeFile(join(dir, 'silvan.config.json'), JSON.stringify({}));
+        const result = await loadConfig();
+        expect(result.config.github.token).toBe('env_token');
+      } finally {
+        if (previous === undefined) {
+          delete Bun.env['GITHUB_TOKEN'];
+        } else {
+          Bun.env['GITHUB_TOKEN'] = previous;
+        }
+      }
+    });
+  });
 });
