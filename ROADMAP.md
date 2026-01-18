@@ -35,7 +35,7 @@ These issues fix the critical first-impression problems. A new user should be ab
 
   > **Why first**: This is the primary entry point. If `task start` is confusing, users won't get past day one. Fixes "clarifications look like errors" and silent exits.
 
-- [ ] [#14 - CLI Progress Indicators for Long Operations](https://github.com/stevekinney/silvan/issues/14)
+- [x] [#14 - CLI Progress Indicators for Long Operations](https://github.com/stevekinney/silvan/issues/14)
 
   > **Why second**: Long-running commands with no feedback make users think the tool is broken. Spinners build trust.
 
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status            |
-| ------------------ | -------------------------- | ----------------- |
-| Foundation         | #6, #14, #3, #2            | In progress (3/4) |
-| Polish             | #15, #17, #16, #23, #20    | Not started       |
-| Discoverability    | #21, #22                   | Not started       |
-| Scripting          | #19, #18                   | Not started       |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started       |
+| Phase              | Issues                     | Status         |
+| ------------------ | -------------------------- | -------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
+| Polish             | #15, #17, #16, #23, #20    | Not started    |
+| Discoverability    | #21, #22                   | Not started    |
+| Scripting          | #19, #18                   | Not started    |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

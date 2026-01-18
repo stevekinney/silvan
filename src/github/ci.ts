@@ -143,6 +143,8 @@ export async function waitForCi(options: {
   context: EmitContext;
 }): Promise<CiResult> {
   const start = Date.now();
+  const warnAtMs = Math.floor(options.timeoutMs * 0.8);
+  let warned = false;
   let { pr, headSha } = await findPrForBranch(options);
 
   if (options.bus) {
@@ -205,6 +207,29 @@ export async function waitForCi(options: {
     if (options.onHeartbeat) {
       await options.onHeartbeat();
     }
+
+    if (!warned && options.timeoutMs > 0 && Date.now() - start >= warnAtMs) {
+      warned = true;
+      const elapsed = Date.now() - start;
+      const remaining = Math.max(options.timeoutMs - elapsed, 0);
+      const message = `Approaching CI timeout (${formatDuration(elapsed)} elapsed, ${formatDuration(
+        remaining,
+      )} remaining)`;
+      if (options.bus) {
+        await options.bus.emit(
+          createEnvelope({
+            type: 'log.message',
+            source: 'github',
+            level: 'warn',
+            context: options.context,
+            message,
+            payload: { message },
+          }),
+        );
+      } else {
+        console.warn(message);
+      }
+    }
     await Bun.sleep(options.pollIntervalMs);
   }
 
@@ -218,4 +243,22 @@ export async function waitForCi(options: {
     details: 'Timed out waiting for CI',
   });
   throw timeoutError;
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+  const totalSeconds = Math.floor(durationMs / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return `${minutes}m ${seconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
 }

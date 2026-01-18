@@ -535,7 +535,12 @@ cli
 
       await normalizeClaudeSettings({ worktreePath: worktree.path });
 
-      const installResult = await installDependencies({ worktreePath: worktree.path });
+      const installResult = await runStep(
+        ctx,
+        'deps.install',
+        'Installing dependencies',
+        () => installDependencies({ worktreePath: worktree.path }),
+      );
       if (!installResult.ok) {
         await logger.warn(`Warning: bun install failed in ${worktree.path}`, {
           stderr: installResult.stderr,
