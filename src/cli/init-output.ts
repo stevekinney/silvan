@@ -1,16 +1,16 @@
 import type { InitContext, InitResult } from '../config/init';
+import { formatKeyValues, padLabel, renderSectionHeader } from './output';
 
 const LINE_WIDTH = 60;
 const LABEL_WIDTH = 16;
 
 export function renderInitHeader(title = 'Silvan Configuration'): string {
-  return `${title}\n${'-'.repeat(LINE_WIDTH)}`;
+  return renderSectionHeader(title, { width: LINE_WIDTH, kind: 'minor' });
 }
 
 export function renderInitDetection(context: InitContext): string {
   const lines: string[] = [];
-  lines.push('Auto-detected');
-  lines.push('-'.repeat(LINE_WIDTH));
+  lines.push(renderSectionHeader('Auto-detected', { width: LINE_WIDTH, kind: 'minor' }));
 
   const details: Array<[string, string]> = [];
   if (context.detection.github) {
@@ -25,17 +25,20 @@ export function renderInitDetection(context: InitContext): string {
   details.push(['Package manager', context.detection.packageManager]);
   details.push(['Worktree dir', context.detection.worktreeDir]);
 
-  lines.push(...formatKeyValues(details));
+  lines.push(...formatKeyValues(details, { labelWidth: LABEL_WIDTH }));
 
   lines.push('');
-  lines.push('Verify commands');
-  lines.push('-'.repeat(LINE_WIDTH));
+  lines.push(
+    renderSectionHeader('Verify commands', { width: LINE_WIDTH, kind: 'minor' }),
+  );
   if (context.detection.verifyCommands.length === 0) {
-    lines.push(...formatKeyValues([['Scripts', 'None detected']]));
+    lines.push(
+      ...formatKeyValues([['Scripts', 'None detected']], { labelWidth: LABEL_WIDTH }),
+    );
   } else {
     lines.push(
       ...context.detection.verifyCommands.map(
-        (command) => `${padLabel(command.name)} ${command.cmd}`,
+        (command) => `${padLabel(command.name, LABEL_WIDTH)} ${command.cmd}`,
       ),
     );
   }
@@ -50,19 +53,28 @@ export function renderInitExistingConfig(
   if (!context.existingConfigPath) return '';
   const lines: string[] = [];
   lines.push('');
-  lines.push('Existing config');
-  lines.push('-'.repeat(LINE_WIDTH));
-  lines.push(...formatKeyValues([['Path', context.existingConfigPath]]));
+  lines.push(
+    renderSectionHeader('Existing config', { width: LINE_WIDTH, kind: 'minor' }),
+  );
+  lines.push(
+    ...formatKeyValues([['Path', context.existingConfigPath]], {
+      labelWidth: LABEL_WIDTH,
+    }),
+  );
 
   if (changes && changes.length > 0) {
     lines.push(
-      `${padLabel('Missing')} ${changes.length} setting${changes.length === 1 ? '' : 's'}`,
+      `${padLabel('Missing', LABEL_WIDTH)} ${changes.length} setting${
+        changes.length === 1 ? '' : 's'
+      }`,
     );
     for (const change of changes) {
       lines.push(`${' '.repeat(LABEL_WIDTH)} - ${change}`);
     }
   } else {
-    lines.push(...formatKeyValues([['Status', 'Up to date']]));
+    lines.push(
+      ...formatKeyValues([['Status', 'Up to date']], { labelWidth: LABEL_WIDTH }),
+    );
   }
 
   return lines.join('\n');
@@ -71,23 +83,40 @@ export function renderInitExistingConfig(
 export function renderInitResult(result: InitResult): string {
   const lines: string[] = [];
   lines.push('');
-  lines.push('Init result');
-  lines.push('-'.repeat(LINE_WIDTH));
+  lines.push(renderSectionHeader('Init result', { width: LINE_WIDTH, kind: 'minor' }));
 
   if (result.action === 'created') {
-    lines.push(...formatKeyValues([['Created', result.path ?? 'silvan.config.ts']]));
+    lines.push(
+      ...formatKeyValues([['Created', result.path ?? 'silvan.config.ts']], {
+        labelWidth: LABEL_WIDTH,
+      }),
+    );
   } else if (result.action === 'updated') {
-    lines.push(...formatKeyValues([['Updated', result.path ?? 'silvan.config.ts']]));
+    lines.push(
+      ...formatKeyValues([['Updated', result.path ?? 'silvan.config.ts']], {
+        labelWidth: LABEL_WIDTH,
+      }),
+    );
     if (result.backupPath) {
-      lines.push(...formatKeyValues([['Backup', result.backupPath]]));
+      lines.push(
+        ...formatKeyValues([['Backup', result.backupPath]], {
+          labelWidth: LABEL_WIDTH,
+        }),
+      );
     }
   } else {
-    lines.push(...formatKeyValues([['Status', 'No changes applied']]));
+    lines.push(
+      ...formatKeyValues([['Status', 'No changes applied']], {
+        labelWidth: LABEL_WIDTH,
+      }),
+    );
   }
 
   if (result.changes && result.changes.length > 0) {
     lines.push(
-      `${padLabel('Changes')} ${result.changes.length} setting${result.changes.length === 1 ? '' : 's'}`,
+      `${padLabel('Changes', LABEL_WIDTH)} ${result.changes.length} setting${
+        result.changes.length === 1 ? '' : 's'
+      }`,
     );
     for (const change of result.changes) {
       lines.push(`${' '.repeat(LABEL_WIDTH)} - ${change}`);
@@ -95,12 +124,4 @@ export function renderInitResult(result: InitResult): string {
   }
 
   return lines.join('\n');
-}
-
-function formatKeyValues(entries: Array<[string, string]>): string[] {
-  return entries.map(([label, value]) => `${padLabel(label)} ${value}`);
-}
-
-function padLabel(label: string): string {
-  return label.padEnd(LABEL_WIDTH);
 }

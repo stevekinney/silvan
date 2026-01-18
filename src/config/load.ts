@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { cosmiconfig } from 'cosmiconfig';
 import { ProseWriter } from 'prose-writer';
 
+import { SilvanError } from '../core/errors';
 import { loadProjectEnv } from './env';
 import type { Config, ConfigInput } from './schema';
 import { configSchema } from './schema';
@@ -287,11 +288,41 @@ export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult>
     );
     writer.write(issueBlock);
     const message = writer.toString().trimEnd();
-    throw new Error(`Invalid config:\n${message}`);
+    throw new SilvanError({
+      code: 'config.invalid',
+      message: `Invalid config: ${message}`,
+      userMessage: 'Configuration file is invalid.',
+      kind: 'validation',
+      details: {
+        issues: issueLines,
+        ...(result?.filepath ? { path: result.filepath } : {}),
+      },
+      nextSteps: [
+        'Run `silvan config validate` for a full report.',
+        'Fix the invalid settings in your config file.',
+      ],
+    });
   }
   const envOverrides = configFromEnv(Bun.env);
   const merged = mergeConfig(mergeConfig(parsed.data, envOverrides), overrides);
-  const finalConfig = configSchema.parse(merged);
+  const finalParsed = configSchema.safeParse(merged);
+  if (!finalParsed.success) {
+    const issueLines = finalParsed.error.issues.map(
+      (issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`,
+    );
+    throw new SilvanError({
+      code: 'config.invalid',
+      message: `Invalid config overrides: ${issueLines.join('; ')}`,
+      userMessage: 'Configuration overrides are invalid.',
+      kind: 'validation',
+      details: {
+        issues: issueLines,
+        ...(result?.filepath ? { path: result.filepath } : {}),
+      },
+      nextSteps: ['Run `silvan config validate` to review configuration issues.'],
+    });
+  }
+  const finalConfig = finalParsed.data;
 
   return {
     config: finalConfig,

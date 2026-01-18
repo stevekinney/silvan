@@ -1,6 +1,12 @@
 import type { ClarificationQuestion } from '../agent/clarify';
 import type { Plan } from '../agent/schemas';
 import type { Task } from '../task/types';
+import {
+  formatKeyList,
+  formatKeyValues,
+  renderNextSteps,
+  renderSectionHeader,
+} from './output';
 
 const LINE_WIDTH = 60;
 const LABEL_WIDTH = 12;
@@ -38,8 +44,9 @@ export function summarizePlan(plan: Plan): PlanSummary {
 
 export function renderTaskHeader(task: Task): string {
   const lines: string[] = [];
-  lines.push(`Task: ${task.title}`);
-  lines.push('='.repeat(LINE_WIDTH));
+  lines.push(
+    renderSectionHeader(`Task: ${task.title}`, { width: LINE_WIDTH, kind: 'major' }),
+  );
 
   const details: Array<[string, string]> = [];
   const ref = task.key ?? task.id;
@@ -52,7 +59,7 @@ export function renderTaskHeader(task: Task): string {
   if (task.assignee) details.push(['Assignee', task.assignee]);
   if (task.state) details.push(['Status', task.state]);
 
-  lines.push(...formatKeyValues(details));
+  lines.push(...formatKeyValues(details, { labelWidth: LABEL_WIDTH }));
   return lines.join('\n');
 }
 
@@ -62,17 +69,26 @@ export function renderPlanSummary(
 ): string {
   const lines: string[] = [];
   lines.push('');
-  lines.push(options?.title ?? 'Plan Summary');
-  lines.push('-'.repeat(LINE_WIDTH));
-
-  lines.push(...formatKeyValues([['Summary', planSummary.summary]]));
   lines.push(
-    ...formatKeyValues([
+    renderSectionHeader(options?.title ?? 'Plan Summary', {
+      width: LINE_WIDTH,
+      kind: 'minor',
+    }),
+  );
+
+  lines.push(
+    ...formatKeyValues([['Summary', planSummary.summary]], { labelWidth: LABEL_WIDTH }),
+  );
+  lines.push(
+    ...formatKeyValues(
       [
-        'Steps',
-        `${planSummary.steps} implementation step${planSummary.steps === 1 ? '' : 's'}`,
+        [
+          'Steps',
+          `${planSummary.steps} implementation step${planSummary.steps === 1 ? '' : 's'}`,
+        ],
       ],
-    ]),
+      { labelWidth: LABEL_WIDTH },
+    ),
   );
 
   if (planSummary.files.length > 0) {
@@ -83,13 +99,20 @@ export function renderPlanSummary(
           planSummary.files.length === 1 ? '' : 's'
         } to create/modify`,
         planSummary.files,
+        { labelWidth: LABEL_WIDTH },
       ),
     );
   } else {
-    lines.push(...formatKeyValues([['Files', 'None listed']]));
+    lines.push(
+      ...formatKeyValues([['Files', 'None listed']], { labelWidth: LABEL_WIDTH }),
+    );
   }
 
-  lines.push(...formatKeyValues([['Complexity', planSummary.complexity]]));
+  lines.push(
+    ...formatKeyValues([['Complexity', planSummary.complexity]], {
+      labelWidth: LABEL_WIDTH,
+    }),
+  );
 
   if (planSummary.risks.length > 0) {
     lines.push(
@@ -97,10 +120,13 @@ export function renderPlanSummary(
         'Risks',
         `${planSummary.risks.length} risk${planSummary.risks.length === 1 ? '' : 's'}`,
         planSummary.risks,
+        { labelWidth: LABEL_WIDTH },
       ),
     );
   } else {
-    lines.push(...formatKeyValues([['Risks', 'None identified']]));
+    lines.push(
+      ...formatKeyValues([['Risks', 'None identified']], { labelWidth: LABEL_WIDTH }),
+    );
   }
 
   return lines.join('\n');
@@ -112,8 +138,12 @@ export function renderClarifications(
 ): string {
   const lines: string[] = [];
   lines.push('');
-  lines.push(options?.title ?? 'Clarifications Needed');
-  lines.push('-'.repeat(LINE_WIDTH));
+  lines.push(
+    renderSectionHeader(options?.title ?? 'Clarifications Needed', {
+      width: LINE_WIDTH,
+      kind: 'minor',
+    }),
+  );
 
   if (options?.intro) {
     lines.push(options.intro);
@@ -135,8 +165,7 @@ export function renderReadySection(options: {
 }): string {
   const lines: string[] = [];
   lines.push('');
-  lines.push(options.title);
-  lines.push('-'.repeat(LINE_WIDTH));
+  lines.push(renderSectionHeader(options.title, { width: LINE_WIDTH, kind: 'minor' }));
 
   const details: Array<[string, string]> = [];
   if (options.worktreePath) {
@@ -144,30 +173,11 @@ export function renderReadySection(options: {
   }
   details.push(['Run ID', options.runId]);
 
-  lines.push(...formatKeyValues(details));
+  lines.push(...formatKeyValues(details, { labelWidth: LABEL_WIDTH }));
   return lines.join('\n');
 }
 
-export function renderNextSteps(steps: string[]): string {
-  if (steps.length === 0) return '';
-  return ['', 'Next steps:', ...steps.map((step) => `  ${step}`)].join('\n');
-}
-
-function formatKeyValues(entries: Array<[string, string]>): string[] {
-  return entries.map(([label, value]) => `${padLabel(label)} ${value}`);
-}
-
-function formatKeyList(label: string, summary: string, items: string[]): string[] {
-  const lines = [`${padLabel(label)} ${summary}`];
-  for (const item of items) {
-    lines.push(`${' '.repeat(LABEL_WIDTH)} - ${item}`);
-  }
-  return lines;
-}
-
-function padLabel(label: string): string {
-  return label.padEnd(LABEL_WIDTH);
-}
+export { renderNextSteps };
 
 function deriveComplexity(stepCount: number): PlanSummary['complexity'] {
   if (stepCount <= 3) return 'Low';

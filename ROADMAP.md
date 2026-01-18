@@ -50,23 +50,23 @@ These issues fix the critical first-impression problems. A new user should be ab
 
 These issues transform the CLI from functional to polished. Every command feels intentional and helpful.
 
-- [ ] [#15 - Improve --help with Grouped Options and Examples](https://github.com/stevekinney/silvan/issues/15)
+- [x] [#15 - Improve --help with Grouped Options and Examples](https://github.com/stevekinney/silvan/issues/15)
 
   > Makes the CLI self-documenting. Users can learn without leaving the terminal.
 
-- [ ] [#17 - Error Messages with Actionable Recovery Steps](https://github.com/stevekinney/silvan/issues/17)
+- [x] [#17 - Error Messages with Actionable Recovery Steps](https://github.com/stevekinney/silvan/issues/17)
 
   > Eliminates dead ends. Every error becomes a learning moment.
 
-- [ ] [#16 - Success Confirmations and Next Steps](https://github.com/stevekinney/silvan/issues/16)
+- [x] [#16 - Success Confirmations and Next Steps](https://github.com/stevekinney/silvan/issues/16)
 
   > Closes the feedback loop. Users always know what they did and what to do next.
 
-- [ ] [#23 - Command Output Consistency and Semantic Colors](https://github.com/stevekinney/silvan/issues/23)
+- [x] [#23 - Command Output Consistency and Semantic Colors](https://github.com/stevekinney/silvan/issues/23)
 
   > Unifies the visual language. The CLI feels like one cohesive product.
 
-- [ ] [#20 - run list Visual Improvements](https://github.com/stevekinney/silvan/issues/20)
+- [x] [#20 - run list Visual Improvements](https://github.com/stevekinney/silvan/issues/20)
   > Makes run management scannable. Operators can quickly find what they need.
 
 ### Phase 3: Discoverability (Help Users Help Themselves)
@@ -241,7 +241,7 @@ $ silvan run list
 | Phase              | Issues                     | Status         |
 | ------------------ | -------------------------- | -------------- |
 | Foundation         | #6, #14, #3, #2            | Complete (4/4) |
-| Polish             | #15, #17, #16, #23, #20    | Not started    |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
 | Discoverability    | #21, #22                   | Not started    |
 | Scripting          | #19, #18                   | Not started    |
 | Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |

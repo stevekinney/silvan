@@ -58,10 +58,10 @@ _silvan_completions() {
 
     case "\${prev}" in
         silvan)
-            COMPREPLY=( $(compgen -W "\${commands} t r a" -- "\${cur}") )
+            COMPREPLY=( $(compgen -W "\${commands} t wt r a" -- "\${cur}") )
             return 0
             ;;
-        tree|t)
+        tree|t|wt)
             COMPREPLY=( $(compgen -W "${TREE_SUBCOMMANDS.join(' ')}" -- "\${cur}") )
             return 0
             ;;
@@ -125,7 +125,7 @@ _silvan() {
     local -a commands
     commands=(
         'init:Initialize silvan.config.ts'
-        'tree:Manage git worktrees (alias: t)'
+        'tree:Manage git worktrees (alias: t, wt)'
         'run:Manage agent runs (alias: r)'
         'agent:Low-level agent commands (alias: a)'
         'task:Start tasks from issues'
@@ -183,7 +183,7 @@ _silvan() {
             ;;
         subcommand)
             case "$words[1]" in
-                tree|t)
+                tree|t|wt)
                     _describe -t tree_commands 'tree command' tree_commands
                     ;;
                 run|r)
@@ -222,7 +222,7 @@ complete -c silvan -f
 
 # Main commands
 complete -c silvan -n "__fish_use_subcommand" -a "init" -d "Initialize silvan.config.ts"
-complete -c silvan -n "__fish_use_subcommand" -a "tree t" -d "Manage git worktrees"
+complete -c silvan -n "__fish_use_subcommand" -a "tree t wt" -d "Manage git worktrees"
 complete -c silvan -n "__fish_use_subcommand" -a "run r" -d "Manage agent runs"
 complete -c silvan -n "__fish_use_subcommand" -a "agent a" -d "Low-level agent commands"
 complete -c silvan -n "__fish_use_subcommand" -a "task" -d "Start tasks from issues"
@@ -238,14 +238,14 @@ complete -c silvan -n "__fish_use_subcommand" -a "doctor" -d "Check environment"
 complete -c silvan -n "__fish_use_subcommand" -a "completion" -d "Generate shell completions"
 
 # tree subcommands
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "list" -d "List all worktrees"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "add" -d "Create a new worktree"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "remove" -d "Remove a worktree"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "clean" -d "Remove merged worktrees"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "prune" -d "Prune stale data"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "lock" -d "Lock a worktree"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "unlock" -d "Unlock a worktree"
-complete -c silvan -n "__fish_seen_subcommand_from tree t" -a "rebase" -d "Rebase onto base branch"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "list" -d "List all worktrees"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "add" -d "Create a new worktree"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "remove" -d "Remove a worktree"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "clean" -d "Remove merged worktrees"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "prune" -d "Prune stale data"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "lock" -d "Lock a worktree"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "unlock" -d "Unlock a worktree"
+complete -c silvan -n "__fish_seen_subcommand_from tree t wt" -a "rebase" -d "Rebase onto base branch"
 
 # run subcommands
 complete -c silvan -n "__fish_seen_subcommand_from run r" -a "list" -d "List recorded runs"

@@ -77,12 +77,27 @@ import {
   generateZshCompletion,
 } from './completion';
 import { renderCliError } from './errors';
+import { buildHelpSections } from './help-output';
 import {
   renderInitDetection,
   renderInitExistingConfig,
   renderInitHeader,
   renderInitResult,
 } from './init-output';
+import {
+  colors,
+  formatKeyList,
+  formatKeyValues,
+  formatStatusLabel,
+  padLabel,
+  renderSectionHeader,
+  renderSuccessSummary,
+} from './output';
+import {
+  renderRunListMinimal,
+  renderRunListTable,
+  type RunListEntry,
+} from './run-list-output';
 import {
   renderClarifications,
   renderNextSteps,
@@ -94,7 +109,7 @@ import {
 
 const cli = cac('silvan');
 
-cli.help();
+cli.help((sections) => buildHelpSections(sections, cli));
 cli.version(pkg.version);
 
 type CliOptions = {
@@ -112,6 +127,7 @@ type CliOptions = {
   printCd?: boolean;
   openShell?: boolean;
   exec?: string;
+  quiet?: boolean;
   debug?: boolean;
   trace?: boolean;
   task?: string;
@@ -172,6 +188,7 @@ type CliOptions = {
 cli.option('--json', 'Output as JSON event stream');
 cli.option('--yes, -y', 'Skip all confirmation prompts');
 cli.option('--no-ui', 'Disable interactive UI');
+cli.option('--quiet, -q', 'Suppress non-error output');
 cli.option('--debug', 'Show stack traces for errors');
 cli.option('--trace', 'Show error causes and stack traces');
 
@@ -241,10 +258,13 @@ cli
   .action(async (options: CliOptions) => {
     const repo = await detectRepoContext({ cwd: process.cwd() });
     const useDefaults = options.yes ?? false;
+    const showOutput = !options.quiet;
 
     const context = await collectInitContext(repo.repoRoot);
-    console.log(renderInitHeader());
-    console.log(renderInitDetection(context));
+    if (showOutput) {
+      console.log(renderInitHeader());
+      console.log(renderInitDetection(context));
+    }
 
     const answers = useDefaults
       ? getInitDefaults(context)
@@ -255,7 +275,9 @@ cli
       const preview = await writeInitConfig(context, answers, {
         updateExisting: false,
       });
-      console.log(renderInitExistingConfig(context, preview.changes));
+      if (showOutput) {
+        console.log(renderInitExistingConfig(context, preview.changes));
+      }
 
       if (preview.changes && preview.changes.length > 0) {
         const shouldUpdate = useDefaults
@@ -273,20 +295,48 @@ cli
       result = await writeInitConfig(context, answers);
     }
 
-    console.log(renderInitResult(result));
+    if (showOutput) {
+      console.log(renderInitResult(result));
+    }
 
     const nextSteps = [
       'Add tokens to .env (GITHUB_TOKEN, LINEAR_API_KEY, ANTHROPIC_API_KEY)',
       'silvan doctor',
       'silvan task start "Your first task"',
     ];
-    console.log(renderNextSteps(nextSteps));
+    if (showOutput) {
+      console.log(renderNextSteps(nextSteps));
+    }
   });
 
 function parseNumberFlag(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseListFlag(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+function deriveRunListStatus(
+  runStatus: string | undefined,
+  convergenceStatus: string,
+): string {
+  if (runStatus === 'success') return 'success';
+  if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'canceled') return 'canceled';
+  if (convergenceStatus === 'blocked') return 'blocked';
+  if (convergenceStatus.startsWith('waiting_')) return 'blocked';
+  if (convergenceStatus === 'converged') return 'success';
+  if (convergenceStatus === 'failed') return 'failed';
+  if (convergenceStatus === 'aborted') return 'canceled';
+  return runStatus ?? 'running';
 }
 
 function buildConfigOverrides(options: CliOptions): ConfigInput {
@@ -547,6 +597,17 @@ cli
           stdout: installResult.stdout,
         });
       }
+
+      await logger.info(
+        renderSuccessSummary({
+          title: `Created worktree '${safeName}'`,
+          details: [
+            ['Path', worktree.path],
+            ['Branch', worktree.branch ?? safeName],
+          ],
+          nextSteps: [`cd ${worktree.path}`, 'silvan task start "Your task"'],
+        }),
+      );
     });
   });
 
@@ -557,6 +618,7 @@ cli
   .action(async (name: string | undefined, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const task = options.task ? sanitizeName(options.task) : undefined;
       const targetName = name ? sanitizeName(name) : undefined;
       if (!task && !targetName) {
@@ -605,7 +667,7 @@ cli
       if (!options.yes) {
         const confirmed = await confirmAction(`Remove worktree ${target.path}?`);
         if (!confirmed) {
-          console.log('Canceled.');
+          await logger.info('Canceled.');
           return;
         }
       }
@@ -619,6 +681,17 @@ cli
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         }),
       );
+
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Removed worktree',
+          details: [
+            ['Path', target.path],
+            ['Branch', target.branch ?? 'unknown'],
+          ],
+          nextSteps: ['silvan tree list', 'silvan tree add <name>'],
+        }),
+      );
     });
   });
 
@@ -629,6 +702,7 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
@@ -677,9 +751,18 @@ cli
       }
 
       if (merged.length === 0) {
-        console.log('No merged worktrees found.');
+        await logger.info(
+          renderSuccessSummary({
+            title: 'No merged worktrees found',
+            details: [['Candidates', `${candidates.length} worktree(s)`]],
+            nextSteps: ['silvan tree list'],
+          }),
+        );
         return;
       }
+
+      const removed: string[] = [];
+      const skipped: string[] = [];
 
       for (const candidate of merged) {
         const isDirty = await hasUncommittedChanges({
@@ -688,7 +771,7 @@ cli
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         });
         if (isDirty && !options.force) {
-          console.log(`Skipping dirty worktree: ${candidate.worktree.path}`);
+          skipped.push(`${candidate.worktree.path} (dirty)`);
           continue;
         }
 
@@ -700,6 +783,7 @@ cli
         }
 
         if (!shouldRemove) {
+          skipped.push(`${candidate.worktree.path} (skipped)`);
           continue;
         }
 
@@ -712,7 +796,40 @@ cli
             context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
           }),
         );
+        removed.push(candidate.worktree.path);
       }
+
+      const remaining = Math.max(0, worktrees.length - removed.length);
+      const summaryLines: string[] = [];
+      summaryLines.push(
+        renderSectionHeader('Cleaned worktrees', { width: 60, kind: 'minor' }),
+      );
+      summaryLines.push(
+        ...formatKeyValues(
+          [
+            ['Removed', `${removed.length} worktree(s)`],
+            ['Skipped', `${skipped.length} worktree(s)`],
+            ['Remaining', `${remaining} worktree(s)`],
+          ],
+          { labelWidth: 12 },
+        ),
+      );
+      if (removed.length > 0) {
+        summaryLines.push(
+          ...formatKeyList('Removed', `${removed.length} worktree(s)`, removed, {
+            labelWidth: 12,
+          }),
+        );
+      }
+      if (skipped.length > 0) {
+        summaryLines.push(
+          ...formatKeyList('Skipped', `${skipped.length} worktree(s)`, skipped, {
+            labelWidth: 12,
+          }),
+        );
+      }
+      summaryLines.push(renderNextSteps(['silvan tree list']));
+      await logger.info(summaryLines.join('\n'));
     });
   });
 
@@ -721,11 +838,19 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       await runStep(ctx, 'git.worktree.prune', 'Prune worktrees', async () =>
         pruneWorktrees({
           repoRoot: ctx.repo.repoRoot,
           bus: ctx.events.bus,
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+        }),
+      );
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Pruned worktree data',
+          details: [['Repository', ctx.repo.repoRoot]],
+          nextSteps: ['silvan tree list'],
         }),
       );
     });
@@ -737,6 +862,7 @@ cli
   .action(async (name: string, options: CliOptions & { reason?: string }) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const worktrees = await listWorktrees({
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
@@ -757,6 +883,16 @@ cli
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         }),
       );
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Locked worktree',
+          details: [
+            ['Path', target.path],
+            ['Branch', target.branch ?? 'unknown'],
+          ],
+          nextSteps: ['silvan tree list', 'silvan tree unlock <name>'],
+        }),
+      );
     });
   });
 
@@ -765,6 +901,7 @@ cli
   .action(async (name: string, options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const worktrees = await listWorktrees({
         repoRoot: ctx.repo.repoRoot,
         bus: ctx.events.bus,
@@ -784,6 +921,16 @@ cli
           context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
         }),
       );
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Unlocked worktree',
+          details: [
+            ['Path', target.path],
+            ['Branch', target.branch ?? 'unknown'],
+          ],
+          nextSteps: ['silvan tree list'],
+        }),
+      );
     });
   });
 
@@ -792,6 +939,7 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const ok = await runStep(ctx, 'git.rebase', 'Rebase onto base', async () =>
         rebaseOntoBase({
           repoRoot: ctx.repo.repoRoot,
@@ -804,6 +952,17 @@ cli
       if (!ok) {
         throw new Error('Rebase failed; conflicts were aborted.');
       }
+
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Rebase complete',
+          details: [
+            ['Branch', ctx.repo.branch ?? 'current'],
+            ['Base', ctx.config.repo.defaultBranch],
+          ],
+          nextSteps: ['git status', 'silvan pr open'],
+        }),
+      );
     });
   });
 
@@ -826,6 +985,7 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
@@ -877,6 +1037,22 @@ cli
           },
         }));
       }
+
+      const ciDetails: Array<[string, string]> = [
+        ['Branch', headBranch],
+        ['Status', ciResult.state],
+      ];
+      if (ciResult.summary) {
+        ciDetails.push(['Summary', ciResult.summary]);
+      }
+
+      await logger.info(
+        renderSuccessSummary({
+          title: 'CI checks complete',
+          details: ciDetails,
+          nextSteps: ['silvan review unresolved', 'silvan pr open'],
+        }),
+      );
     });
   });
 
@@ -885,6 +1061,7 @@ cli
   .action(async (options: CliOptions) => {
     const mode: EventMode = options.json ? 'json' : 'headless';
     await withCliContext(options, mode, async (ctx) => {
+      const logger = createCliLogger(ctx);
       const githubToken = requireGitHubAuth(ctx.config);
       const github = await requireGitHubConfig({
         config: ctx.config,
@@ -956,65 +1133,220 @@ cli
           },
         }));
       }
+
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Review comments fetched',
+          details: [
+            ['Branch', headBranch],
+            [
+              'PR',
+              `${reviewResult.pr.owner}/${reviewResult.pr.repo}#${reviewResult.pr.number}`,
+            ],
+            ['URL', reviewResult.pr.url ?? 'unknown'],
+            ['Unresolved', `${reviewResult.comments.length} comment(s)`],
+          ],
+          nextSteps: ['silvan run list', 'silvan pr open'],
+        }),
+      );
     });
   });
 
-cli.command('run list', 'List all recorded runs').action(async (options: CliOptions) => {
-  const repo = await detectRepoContext({ cwd: process.cwd() });
-  const configResult = await loadConfig(buildConfigOverrides(options));
-  const state = await initStateStore(repo.repoRoot, {
-    lock: false,
-    mode: configResult.config.state.mode,
-    ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
-  });
-  const runEntries = await readdir(state.runsDir);
-  const files = runEntries.filter((entry) => entry.endsWith('.json'));
-  const runs = [];
+cli
+  .command('run list', 'List all recorded runs')
+  .option('--format <format>', 'table, minimal, or json', { default: 'table' })
+  .option('--status <status>', 'Filter by status (comma-separated)')
+  .option('--phase <phase>', 'Filter by phase (comma-separated)')
+  .option('--source <source>', 'Filter by task source (comma-separated)')
+  .option('--limit <n>', 'Number of runs to show', { default: '20' })
+  .option('--offset <n>', 'Skip the first N runs', { default: '0' })
+  .option('--verbose', 'Include task source column')
+  .action(
+    async (
+      options: CliOptions & {
+        format?: string;
+        status?: string;
+        phase?: string;
+        source?: string;
+        limit?: string;
+        offset?: string;
+        verbose?: boolean;
+      },
+    ) => {
+      const repo = await detectRepoContext({ cwd: process.cwd() });
+      const configResult = await loadConfig(buildConfigOverrides(options));
+      const state = await initStateStore(repo.repoRoot, {
+        lock: false,
+        mode: configResult.config.state.mode,
+        ...(configResult.config.state.root
+          ? { root: configResult.config.state.root }
+          : {}),
+      });
+      const runEntries = await readdir(state.runsDir);
+      const files = runEntries.filter((entry) => entry.endsWith('.json'));
+      const runs: RunListEntry[] = [];
 
-  for (const file of files) {
-    const runId = file.replace(/\.json$/, '');
-    const snapshot = await state.readRunState(runId);
-    if (!snapshot) continue;
-    const data = snapshot.data as Record<string, unknown>;
-    const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
-      status?: string;
-      phase?: string;
-      step?: string;
-      updatedAt?: string;
-    };
-    const summary = (
-      typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}
-    ) as { prUrl?: string };
+      for (const file of files) {
+        const runId = file.replace(/\.json$/, '');
+        const snapshot = await state.readRunState(runId);
+        if (!snapshot) continue;
+        const data = snapshot.data as Record<string, unknown>;
+        const run = (
+          typeof data['run'] === 'object' && data['run'] ? data['run'] : {}
+        ) as {
+          status?: string;
+          phase?: string;
+          step?: string;
+          updatedAt?: string;
+          startedAt?: string;
+        };
+        const summary = (
+          typeof data['summary'] === 'object' && data['summary'] ? data['summary'] : {}
+        ) as { prUrl?: string };
+        const task = (
+          typeof data['task'] === 'object' && data['task'] ? data['task'] : {}
+        ) as {
+          title?: string;
+          key?: string;
+          provider?: string;
+        };
+        const taskRef = (
+          typeof data['taskRef'] === 'object' && data['taskRef'] ? data['taskRef'] : {}
+        ) as { id?: string; raw?: string; provider?: string };
+        const convergence = deriveConvergenceFromSnapshot(snapshot);
+        const status = deriveRunListStatus(run.status, convergence.status);
+        const taskTitle = task.title ?? taskRef.raw;
+        const taskKey = task.key ?? taskRef.id;
+        const taskProvider = task.provider ?? taskRef.provider;
+        const updatedAt = run.updatedAt;
+        const startedAt = run.startedAt;
+        const prUrl = summary.prUrl;
 
-    runs.push({
-      runId,
-      status: run.status ?? 'unknown',
-      phase: run.phase ?? 'unknown',
-      step: run.step,
-      updatedAt: run.updatedAt,
-      prUrl: summary.prUrl,
-    });
-  }
+        const runEntry: RunListEntry = {
+          runId,
+          status,
+          phase: run.phase ?? 'unknown',
+          ...(typeof taskTitle === 'string' ? { taskTitle } : {}),
+          ...(typeof taskKey === 'string' ? { taskKey } : {}),
+          ...(typeof taskProvider === 'string' ? { taskProvider } : {}),
+          ...(typeof updatedAt === 'string' ? { updatedAt } : {}),
+          ...(typeof startedAt === 'string' ? { startedAt } : {}),
+          ...(typeof prUrl === 'string' ? { prUrl } : {}),
+          convergence: { status: convergence.status, reason: convergence.message },
+        };
 
-  runs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+        runs.push(runEntry);
+      }
 
-  if (options.json) {
-    console.log(JSON.stringify({ runs }, null, 2));
-    return;
-  }
+      runs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
 
-  for (const run of runs) {
-    const parts = [
-      run.runId,
-      run.status,
-      run.phase,
-      run.step ?? '-',
-      run.updatedAt ?? '-',
-      run.prUrl ?? '',
-    ].filter((part) => part !== '');
-    console.log(parts.join(' | '));
-  }
-});
+      const statusFilter = parseListFlag(options.status);
+      const phaseFilter = parseListFlag(options.phase);
+      const sourceFilter = parseListFlag(options.source);
+
+      let filtered = runs;
+      if (statusFilter) {
+        filtered = filtered.filter((run) => statusFilter.includes(run.status));
+      }
+      if (phaseFilter) {
+        filtered = filtered.filter((run) =>
+          phaseFilter.includes((run.phase ?? 'unknown').toLowerCase()),
+        );
+      }
+      if (sourceFilter) {
+        filtered = filtered.filter((run) =>
+          sourceFilter.includes((run.taskProvider ?? 'unknown').toLowerCase()),
+        );
+      }
+
+      const total = runs.length;
+      const filteredTotal = filtered.length;
+      const limit = Math.max(1, parseNumberFlag(options.limit) ?? 20);
+      const offset = Math.max(0, parseNumberFlag(options.offset) ?? 0);
+      const paged = filtered.slice(offset, offset + limit);
+
+      const format = (options.format ?? 'table').toLowerCase();
+      const useJson = Boolean(options.json) || format === 'json';
+      if (!['table', 'minimal', 'json'].includes(format)) {
+        throw new SilvanError({
+          code: 'run.list.invalid_format',
+          message: `Unknown format: ${format}`,
+          userMessage: `Unknown format: ${format}`,
+          kind: 'validation',
+          nextSteps: ['Use --format table, minimal, or json.'],
+        });
+      }
+
+      if (useJson) {
+        const jsonRuns = paged.map((run) => ({
+          id: run.runId,
+          status: run.status,
+          phase: run.phase,
+          task: {
+            title: run.taskTitle ?? 'Untitled',
+            source: run.taskProvider ?? null,
+            key: run.taskKey ?? null,
+          },
+          updatedAt: run.updatedAt ?? null,
+          startedAt: run.startedAt ?? null,
+          ...(run.prUrl ? { pr: { url: run.prUrl } } : {}),
+          ...(run.convergence
+            ? {
+                convergence: {
+                  status: run.convergence.status,
+                  reason: run.convergence.reason,
+                },
+              }
+            : {}),
+        }));
+        const firstRun = paged[0];
+        const nextSteps = firstRun
+          ? [
+              `silvan run inspect ${firstRun.runId}`,
+              `silvan run status ${firstRun.runId}`,
+            ]
+          : ['silvan task start "Your task"'];
+        console.log(
+          JSON.stringify(
+            {
+              total,
+              filtered: filteredTotal,
+              showing: paged.length,
+              runs: jsonRuns,
+              nextSteps,
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+
+      if (format === 'minimal') {
+        console.log(renderRunListMinimal(paged));
+        return;
+      }
+
+      const output = renderRunListTable(paged, {
+        total,
+        filteredTotal,
+        showing: paged.length,
+        limit,
+        offset,
+        showSource: Boolean(options.verbose),
+        filters: {
+          ...(statusFilter ? { status: statusFilter } : {}),
+          ...(phaseFilter ? { phase: phaseFilter } : {}),
+          ...(sourceFilter ? { source: sourceFilter } : {}),
+        },
+      });
+      console.log(output);
+    },
+  );
 
 cli
   .command('logs <runId>', 'Show audit log for a run')
@@ -1079,6 +1411,9 @@ cli
       console.log(JSON.stringify(snapshot, null, 2));
       return;
     }
+    if (options.quiet) {
+      return;
+    }
     const data = snapshot.data as Record<string, unknown>;
     const task = (
       typeof data['task'] === 'object' && data['task'] ? data['task'] : {}
@@ -1098,16 +1433,43 @@ cli
       ? task.acceptanceCriteria.length
       : 0;
 
-    if (task.id || task.title) {
-      console.log(
-        `Task: ${task.key ?? task.id ?? 'unknown'} • ${task.title ?? 'Untitled'} • ${task.provider ?? 'unknown'}`,
-      );
-      console.log(`Acceptance criteria: ${acCount}`);
-    }
-    console.log(
-      `Run: ${snapshot.runId} • ${run.status ?? 'unknown'} • ${run.phase ?? 'unknown'} • ${run.updatedAt ?? 'n/a'}`,
+    const lines: string[] = [];
+    lines.push(renderSectionHeader('Run snapshot', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [
+          ['Run ID', snapshot.runId],
+          ['Status', formatStatusLabel(run.status ?? 'unknown')],
+          ['Phase', run.phase ?? 'unknown'],
+          ['Updated', run.updatedAt ?? 'n/a'],
+        ],
+        { labelWidth: 12 },
+      ),
     );
-    console.log(`State file: ${snapshot.runId}.json`);
+    lines.push(
+      ...formatKeyValues([['State file', `${snapshot.runId}.json`]], { labelWidth: 12 }),
+    );
+
+    if (task.id || task.title) {
+      lines.push('');
+      lines.push(renderSectionHeader('Task', { width: 60, kind: 'minor' }));
+      lines.push(
+        ...formatKeyValues(
+          [
+            ['Ref', task.key ?? task.id ?? 'unknown'],
+            ['Title', task.title ?? 'Untitled'],
+            ['Provider', task.provider ?? 'unknown'],
+            ['Criteria', `${acCount} item(s)`],
+          ],
+          { labelWidth: 12 },
+        ),
+      );
+    }
+
+    lines.push(
+      renderNextSteps([`silvan run status ${runId}`, `silvan run explain ${runId}`]),
+    );
+    console.log(lines.join('\n'));
   });
 
 cli
@@ -1132,14 +1494,46 @@ cli
       );
       return;
     }
-    console.log(`${runId} • ${convergence.status} • ${convergence.reasonCode}`);
-    console.log(convergence.message);
+    if (options.quiet) {
+      return;
+    }
+    const lines: string[] = [];
+    lines.push(renderSectionHeader('Run status', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [
+          ['Run ID', runId],
+          ['Status', formatStatusLabel(convergence.status)],
+          ['Reason', convergence.reasonCode],
+        ],
+        { labelWidth: 12 },
+      ),
+    );
+    lines.push(`Message: ${convergence.message}`);
     if (convergence.blockingArtifacts?.length) {
-      console.log(`Blocking artifacts: ${convergence.blockingArtifacts.join(', ')}`);
+      lines.push(
+        ...formatKeyList(
+          'Blocking',
+          `${convergence.blockingArtifacts.length} artifact(s)`,
+          convergence.blockingArtifacts,
+          { labelWidth: 12 },
+        ),
+      );
     }
     if (convergence.nextActions.length) {
-      console.log(`Next actions: ${convergence.nextActions.join(', ')}`);
+      lines.push(
+        ...formatKeyList(
+          'Next actions',
+          `${convergence.nextActions.length} action(s)`,
+          convergence.nextActions,
+          { labelWidth: 12 },
+        ),
+      );
     }
+    lines.push(
+      renderNextSteps([`silvan run explain ${runId}`, `silvan run resume ${runId}`]),
+    );
+    console.log(lines.join('\n'));
   });
 
 cli
@@ -1189,36 +1583,75 @@ cli
       );
       return;
     }
-
-    console.log(`${runId} • ${run.status ?? 'unknown'} • ${run.phase ?? 'unknown'}`);
-    console.log(`Convergence: ${convergence.status} • ${convergence.reasonCode}`);
-    console.log(convergence.message);
+    if (options.quiet) {
+      return;
+    }
+    const lines: string[] = [];
+    lines.push(renderSectionHeader('Run explanation', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [
+          ['Run ID', runId],
+          ['Status', formatStatusLabel(run.status ?? 'unknown')],
+          ['Phase', run.phase ?? 'unknown'],
+        ],
+        { labelWidth: 12 },
+      ),
+    );
+    lines.push(
+      ...formatKeyValues(
+        [
+          ['Convergence', formatStatusLabel(convergence.status)],
+          ['Reason', convergence.reasonCode],
+        ],
+        { labelWidth: 12 },
+      ),
+    );
+    lines.push(`Message: ${convergence.message}`);
     if (lastStep) {
-      console.log(`Last successful step: ${lastStep}`);
+      lines.push(`Last successful step: ${lastStep}`);
     }
     if (summary.prUrl) {
-      console.log(`PR: ${summary.prUrl}`);
+      lines.push(`PR: ${summary.prUrl}`);
     }
     if (summary.ci) {
-      console.log(`CI: ${summary.ci}`);
+      lines.push(`CI: ${summary.ci}`);
     }
     if (typeof summary.unresolvedReviewCount === 'number') {
-      console.log(`Unresolved review comments: ${summary.unresolvedReviewCount}`);
+      lines.push(`Unresolved review comments: ${summary.unresolvedReviewCount}`);
     }
     if (summary.blockedReason) {
-      console.log(`Blocked reason: ${summary.blockedReason}`);
+      lines.push(`Blocked reason: ${summary.blockedReason}`);
     }
     if (localGate.ok === false) {
-      console.log(
+      lines.push(
         `Local gate: ${localGate.blockers ?? 0} blockers, ${localGate.warnings ?? 0} warnings`,
       );
     }
     if (convergence.blockingArtifacts?.length) {
-      console.log(`Blocking artifacts: ${convergence.blockingArtifacts.join(', ')}`);
+      lines.push(
+        ...formatKeyList(
+          'Blocking',
+          `${convergence.blockingArtifacts.length} artifact(s)`,
+          convergence.blockingArtifacts,
+          { labelWidth: 12 },
+        ),
+      );
     }
     if (convergence.nextActions.length) {
-      console.log(`Next actions: ${convergence.nextActions.join(', ')}`);
+      lines.push(
+        ...formatKeyList(
+          'Next actions',
+          `${convergence.nextActions.length} action(s)`,
+          convergence.nextActions,
+          { labelWidth: 12 },
+        ),
+      );
     }
+    lines.push(
+      renderNextSteps([`silvan run resume ${runId}`, `silvan run status ${runId}`]),
+    );
+    console.log(lines.join('\n'));
   });
 
 cli
@@ -1273,30 +1706,67 @@ cli
     const { snapshot } = await loadRunSnapshotForCli(runId, options);
     const convergence = deriveConvergenceFromSnapshot(snapshot);
     if (convergence.status === 'converged' || convergence.status === 'aborted') {
-      console.log(
-        `Run ${runId} is ${convergence.status}; resume is not applicable (${convergence.reasonCode}).`,
-      );
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              runId,
+              status: convergence.status,
+              reason: convergence.reasonCode,
+              message: 'Resume is not applicable.',
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+      if (!options.quiet) {
+        console.log(
+          renderSuccessSummary({
+            title: 'Resume not applicable',
+            details: [
+              ['Run ID', runId],
+              ['Status', convergence.status],
+              ['Reason', convergence.reasonCode],
+            ],
+            nextSteps: [`silvan run status ${runId}`, 'silvan run list'],
+          }),
+        );
+      }
       return;
     }
     await withCliContext(
       options,
       'headless',
-      async (ctx) =>
-        withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
-          const runOptions = {
-            ...(options.dryRun ? { dryRun: true } : {}),
-            ...(options.apply ? { apply: true } : {}),
-            ...(options.dangerous ? { dangerous: true } : {}),
-            sessions,
-          };
-          await resumeRun(ctx, runOptions);
-        }),
+      async (ctx) => {
+        const logger = createCliLogger(ctx);
+        await withAgentSessions(
+          Boolean(ctx.config.ai.sessions.persist),
+          async (sessions) => {
+            const runOptions = {
+              ...(options.dryRun ? { dryRun: true } : {}),
+              ...(options.apply ? { apply: true } : {}),
+              ...(options.dangerous ? { dangerous: true } : {}),
+              sessions,
+            };
+            await resumeRun(ctx, runOptions);
+          },
+        );
+        await logger.info(
+          renderSuccessSummary({
+            title: 'Run resumed',
+            details: [['Run ID', runId]],
+            nextSteps: [`silvan run status ${runId}`, `silvan run explain ${runId}`],
+          }),
+        );
+      },
       { runId },
     );
   });
 
 cli
-  .command('run override <runId> <reason…>', 'Override a run gate with a reason')
+  .command('run override <runId> <reason...>', 'Override a run gate with a reason')
   .action(async (runId: string, reason: string[], options: CliOptions) => {
     const message = reason.join(' ').trim();
     if (!message) {
@@ -1308,7 +1778,19 @@ cli
       console.log(JSON.stringify({ runId, override: entry }, null, 2));
       return;
     }
-    console.log(`Override recorded for ${runId}: ${entry.path}`);
+    if (options.quiet) {
+      return;
+    }
+    console.log(
+      renderSuccessSummary({
+        title: 'Override recorded',
+        details: [
+          ['Run ID', runId],
+          ['Path', entry.path],
+        ],
+        nextSteps: [`silvan run resume ${runId}`, `silvan run status ${runId}`],
+      }),
+    );
   });
 
 cli
@@ -1320,7 +1802,19 @@ cli
       console.log(JSON.stringify({ runId, aborted: entry }, null, 2));
       return;
     }
-    console.log(`Run ${runId} marked as aborted.`);
+    if (options.quiet) {
+      return;
+    }
+    console.log(
+      renderSuccessSummary({
+        title: 'Run aborted',
+        details: [
+          ['Run ID', runId],
+          ['Path', entry.path],
+        ],
+        nextSteps: ['silvan run list', `silvan run inspect ${runId}`],
+      }),
+    );
   });
 
 cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
@@ -1429,6 +1923,7 @@ cli.command('queue run', 'Process queued task requests').action((options: CliOpt
       return;
     }
 
+    let processed = 0;
     for (const request of requests) {
       await withRunContext(
         {
@@ -1460,7 +1955,16 @@ cli.command('queue run', 'Process queued task requests').action((options: CliOpt
       );
 
       await deleteQueueRequest({ state: ctx.state, requestId: request.id });
+      processed += 1;
     }
+
+    await logger.info(
+      renderSuccessSummary({
+        title: 'Queue processed',
+        details: [['Processed', `${processed} request(s)`]],
+        nextSteps: ['silvan run list'],
+      }),
+    );
   }),
 );
 
@@ -1960,34 +2464,64 @@ cli
       console.log(JSON.stringify({ source, config }, null, 2));
       return;
     }
-    console.log(`Config source: ${source?.path ?? 'defaults (no config file found)'}`);
-    console.log('');
-    console.log('Key settings:');
-    console.log(`  Default branch: ${config.repo.defaultBranch}`);
-    console.log(`  Branch prefix: ${config.naming.branchPrefix}`);
-    console.log(`  Worktree dir: ${config.naming.worktreeDir}`);
-    console.log(`  State mode: ${config.state.mode}`);
-    console.log('');
-    console.log('AI settings:');
-    console.log(`  Default model: ${config.ai.models.default}`);
-    console.log(`  Max turns: ${config.ai.budgets.default.maxTurns}`);
-    if (config.ai.budgets.default.maxBudgetUsd) {
-      console.log(`  Max budget: $${config.ai.budgets.default.maxBudgetUsd}`);
+    if (options.quiet) {
+      return;
     }
-    console.log('');
-    console.log('Task providers:');
-    console.log(`  Enabled: ${config.task.providers.enabled.join(', ') || 'none'}`);
-    console.log('');
-    console.log('Verify commands:');
+    const lines: string[] = [];
+    lines.push(renderSectionHeader('Configuration', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [['Source', source?.path ?? 'defaults (no config file found)']],
+        { labelWidth: 14 },
+      ),
+    );
+
+    lines.push('');
+    lines.push(renderSectionHeader('Key settings', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [
+          ['Default branch', config.repo.defaultBranch],
+          ['Branch prefix', config.naming.branchPrefix],
+          ['Worktree dir', config.naming.worktreeDir],
+          ['State mode', config.state.mode],
+        ],
+        { labelWidth: 14 },
+      ),
+    );
+
+    lines.push('');
+    lines.push(renderSectionHeader('AI settings', { width: 60, kind: 'minor' }));
+    const aiSettings: Array<[string, string]> = [
+      ['Default model', config.ai.models.default ?? 'auto'],
+      ['Max turns', String(config.ai.budgets.default.maxTurns ?? 'unset')],
+    ];
+    if (typeof config.ai.budgets.default.maxBudgetUsd === 'number') {
+      aiSettings.push(['Max budget', `$${config.ai.budgets.default.maxBudgetUsd}`]);
+    }
+    lines.push(...formatKeyValues(aiSettings, { labelWidth: 14 }));
+
+    lines.push('');
+    lines.push(renderSectionHeader('Task providers', { width: 60, kind: 'minor' }));
+    lines.push(
+      ...formatKeyValues(
+        [['Enabled', config.task.providers.enabled.join(', ') || 'none']],
+        { labelWidth: 14 },
+      ),
+    );
+
+    lines.push('');
+    lines.push(renderSectionHeader('Verify commands', { width: 60, kind: 'minor' }));
     if (config.verify.commands.length === 0) {
-      console.log('  (none configured)');
+      lines.push(...formatKeyValues([['Status', 'None configured']], { labelWidth: 14 }));
     } else {
-      for (const cmd of config.verify.commands) {
-        console.log(`  ${cmd.name}: ${cmd.cmd}`);
-      }
+      lines.push(
+        ...config.verify.commands.map((cmd) => `${padLabel(cmd.name, 14)} ${cmd.cmd}`),
+      );
     }
-    console.log('');
-    console.log('Use --json for full configuration output.');
+
+    lines.push(renderNextSteps(['silvan config validate', 'silvan doctor']));
+    console.log(lines.join('\n'));
   });
 
 cli
@@ -2047,20 +2581,34 @@ cli
         return;
       }
 
+      if (options.quiet) {
+        if (!checks.every((c) => c.ok)) {
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push(
+        renderSectionHeader('Configuration checks', { width: 60, kind: 'minor' }),
+      );
       for (const check of checks) {
-        const prefix = check.ok ? 'ok' : 'warn';
-        console.log(`${prefix}  ${check.name}: ${check.message}`);
+        const prefix = check.ok ? colors.success('ok') : colors.warning('warn');
+        lines.push(`${prefix}  ${check.name}: ${check.message}`);
       }
 
       const allOk = checks.every((c) => c.ok);
       if (!allOk) {
-        console.log('');
-        console.log('Some checks have warnings. Fix them for full functionality.');
+        lines.push('');
+        lines.push('Some checks have warnings. Fix them for full functionality.');
         process.exitCode = 1;
       } else {
-        console.log('');
-        console.log('Configuration is valid.');
+        lines.push('');
+        lines.push('Configuration is valid.');
       }
+
+      lines.push(renderNextSteps(['silvan config show', 'silvan doctor']));
+      console.log(lines.join('\n'));
     } catch (error) {
       if (options.json) {
         console.log(
@@ -2074,9 +2622,12 @@ cli
           ),
         );
       } else {
-        console.error(
-          `Configuration error: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const rendered = renderCliError(error, {
+          debug: Boolean(options.debug),
+          trace: Boolean(options.trace),
+          commandNames: getRegisteredCommandNames(),
+        });
+        console.error(rendered.message);
       }
       process.exitCode = 1;
     }
@@ -2094,10 +2645,20 @@ cli
       if (options.json) {
         console.log(JSON.stringify(report, null, 2));
       } else {
-        for (const check of report.checks) {
-          const prefix = check.ok ? 'ok' : 'fail';
-          console.log(`${prefix} ${check.name} ${check.detail}`);
+        if (options.quiet) {
+          if (!report.ok) {
+            process.exitCode = 1;
+          }
+          return;
         }
+        const lines: string[] = [];
+        lines.push(renderSectionHeader('Doctor report', { width: 60, kind: 'minor' }));
+        for (const check of report.checks) {
+          const prefix = check.ok ? colors.success('ok') : colors.error('fail');
+          lines.push(`${prefix} ${check.name} ${check.detail}`);
+        }
+        lines.push(renderNextSteps(['silvan config validate', 'silvan config show']));
+        console.log(lines.join('\n'));
       }
       if (!report.ok) {
         process.exitCode = 1;
@@ -2140,6 +2701,7 @@ cli
 // Command aliases: short names for common commands
 const COMMAND_ALIASES: Record<string, string> = {
   t: 'tree',
+  wt: 'tree',
   r: 'run',
   a: 'agent',
 };
@@ -2253,6 +2815,15 @@ export async function run(argv: string[]): Promise<void> {
   if (debugEnabled) {
     process.env['SILVAN_DEBUG'] = '1';
   }
+  const quietEnabled = argv.includes('--quiet') || argv.includes('-q');
+  if (quietEnabled) {
+    process.env['SILVAN_QUIET'] = '1';
+  }
+  const versionRequested = argv.includes('--version') || argv.includes('-v');
+  if (versionRequested) {
+    await outputVersionInfo();
+    return;
+  }
 
   // Step 1: Expand command aliases (t -> tree, r -> run, etc.)
   const expandedArgv = expandAliases(argv);
@@ -2291,6 +2862,7 @@ export async function run(argv: string[]): Promise<void> {
     const rendered = renderCliError(error, {
       debug: debugEnabled,
       trace: traceEnabled,
+      commandNames: getRegisteredCommandNames(),
     });
     console.error(rendered.message);
     if (rendered.error.exitCode !== undefined) {
@@ -2301,9 +2873,26 @@ export async function run(argv: string[]): Promise<void> {
   }
 }
 
+async function outputVersionInfo(): Promise<void> {
+  try {
+    const { config, source } = await loadConfig();
+    const configPath = source?.path ?? 'defaults (no config file found)';
+    const model = config.ai.models.default ?? 'auto';
+    console.log(`silvan/${pkg.version}`);
+    console.log(`Config: ${configPath}`);
+    console.log(`Default model: ${model}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`silvan/${pkg.version}`);
+    console.log('Config: unavailable');
+    console.log(`Error: ${message}`);
+  }
+}
+
 async function handlePrOpen(options: CliOptions): Promise<void> {
   const mode: EventMode = options.json ? 'json' : 'headless';
   await withCliContext(options, mode, async (ctx) => {
+    const logger = createCliLogger(ctx);
     const githubToken = requireGitHubAuth(ctx.config);
     const github = await requireGitHubConfig({
       config: ctx.config,
@@ -2357,6 +2946,23 @@ async function handlePrOpen(options: CliOptions): Promise<void> {
         prUrl: prResult.pr.url,
       },
     }));
+
+    const prTitle =
+      prResult.action === 'opened'
+        ? 'Pull request opened'
+        : prResult.action === 'updated'
+          ? 'Pull request updated'
+          : 'Pull request up to date';
+    await logger.info(
+      renderSuccessSummary({
+        title: prTitle,
+        details: [
+          ['PR', `${prResult.pr.owner}/${prResult.pr.repo}#${prResult.pr.number}`],
+          ['URL', prResult.pr.url ?? 'unknown'],
+        ],
+        nextSteps: ['silvan ci wait', 'silvan review unresolved'],
+      }),
+    );
 
     if (github.source === 'origin') {
       await persistRunState(ctx, mode, (data) => ({

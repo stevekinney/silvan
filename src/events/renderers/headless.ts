@@ -80,6 +80,9 @@ export class HeadlessRenderer {
   private ciWaitStates = new Map<string, CiWaitState>();
 
   render(event: Event): void {
+    if (this.shouldSuppress(event)) {
+      return;
+    }
     switch (event.type) {
       case 'log.message': {
         if (event.level === 'debug' && !process.env['SILVAN_DEBUG']) {
@@ -248,6 +251,13 @@ export class HeadlessRenderer {
     if (hadSpinner && spinnerText) {
       this.spinner.start(spinnerText);
     }
+  }
+
+  private shouldSuppress(event: Event): boolean {
+    if (!process.env['SILVAN_QUIET']) {
+      return false;
+    }
+    return event.level !== 'warn' && event.level !== 'error';
   }
 
   private linePrefix(): string {
