@@ -51,12 +51,14 @@ import { hashString } from '../utils/hash';
 import { runVerifyCommands } from '../verify/run';
 import { triageVerificationFailures } from '../verify/triage';
 import type { RunContext } from './context';
+import { SilvanError } from './errors';
 
 type RunControllerOptions = {
   taskRef?: string;
   task?: Task;
   worktreeName?: string;
   clarifications?: Record<string, string>;
+  allowMissingClarifications?: boolean;
   dryRun?: boolean;
   apply?: boolean;
   dangerous?: boolean;
@@ -578,7 +580,7 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
       )
     : undefined;
 
-  const plan = await runStep(ctx, 'agent.plan.generate', 'Generate plan', () =>
+  const plan = await runStep(ctx, 'agent.plan.generate', 'Generating plan', () =>
     generatePlan({
       ...(taskResult ? { task: taskResult.task } : {}),
       ...(options.worktreeName ? { worktreeName: options.worktreeName } : {}),
@@ -626,8 +628,16 @@ export async function runPlanner(ctx: RunContext, options: RunControllerOptions)
   const hasRequiredQuestions = plan.questions?.some(
     (question) => question.required !== false,
   );
-  if (hasRequiredQuestions) {
-    throw new Error('Clarifications required before execution.');
+  if (hasRequiredQuestions && !options.allowMissingClarifications) {
+    throw new SilvanError({
+      code: 'task.clarifications_required',
+      message: 'Clarifications required before execution.',
+      userMessage: 'Clarifications required before execution.',
+      kind: 'expected',
+      exitCode: 0,
+      nextSteps: ['Run `silvan agent clarify` to answer questions.'],
+      context: { runId: ctx.runId },
+    });
   }
 
   return plan;

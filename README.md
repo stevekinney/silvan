@@ -111,6 +111,13 @@ silvan task start --title "Add fuzzy search" --desc "Search the run list" \
 silvan task start --from-file task.md
 ```
 
+Pre-answer clarifications or generate a plan without creating a worktree:
+
+```bash
+silvan task start GH-42 --answer auth-method=jwt
+silvan task start GH-42 --plan-only
+```
+
 If GitHub is not configured, Silvan will run plan/implement/verify and stop before PR and review steps with a clear blocked reason.
 
 ## Global State Model
@@ -286,7 +293,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 ### Agent workflows
 
-- `task start [task]` — create worktree + generate plan
+- `task start [task]` — create worktree + generate plan (`--answer`, `--plan-only`)
 - `init` — scaffold a baseline `silvan.config.ts`
 - `agent plan` — generate a structured plan
 - `agent clarify` — answer required questions and re‑plan

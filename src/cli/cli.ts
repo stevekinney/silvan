@@ -5,7 +5,7 @@ import { basename, join } from 'node:path';
 import { cac } from 'cac';
 
 import pkg from '../../package.json';
-import { collectClarifications } from '../agent/clarify';
+import { type ClarificationQuestion, collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
 import {
   exportConversationSnapshot,
@@ -72,6 +72,14 @@ import {
   generateZshCompletion,
 } from './completion';
 import { renderCliError } from './errors';
+import {
+  renderClarifications,
+  renderNextSteps,
+  renderPlanSummary,
+  renderReadySection,
+  renderTaskHeader,
+  summarizePlan,
+} from './task-start-output';
 
 const cli = cac('silvan');
 
@@ -96,6 +104,8 @@ type CliOptions = {
   debug?: boolean;
   trace?: boolean;
   task?: string;
+  answer?: string | string[];
+  planOnly?: boolean;
   githubToken?: string;
   linearToken?: string;
   model?: string;
@@ -1325,6 +1335,8 @@ cli
   .option('--desc <desc>', 'Task description for local tasks')
   .option('--ac <criteria>', 'Acceptance criteria (can be used multiple times)')
   .option('--from-file <path>', 'Load task details from a markdown file')
+  .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
+  .option('--plan-only', 'Generate plan without creating a worktree')
   .option('--print-cd', 'Print cd command to worktree (default: true)', {
     default: true,
   })
@@ -1355,6 +1367,9 @@ cli
           taskRef: inferred,
           ...(localInput ? { localInput } : {}),
           printCd: options.printCd !== false,
+          answers: parseAnswerPairs(options.answer),
+          planOnly: options.planOnly ?? false,
+          skipPrompts: options.yes ?? false,
           ...(options.exec ? { exec: options.exec } : {}),
           ...(options.openShell ? { openShell: options.openShell } : {}),
         });
@@ -1449,81 +1464,223 @@ async function startTaskFlow(options: {
   taskRef: string;
   localInput?: LocalTaskInput;
   printCd: boolean;
+  answers?: Record<string, string>;
+  planOnly?: boolean;
+  skipPrompts?: boolean;
   exec?: string;
   openShell?: boolean;
 }): Promise<void> {
   const ctx = options.ctx;
   const mode = ctx.events.mode;
   let logger = createCliLogger(ctx);
-  const resolved = await logger.withSpan(
-    'Resolve task',
-    () =>
-      resolveTask(options.taskRef, {
-        config: ctx.config,
-        repoRoot: ctx.repo.repoRoot,
-        state: ctx.state,
-        runId: ctx.runId,
-        ...(options.localInput ? { localInput: options.localInput } : {}),
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-    { taskRef: options.taskRef },
-  );
-
-  await logger.info(
-    `Task: ${resolved.task.key ?? resolved.task.id} • ${resolved.task.title} • ${resolved.task.provider}`,
-  );
-
-  const safeName = buildWorktreeName(resolved.task);
-  const worktree = await runStep(
-    ctx,
-    'git.worktree.create',
-    'Create worktree',
-    async () =>
-      createWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        name: safeName,
-        config: ctx.config,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-  );
-
-  ctx.repo.worktreePath = worktree.path;
-  if (worktree.branch) {
-    ctx.repo.branch = worktree.branch;
-  }
-  ctx.repo.isWorktree = true;
-  logger = createCliLogger(ctx);
-
-  await normalizeClaudeSettings({ worktreePath: worktree.path });
-
-  const installResult = await logger.withSpan(
-    'Install dependencies',
-    () => installDependencies({ worktreePath: worktree.path }),
-    { worktreePath: worktree.path },
-  );
-  if (!installResult.ok) {
-    await logger.warn(`Warning: bun install failed in ${worktree.path}`, {
-      stderr: installResult.stderr,
-      stdout: installResult.stdout,
+  if (options.planOnly && (options.exec || options.openShell)) {
+    throw new SilvanError({
+      code: 'task.plan_only_conflict',
+      message: 'Plan-only mode cannot open a worktree shell or run commands.',
+      userMessage:
+        'Plan-only mode does not create a worktree. Remove --plan-only to use --exec or --open-shell.',
+      kind: 'validation',
+      nextSteps: [
+        `Run: silvan task start ${formatShellArg(options.taskRef)}`,
+        'Or drop --plan-only to create a worktree.',
+      ],
     });
   }
 
-  await runPlanner(ctx, {
+  const resolved = await runStep(ctx, 'task.resolve', 'Resolving task', () =>
+    resolveTask(options.taskRef, {
+      config: ctx.config,
+      repoRoot: ctx.repo.repoRoot,
+      state: ctx.state,
+      runId: ctx.runId,
+      ...(options.localInput ? { localInput: options.localInput } : {}),
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+    }),
+  );
+
+  await logger.info(renderTaskHeader(resolved.task));
+
+  const providedAnswers = options.answers ?? {};
+  const hasProvidedAnswers = Object.keys(providedAnswers).length > 0;
+
+  let safeName: string | undefined;
+  let worktree: Awaited<ReturnType<typeof createWorktree>> | undefined;
+
+  if (!options.planOnly) {
+    safeName = buildWorktreeName(resolved.task);
+    worktree = await runStep(ctx, 'git.worktree.create', 'Creating worktree', async () =>
+      createWorktree({
+        repoRoot: ctx.repo.repoRoot,
+        name: safeName ?? 'task',
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+    );
+
+    const worktreePath = worktree.path;
+    ctx.repo.worktreePath = worktreePath;
+    if (worktree.branch) {
+      ctx.repo.branch = worktree.branch;
+    }
+    ctx.repo.isWorktree = true;
+    logger = createCliLogger(ctx);
+
+    await normalizeClaudeSettings({ worktreePath });
+
+    const installResult = await runStep(
+      ctx,
+      'deps.install',
+      'Installing dependencies',
+      () => installDependencies({ worktreePath }),
+    );
+    if (!installResult.ok) {
+      await logger.warn(`Warning: bun install failed in ${worktreePath}`, {
+        stderr: installResult.stderr,
+        stdout: installResult.stdout,
+      });
+    }
+  }
+
+  let plan = await runPlanner(ctx, {
     taskRef: resolved.ref.raw,
     task: resolved.task,
-    worktreeName: safeName,
+    ...(safeName ? { worktreeName: safeName } : {}),
+    ...(hasProvidedAnswers ? { clarifications: providedAnswers } : {}),
     ...(options.sessions ? { sessions: options.sessions } : {}),
+    allowMissingClarifications: true,
   });
 
-  if (options.printCd) {
-    await logger.info(`cd ${worktree.path}`);
+  await logger.info(renderPlanSummary(summarizePlan(plan)));
+
+  const questions = normalizeClarificationQuestions(plan.questions);
+  if (questions.length > 0) {
+    const promptAllowed =
+      !options.skipPrompts && process.stdin.isTTY && ctx.events.mode !== 'json';
+    if (promptAllowed) {
+      await logger.info(
+        renderClarifications(questions, {
+          intro: 'The plan has questions that would help refine the implementation:',
+        }),
+      );
+      const clarifications = await collectClarifications({
+        questions,
+        answers: providedAnswers,
+      });
+      const missingRequired = questions.filter(
+        (question) =>
+          question.required !== false &&
+          (!clarifications[question.id] || clarifications[question.id]?.trim() === ''),
+      );
+      if (missingRequired.length > 0) {
+        await logger.info(
+          renderClarifications(missingRequired, {
+            title: 'Clarifications Required',
+            intro: 'This plan has required questions that must be answered:',
+          }),
+        );
+        const requiredId = missingRequired[0]?.id ?? 'question-id';
+        const needsInputNextSteps = [
+          `silvan agent clarify --answer ${requiredId}=<value>`,
+          'silvan agent clarify',
+        ];
+        await logger.info(renderNextSteps(needsInputNextSteps));
+        await logger.info('Status: Needs input (exit code 0)');
+        return;
+      }
+
+      const hasNewAnswers = Object.entries(clarifications).some(
+        ([id, value]) => value.trim() && value.trim() !== providedAnswers[id],
+      );
+      if (hasNewAnswers) {
+        plan = await runPlanner(ctx, {
+          taskRef: resolved.ref.raw,
+          task: resolved.task,
+          ...(safeName ? { worktreeName: safeName } : {}),
+          clarifications,
+          ...(options.sessions ? { sessions: options.sessions } : {}),
+          allowMissingClarifications: true,
+        });
+        await logger.info(
+          renderPlanSummary(summarizePlan(plan), { title: 'Updated Plan' }),
+        );
+        const updatedQuestions = normalizeClarificationQuestions(plan.questions);
+        const remainingRequired = updatedQuestions.filter(
+          (question) =>
+            question.required !== false &&
+            (!clarifications[question.id] || clarifications[question.id]?.trim() === ''),
+        );
+        if (remainingRequired && remainingRequired.length > 0) {
+          await logger.info(
+            renderClarifications(remainingRequired, {
+              title: 'Clarifications Required',
+              intro: 'This plan has required questions that must be answered:',
+            }),
+          );
+          const requiredId = remainingRequired[0]?.id ?? 'question-id';
+          const needsInputNextSteps = [
+            `silvan agent clarify --answer ${requiredId}=<value>`,
+            'silvan agent clarify',
+          ];
+          await logger.info(renderNextSteps(needsInputNextSteps));
+          await logger.info('Status: Needs input (exit code 0)');
+          return;
+        }
+      }
+    } else {
+      const missingRequired = questions.filter(
+        (question) =>
+          question.required !== false &&
+          (!providedAnswers[question.id] || providedAnswers[question.id]?.trim() === ''),
+      );
+      if (missingRequired.length > 0) {
+        await logger.info(
+          renderClarifications(questions, {
+            title: 'Clarifications Required',
+            intro: 'This plan has required questions that must be answered:',
+          }),
+        );
+        const requiredId = missingRequired[0]?.id ?? 'question-id';
+        const needsInputNextSteps = [
+          `silvan agent clarify --answer ${requiredId}=<value>`,
+          'silvan agent clarify',
+        ];
+        await logger.info(renderNextSteps(needsInputNextSteps));
+        await logger.info('Status: Needs input (exit code 0)');
+        return;
+      }
+    }
   }
-  if (options.exec) {
+
+  const readyTitle = options.planOnly ? 'Plan generated' : 'Ready to implement';
+  await logger.info(
+    renderReadySection({
+      title: readyTitle,
+      runId: ctx.runId,
+      ...(worktree?.path ? { worktreePath: worktree.path } : {}),
+    }),
+  );
+
+  const nextSteps: string[] = [];
+  if (worktree?.path && options.printCd) {
+    nextSteps.push(`cd ${worktree.path}`);
+  }
+  if (!options.planOnly) {
+    nextSteps.push('silvan agent run --apply');
+  } else {
+    nextSteps.push(`silvan task start ${formatShellArg(resolved.ref.raw)}`);
+  }
+
+  const nextStepsBlock = renderNextSteps(nextSteps);
+  if (nextStepsBlock) {
+    await logger.info(nextStepsBlock);
+  }
+
+  if (options.exec && worktree) {
     runCommandInWorktree(options.exec, worktree.path);
   }
-  if (options.openShell) {
+  if (options.openShell && worktree) {
     openShellInWorktree(worktree.path);
   }
 }
@@ -2272,4 +2429,25 @@ function parseAnswerPairs(raw: string | string[] | undefined): Record<string, st
     answers[id.trim()] = value;
   }
   return answers;
+}
+
+function normalizeClarificationQuestions(
+  questions:
+    | Array<{ id: string; text: string; required?: boolean | undefined }>
+    | undefined,
+): ClarificationQuestion[] {
+  if (!questions) return [];
+  return questions.map((question) => ({
+    id: question.id,
+    text: question.text,
+    ...(question.required === undefined ? {} : { required: question.required }),
+  }));
+}
+
+function formatShellArg(value: string): string {
+  const trimmed = value.trim();
+  if (!/[\s"'`]/.test(trimmed)) {
+    return trimmed;
+  }
+  return `"${trimmed.replace(/(["\\])/g, '\\$1')}"`;
 }
