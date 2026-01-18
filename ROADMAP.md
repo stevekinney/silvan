@@ -31,7 +31,7 @@ These principles guide all UX decisions:
 
 These issues fix the critical first-impression problems. A new user should be able to install, configure, and run their first task without confusion.
 
-- [ ] [#6 - Redesign task start UX](https://github.com/stevekinney/silvan/issues/6)
+- [x] [#6 - Redesign task start UX](https://github.com/stevekinney/silvan/issues/6)
 
   > **Why first**: This is the primary entry point. If `task start` is confusing, users won't get past day one. Fixes "clarifications look like errors" and silent exits.
 
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status      |
-| ------------------ | -------------------------- | ----------- |
-| Foundation         | #6, #14, #3, #2            | Not started |
-| Polish             | #15, #17, #16, #23, #20    | Not started |
-| Discoverability    | #21, #22                   | Not started |
-| Scripting          | #19, #18                   | Not started |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started |
+| Phase              | Issues                     | Status            |
+| ------------------ | -------------------------- | ----------------- |
+| Foundation         | #6, #14, #3, #2            | In progress (1/4) |
+| Polish             | #15, #17, #16, #23, #20    | Not started       |
+| Discoverability    | #21, #22                   | Not started       |
+| Scripting          | #19, #18                   | Not started       |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started       |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)
