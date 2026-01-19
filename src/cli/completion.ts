@@ -5,6 +5,7 @@
 const COMMANDS = [
   'init',
   'quickstart',
+  'help',
   'tree',
   'run',
   'agent',
@@ -127,6 +128,7 @@ _silvan() {
     commands=(
         'init:Initialize silvan.config.ts'
         'quickstart:Guided setup and sample task'
+        'help:View help topics and concepts'
         'tree:Manage git worktrees (alias: t, wt)'
         'run:Manage agent runs (alias: r)'
         'agent:Low-level agent commands (alias: a)'
@@ -225,6 +227,7 @@ complete -c silvan -f
 # Main commands
 complete -c silvan -n "__fish_use_subcommand" -a "init" -d "Initialize silvan.config.ts"
 complete -c silvan -n "__fish_use_subcommand" -a "quickstart" -d "Guided setup and sample task"
+complete -c silvan -n "__fish_use_subcommand" -a "help" -d "View help topics and concepts"
 complete -c silvan -n "__fish_use_subcommand" -a "tree t wt" -d "Manage git worktrees"
 complete -c silvan -n "__fish_use_subcommand" -a "run r" -d "Manage agent runs"
 complete -c silvan -n "__fish_use_subcommand" -a "agent a" -d "Low-level agent commands"

@@ -82,6 +82,17 @@ silvan task start ENG-456
 silvan ui
 ```
 
+## Help Topics
+
+Browse conceptual help in the CLI and drill into a topic when you need detail:
+
+```bash
+silvan help
+silvan help worktrees
+silvan help task-refs
+silvan help convergence
+```
+
 ## CLI Output Conventions
 
 Silvan output is designed to be scannable in terminals and scriptable in CI.

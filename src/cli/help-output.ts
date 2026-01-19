@@ -29,19 +29,28 @@ const COMMAND_META: Record<string, HelpMeta> = {
       'silvan task start gh-42 --yes',
       'silvan task start ENG-99 --model claude-sonnet-4-20250514',
     ],
-    seeAlso: ['silvan agent plan', 'silvan agent run', 'silvan tree list'],
+    seeAlso: [
+      'silvan agent plan',
+      'silvan agent run',
+      'silvan tree list',
+      'silvan help task-refs',
+    ],
   },
   'tree add': {
     examples: ['silvan tree add my-feature', 'silvan tree add my-feature --yes'],
-    seeAlso: ['silvan tree list', 'silvan task start "Your task"'],
+    seeAlso: [
+      'silvan tree list',
+      'silvan task start "Your task"',
+      'silvan help worktrees',
+    ],
   },
   'tree remove': {
     examples: ['silvan tree remove my-feature', 'silvan tree remove --task gh-42'],
-    seeAlso: ['silvan tree list', 'silvan tree clean'],
+    seeAlso: ['silvan tree list', 'silvan tree clean', 'silvan help worktrees'],
   },
   'tree clean': {
     examples: ['silvan tree clean', 'silvan tree clean --all'],
-    seeAlso: ['silvan tree list', 'silvan tree prune'],
+    seeAlso: ['silvan tree list', 'silvan tree prune', 'silvan help worktrees'],
   },
   'run list': {
     examples: ['silvan run list', 'silvan run list --status blocked'],
@@ -53,18 +62,30 @@ const COMMAND_META: Record<string, HelpMeta> = {
   },
   'run status': {
     examples: ['silvan run status <runId>', 'silvan run status <runId> --json'],
-    seeAlso: ['silvan run explain <runId>', 'silvan run resume <runId>'],
+    seeAlso: [
+      'silvan run explain <runId>',
+      'silvan run resume <runId>',
+      'silvan help convergence',
+    ],
   },
   'run explain': {
     examples: ['silvan run explain <runId>', 'silvan run explain <runId> --json'],
-    seeAlso: ['silvan run status <runId>', 'silvan run resume <runId>'],
+    seeAlso: [
+      'silvan run status <runId>',
+      'silvan run resume <runId>',
+      'silvan help convergence',
+    ],
   },
   'run resume': {
     examples: [
       'silvan run resume <runId> --apply',
       'silvan run resume <runId> --dry-run',
     ],
-    seeAlso: ['silvan run status <runId>', 'silvan run override <runId> "reason"'],
+    seeAlso: [
+      'silvan run status <runId>',
+      'silvan run override <runId> "reason"',
+      'silvan help convergence',
+    ],
   },
   'run override': {
     examples: [
@@ -87,27 +108,31 @@ const COMMAND_META: Record<string, HelpMeta> = {
   },
   'review unresolved': {
     examples: ['silvan review unresolved', 'silvan review unresolved --json'],
-    seeAlso: ['silvan pr open', 'silvan run explain <runId>'],
+    seeAlso: ['silvan pr open', 'silvan run explain <runId>', 'silvan help review-loops'],
   },
   init: {
     examples: ['silvan init', 'silvan init --yes'],
-    seeAlso: ['silvan doctor', 'silvan config show'],
+    seeAlso: ['silvan doctor', 'silvan config show', 'silvan help providers'],
   },
   quickstart: {
     examples: ['silvan quickstart', 'silvan quickstart --yes'],
     seeAlso: ['silvan init', 'silvan doctor', 'silvan task start "Your task"'],
   },
+  help: {
+    examples: ['silvan help', 'silvan help worktrees', 'silvan help task-refs'],
+    seeAlso: ['silvan --help', 'silvan quickstart'],
+  },
   doctor: {
     examples: ['silvan doctor', 'silvan doctor --network'],
-    seeAlso: ['silvan config validate', 'silvan config show'],
+    seeAlso: ['silvan config validate', 'silvan config show', 'silvan help providers'],
   },
   'config show': {
     examples: ['silvan config show', 'silvan config show --json'],
-    seeAlso: ['silvan config validate', 'silvan init'],
+    seeAlso: ['silvan config validate', 'silvan init', 'silvan help ai-models'],
   },
   'config validate': {
     examples: ['silvan config validate', 'silvan config validate --json'],
-    seeAlso: ['silvan config show', 'silvan doctor'],
+    seeAlso: ['silvan config show', 'silvan doctor', 'silvan help budgets'],
   },
   logs: {
     examples: ['silvan logs <runId>', 'silvan logs <runId> --tail 50'],
@@ -127,7 +152,7 @@ const COMMAND_META: Record<string, HelpMeta> = {
   },
   'agent run': {
     examples: ['silvan agent run --apply', 'silvan agent run --dry-run'],
-    seeAlso: ['silvan pr open', 'silvan run status <runId>'],
+    seeAlso: ['silvan pr open', 'silvan run status <runId>', 'silvan help verification'],
   },
   'agent resume': {
     examples: ['silvan agent resume', 'silvan agent resume --apply'],

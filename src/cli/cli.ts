@@ -54,6 +54,7 @@ import {
 import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
+import { findHelpTopic, listHelpTopics } from '../help/topics';
 import {
   deriveConvergenceFromSnapshot,
   loadRunSnapshot,
@@ -84,6 +85,7 @@ import {
 } from './completion';
 import { renderCliError } from './errors';
 import { buildHelpSections } from './help-output';
+import { renderHelpTopic, renderHelpTopicsList } from './help-topics-output';
 import {
   renderInitDetection,
   renderInitExistingConfig,
@@ -938,6 +940,84 @@ async function withCliContext<T>(
     fn,
   );
 }
+
+cli
+  .command('help [topic]', 'View help topics and concepts')
+  .action((topic: string | undefined, options: CliOptions) => {
+    const topics = listHelpTopics();
+    const jsonMode = Boolean(options.json);
+
+    if (!topic) {
+      if (jsonMode) {
+        console.log(
+          JSON.stringify(
+            {
+              topics: topics.map(({ id, title, summary, category }) => ({
+                id,
+                title,
+                summary,
+                category,
+              })),
+              usage: 'silvan help <topic>',
+              commandHelp: 'silvan <command> --help',
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+
+      console.log(renderHelpTopicsList(topics));
+      return;
+    }
+
+    const matched = findHelpTopic(topic);
+    if (!matched) {
+      throw new SilvanError({
+        code: 'help.topic_not_found',
+        message: `Unknown help topic: ${topic}`,
+        userMessage: `Unknown help topic: ${topic}`,
+        kind: 'validation',
+        nextSteps: [
+          'Run `silvan help` to list available topics.',
+          'Run `silvan --help` for command help.',
+        ],
+      });
+    }
+
+    if (jsonMode) {
+      console.log(
+        JSON.stringify(
+          {
+            topic: {
+              id: matched.id,
+              title: matched.title,
+              summary: matched.summary,
+              category: matched.category,
+              intro: matched.intro,
+              sections: matched.sections,
+              examples: matched.examples ?? [],
+              seeAlso: matched.seeAlso ?? [],
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    if (options.quiet) {
+      return;
+    }
+
+    console.log(renderHelpTopic(matched));
+  });
 
 // Worktree commands - aliased as both 'tree' and 't'
 cli.command('tree list', 'List all git worktrees').action(async (options: CliOptions) => {
@@ -2284,9 +2364,17 @@ cli
 
         if (!inferred) {
           if (!process.stdin.isTTY) {
-            throw new Error(
-              'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-            );
+            throw new SilvanError({
+              code: 'task.missing_reference',
+              message:
+                'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
+              userMessage: 'Task reference required.',
+              kind: 'validation',
+              nextSteps: [
+                'Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
+                'Run `silvan help task-refs` for examples.',
+              ],
+            });
           }
           localInput = await promptLocalTaskInput();
           inferred = localInput.title;

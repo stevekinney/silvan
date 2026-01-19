@@ -74,6 +74,7 @@ export function requireGitHubAuth(config: Config): string {
       nextSteps: [
         'Set GITHUB_TOKEN or GH_TOKEN in your environment.',
         'Or configure github.token in silvan.config.ts.',
+        'Run `silvan help providers` to review provider setup.',
       ],
     });
   }
@@ -95,6 +96,7 @@ export function requireLinearAuth(config: Config): string {
       nextSteps: [
         'Set LINEAR_API_KEY in your environment.',
         'Or configure linear.token in silvan.config.ts.',
+        'Run `silvan help providers` to review provider setup.',
       ],
     });
   }

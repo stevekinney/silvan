@@ -174,7 +174,10 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
         message: `Default provider ${defaultProvider} is not enabled in config.`,
         userMessage: `Default provider ${defaultProvider} is not enabled.`,
         kind: 'expected',
-        nextSteps: ['Enable the default provider in silvan.config.ts.'],
+        nextSteps: [
+          'Enable the default provider in silvan.config.ts.',
+          'Run `silvan help providers` to review provider setup.',
+        ],
       });
     }
   }
@@ -186,7 +189,10 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
         message: 'GitHub task reference must be gh-<number> or an issue URL.',
         userMessage: 'Invalid GitHub task reference.',
         kind: 'validation',
-        nextSteps: ['Use gh-<number> or a full GitHub issue URL.'],
+        nextSteps: [
+          'Use gh-<number> or a full GitHub issue URL.',
+          'Run `silvan help task-refs` for supported formats.',
+        ],
       });
     }
     return {
