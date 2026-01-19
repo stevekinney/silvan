@@ -8,6 +8,7 @@ import { loadRunEvents } from '../loader';
 import { formatElapsed, formatRelativeTime, formatTimestamp } from '../time';
 import type { RunRecord } from '../types';
 import { ActivityFeed } from './activity-feed';
+import { ArtifactExplorer } from './artifact-explorer';
 import { ArtifactPanel } from './artifact-panel';
 import { PhaseTimeline } from './phase-timeline';
 import { PrCiReviewPanel } from './pr-ci-review-panel';
@@ -18,11 +19,15 @@ export function RunDetails({
   stateStore,
   nowMs,
   stepsExpanded,
+  artifactView,
+  onCloseArtifacts,
 }: {
   run: RunRecord;
   stateStore: StateStore;
   nowMs: number;
   stepsExpanded: boolean;
+  artifactView: boolean;
+  onCloseArtifacts: () => void;
 }): React.ReactElement {
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -85,6 +90,16 @@ export function RunDetails({
       {renderGateStatus(run)}
 
       <PrCiReviewPanel run={run} events={events} nowMs={nowMs} />
+
+      {artifactView ? (
+        <ArtifactExplorer
+          run={run}
+          stateStore={stateStore}
+          nowMs={nowMs}
+          active={artifactView}
+          onClose={onCloseArtifacts}
+        />
+      ) : null}
 
       <Box flexDirection="column">
         <Text>Phase Timeline</Text>

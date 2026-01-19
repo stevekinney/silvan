@@ -111,7 +111,7 @@ These issues transform the dashboard from a simple viewer to a full operator con
 
   > Reduce context-switching to GitHub. See PR status inline.
 
-- [ ] [#11 - Artifact and Report Explorer](https://github.com/stevekinney/silvan/issues/11)
+- [x] [#11 - Artifact and Report Explorer](https://github.com/stevekinney/silvan/issues/11)
 
   > Deep inspection for debugging. View plans and reports without leaving UI.
 
@@ -244,6 +244,6 @@ $ silvan run list
 | Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
 | Discoverability    | #21, #22                   | Complete (2/2)    |
 | Scripting          | #19, #18                   | Complete (2/2)    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (4/6) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (5/6) |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

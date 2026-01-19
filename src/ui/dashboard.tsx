@@ -92,6 +92,7 @@ export function Dashboard({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [detailsView, setDetailsView] = useState(false);
   const [stepsExpanded, setStepsExpanded] = useState(false);
+  const [artifactView, setArtifactView] = useState(false);
   const [requestActive, setRequestActive] = useState(false);
   const [requestStep, setRequestStep] = useState<'title' | 'description'>('title');
   const [requestTitle, setRequestTitle] = useState('');
@@ -216,6 +217,12 @@ export function Dashboard({
     : undefined;
 
   useInput((input, key) => {
+    if (artifactView) {
+      if (input === 'q') {
+        exit();
+      }
+      return;
+    }
     if (requestActive) {
       if (key.escape) {
         setRequestActive(false);
@@ -277,6 +284,13 @@ export function Dashboard({
       clearFilters();
       return;
     }
+    if (input === 'v') {
+      if (isNarrow && !detailsView) {
+        setDetailsView(true);
+      }
+      setArtifactView((prev) => !prev);
+      return;
+    }
     if (input === 't') {
       setStepsExpanded((prev) => !prev);
       return;
@@ -297,6 +311,7 @@ export function Dashboard({
     }
     if (input === 'b') {
       setDetailsView(false);
+      setArtifactView(false);
       return;
     }
     if (key.return) {
@@ -484,6 +499,8 @@ export function Dashboard({
                 stateStore={stateStore}
                 nowMs={nowMs}
                 stepsExpanded={stepsExpanded}
+                artifactView={artifactView}
+                onCloseArtifacts={() => setArtifactView(false)}
               />
             ) : (
               <RunList
@@ -516,6 +533,8 @@ export function Dashboard({
                     stateStore={stateStore}
                     nowMs={nowMs}
                     stepsExpanded={stepsExpanded}
+                    artifactView={artifactView}
+                    onCloseArtifacts={() => setArtifactView(false)}
                   />
                 ) : null}
               </Box>

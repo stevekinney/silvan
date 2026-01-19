@@ -14,6 +14,7 @@ export function HelpOverlay(): React.ReactElement {
       <Text color="gray">a: toggle attention mode</Text>
       <Text color="gray">g: toggle repo grouping</Text>
       <Text color="gray">s: cycle sort (updated/started/duration)</Text>
+      <Text color="gray">v: toggle artifacts</Text>
       <Text color="gray">t: toggle step history</Text>
       <Text color="gray">c: clear filters</Text>
       <Text color="gray">n: new task request</Text>
