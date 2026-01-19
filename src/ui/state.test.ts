@@ -54,7 +54,34 @@ describe('dashboard state reducer', () => {
     state = applyDashboardEvent(state, prEvent);
 
     expect(state.runs['run-1']?.pr?.id).toBe('a/b#1');
+    expect(state.runs['run-1']?.pr?.title).toBe('feature/test');
+    expect(state.runs['run-1']?.pr?.headBranch).toBe('feature/test');
+    expect(state.runs['run-1']?.pr?.baseBranch).toBe('main');
+    expect(state.runs['run-1']?.pr?.action).toBe('opened');
     expect(state.runs['run-1']?.step?.stepId).toBe('verify.run');
+  });
+
+  it('stores CI check details from events', () => {
+    let state = createDashboardState();
+    state = applyDashboardEvent(state, baseEvent);
+
+    const ciEvent: Event = {
+      ...baseEvent,
+      type: 'ci.status',
+      payload: {
+        pr: { owner: 'a', repo: 'b', number: 1, url: 'http://pr' },
+        state: 'failing',
+        summary: '2 checks',
+        checks: [
+          { name: 'lint', state: 'completed', conclusion: 'success' },
+          { name: 'test', state: 'completed', conclusion: 'failure' },
+        ],
+      },
+    };
+
+    state = applyDashboardEvent(state, ciEvent);
+    expect(state.runs['run-1']?.ci?.state).toBe('failing');
+    expect(state.runs['run-1']?.ci?.checks?.length).toBe(2);
   });
 
   it('records run completion', () => {

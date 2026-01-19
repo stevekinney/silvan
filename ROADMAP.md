@@ -107,7 +107,7 @@ These issues transform the dashboard from a simple viewer to a full operator con
 
   > Understand why runs are blocked. Diagnostic depth.
 
-- [ ] [#12 - PR/CI/Review deep panel](https://github.com/stevekinney/silvan/issues/12)
+- [x] [#12 - PR/CI/Review deep panel](https://github.com/stevekinney/silvan/issues/12)
 
   > Reduce context-switching to GitHub. See PR status inline.
 
@@ -244,6 +244,6 @@ $ silvan run list
 | Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
 | Discoverability    | #21, #22                   | Complete (2/2)    |
 | Scripting          | #19, #18                   | Complete (2/2)    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (3/6) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (4/6) |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

@@ -79,6 +79,10 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
       const pr = {
         id: `${event.payload.pr.owner}/${event.payload.pr.repo}#${event.payload.pr.number}`,
         ...(event.payload.pr.url ? { url: event.payload.pr.url } : {}),
+        ...(event.payload.title ? { title: event.payload.title } : {}),
+        ...(event.payload.headBranch ? { headBranch: event.payload.headBranch } : {}),
+        ...(event.payload.baseBranch ? { baseBranch: event.payload.baseBranch } : {}),
+        action: event.payload.action,
       };
       return upsertRun(state, {
         ...run,
@@ -94,6 +98,7 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
         ci: {
           state: event.payload.state,
           ...(event.payload.summary ? { summary: event.payload.summary } : {}),
+          ...(event.payload.checks ? { checks: event.payload.checks } : {}),
         },
         updatedAt: event.ts,
       });
@@ -106,6 +111,7 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
         ...run,
         review: {
           unresolvedCount: event.payload.unresolvedCount,
+          totalCount: event.payload.totalCount,
           ...(typeof iteration === 'number' ? { iteration } : {}),
         },
         updatedAt: event.ts,
@@ -318,9 +324,20 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
     typeof (summary as { prUrl?: string }).prUrl === 'string'
       ? (summary as { prUrl?: string }).prUrl
       : undefined;
-  const prInfo = prData as
-    | { url?: string; number?: number; owner?: string; repo?: string }
+  const prResult = prData as
+    | {
+        pr?: { url?: string; number?: number; owner?: string; repo?: string };
+        headBranch?: string;
+        baseBranch?: string;
+        title?: string;
+        action?: 'opened' | 'updated' | 'noop';
+      }
     | undefined;
+  const prInfo =
+    prResult?.pr ??
+    (prData as
+      | { url?: string; number?: number; owner?: string; repo?: string }
+      | undefined);
   const unresolvedValue = (summary as { unresolvedReviewCount?: number })
     .unresolvedReviewCount;
   const unresolved: number = typeof unresolvedValue === 'number' ? unresolvedValue : 0;
@@ -329,6 +346,9 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
       ? (summary as { blockedReason?: string }).blockedReason
       : undefined;
   const promptSummaries = data['promptSummaries'] as Record<string, string> | undefined;
+  const ciFixSummary = data['ciFixSummary'] as
+    | { summary?: string; steps?: number }
+    | undefined;
   const artifactsIndex =
     typeof data['artifactsIndex'] === 'object' && data['artifactsIndex']
       ? (data['artifactsIndex'] as Record<string, Record<string, ArtifactEntry>>)
@@ -350,6 +370,10 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
           pr: {
             id: `${prInfo.owner}/${prInfo.repo}#${prInfo.number}`,
             ...(prInfo.url ? { url: prInfo.url } : {}),
+            ...(prResult?.title ? { title: prResult.title } : {}),
+            ...(prResult?.headBranch ? { headBranch: prResult.headBranch } : {}),
+            ...(prResult?.baseBranch ? { baseBranch: prResult.baseBranch } : {}),
+            ...(prResult?.action ? { action: prResult.action } : {}),
           },
         }
       : prUrl
@@ -393,6 +417,16 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
           reviewFixPlan: {
             actionable: reviewFixPlanSummary.actionable ?? 0,
             ignored: reviewFixPlanSummary.ignored ?? 0,
+          },
+        }
+      : {}),
+    ...(ciFixSummary
+      ? {
+          ciFixSummary: {
+            ...(ciFixSummary.summary ? { summary: ciFixSummary.summary } : {}),
+            ...(typeof ciFixSummary.steps === 'number'
+              ? { steps: ciFixSummary.steps }
+              : {}),
           },
         }
       : {}),

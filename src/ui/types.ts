@@ -36,14 +36,25 @@ export type RunRecord = {
   pr?: {
     id: string;
     url?: string;
+    title?: string;
+    headBranch?: string;
+    baseBranch?: string;
+    action?: 'opened' | 'updated' | 'noop';
   };
   ci?: {
     state: CiState;
     summary?: string;
+    checks?: Array<{
+      name: string;
+      state: 'queued' | 'in_progress' | 'completed';
+      conclusion?: string;
+      url?: string;
+    }>;
   };
   review?: {
     unresolvedCount: number;
     iteration?: number;
+    totalCount?: number;
   };
   reviewClassification?: {
     actionable: number;
@@ -75,6 +86,10 @@ export type RunRecord = {
   aiReview?: {
     shipIt: boolean;
     issues: number;
+  };
+  ciFixSummary?: {
+    summary?: string;
+    steps?: number;
   };
   learning?: {
     summary: string;

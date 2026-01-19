@@ -10,6 +10,7 @@ import type { RunRecord } from '../types';
 import { ActivityFeed } from './activity-feed';
 import { ArtifactPanel } from './artifact-panel';
 import { PhaseTimeline } from './phase-timeline';
+import { PrCiReviewPanel } from './pr-ci-review-panel';
 import { StepTimeline } from './step-timeline';
 
 export function RunDetails({
@@ -82,6 +83,8 @@ export function RunDetails({
       </Box>
 
       {renderGateStatus(run)}
+
+      <PrCiReviewPanel run={run} events={events} nowMs={nowMs} />
 
       <Box flexDirection="column">
         <Text>Phase Timeline</Text>
