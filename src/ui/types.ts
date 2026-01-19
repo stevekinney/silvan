@@ -9,6 +9,7 @@ export type RunStepSummary = {
   status: StepStatus;
   startedAt?: string;
   endedAt?: string;
+  error?: string;
 };
 
 export type RunError = {

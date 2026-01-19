@@ -20,3 +20,11 @@ export function formatRelativeTime(
   const diff = Math.max(0, nowMs - parsed);
   return formatElapsed(diff);
 }
+
+export function formatTimestamp(value: string | undefined): string {
+  if (!value) return 'unknown';
+  const [date, time] = value.split('T');
+  if (!time) return value;
+  const trimmed = time.replace('Z', '').split('.')[0];
+  return `${date} ${trimmed}`;
+}

@@ -4,22 +4,32 @@ import React, { useEffect, useState } from 'react';
 import type { Event } from '../../events/schema';
 import type { StateStore } from '../../state/store';
 import { loadRunEvents } from '../loader';
+import { formatTimestamp } from '../time';
 
 export function ActivityFeed({
   stateStore,
   runId,
   repoId,
   limit = 8,
+  events: providedEvents,
+  loading: providedLoading,
 }: {
   stateStore: StateStore;
   runId: string;
   repoId?: string;
   limit?: number;
+  events?: Event[];
+  loading?: boolean;
 }): React.ReactElement {
-  const [events, setEvents] = useState<Event[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<Event[]>(providedEvents ?? []);
+  const [loading, setLoading] = useState(providedLoading ?? true);
 
   useEffect(() => {
+    if (providedEvents) {
+      setEvents(providedEvents);
+      setLoading(providedLoading ?? false);
+      return;
+    }
     let active = true;
     setLoading(true);
     const request = {
@@ -36,7 +46,7 @@ export function ActivityFeed({
     return () => {
       active = false;
     };
-  }, [stateStore, runId, repoId, limit]);
+  }, [providedEvents, providedLoading, stateStore, runId, repoId, limit]);
 
   if (loading) {
     return <Text color="gray">Loading activity…</Text>;
@@ -50,7 +60,7 @@ export function ActivityFeed({
     <Box flexDirection="column">
       {events.map((event) => (
         <Box key={`${event.id}:${event.ts}`} flexDirection="row" gap={1}>
-          <Text color="gray">{formatEventTimestamp(event.ts)}</Text>
+          <Text color="gray">{formatTimestamp(event.ts)}</Text>
           <Text color={levelColor(event.level)}>{event.type}</Text>
           {event.source ? <Text color="gray">{event.source}</Text> : null}
           {event.message ? <Text color="gray">{event.message}</Text> : null}
@@ -64,12 +74,4 @@ function levelColor(level: Event['level']): 'red' | 'yellow' | 'gray' {
   if (level === 'error') return 'red';
   if (level === 'warn') return 'yellow';
   return 'gray';
-}
-
-function formatEventTimestamp(value: string): string {
-  if (!value) return 'unknown';
-  const [date, time] = value.split('T');
-  if (!time) return value;
-  const trimmed = time.replace('Z', '').split('.')[0];
-  return `${date} ${trimmed}`;
 }

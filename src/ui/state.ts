@@ -499,7 +499,7 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
 }
 
 type StepRecord = {
-  status?: StepStatus;
+  status?: StepStatus | 'done' | 'not_started';
   startedAt?: string;
   endedAt?: string;
   error?: { message?: string };
@@ -521,10 +521,28 @@ function mapRunStatus(value: string | undefined): RunStatus {
 function mapStepSummaries(steps: Record<string, StepRecord>): RunStepSummary[] {
   return Object.entries(steps).map(([stepId, record]) => ({
     stepId,
-    status: record.status ?? 'queued',
+    status: normalizeSnapshotStepStatus(record.status),
     ...(record.startedAt ? { startedAt: record.startedAt } : {}),
     ...(record.endedAt ? { endedAt: record.endedAt } : {}),
+    ...(record.error?.message ? { error: record.error.message } : {}),
   }));
+}
+
+function normalizeSnapshotStepStatus(status: StepRecord['status']): StepStatus {
+  switch (status) {
+    case 'done':
+      return 'succeeded';
+    case 'not_started':
+      return 'queued';
+    case 'queued':
+    case 'running':
+    case 'succeeded':
+    case 'failed':
+    case 'skipped':
+      return status;
+    default:
+      return 'queued';
+  }
 }
 
 function detectStuck(

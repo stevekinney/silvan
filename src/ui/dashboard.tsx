@@ -91,6 +91,7 @@ export function Dashboard({
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [detailsView, setDetailsView] = useState(false);
+  const [stepsExpanded, setStepsExpanded] = useState(false);
   const [requestActive, setRequestActive] = useState(false);
   const [requestStep, setRequestStep] = useState<'title' | 'description'>('title');
   const [requestTitle, setRequestTitle] = useState('');
@@ -274,6 +275,10 @@ export function Dashboard({
     }
     if (input === 'c') {
       clearFilters();
+      return;
+    }
+    if (input === 't') {
+      setStepsExpanded((prev) => !prev);
       return;
     }
     const filterKey = FILTER_KEYS[input];
@@ -474,7 +479,12 @@ export function Dashboard({
             <Text color="gray">No runs match the current filters.</Text>
           ) : isNarrow ? (
             detailsView && selectedRun ? (
-              <RunDetails run={selectedRun} stateStore={stateStore} />
+              <RunDetails
+                run={selectedRun}
+                stateStore={stateStore}
+                nowMs={nowMs}
+                stepsExpanded={stepsExpanded}
+              />
             ) : (
               <RunList
                 runs={orderedRuns}
@@ -501,7 +511,12 @@ export function Dashboard({
               </Box>
               <Box flexGrow={1} flexDirection="column">
                 {selectedRun ? (
-                  <RunDetails run={selectedRun} stateStore={stateStore} />
+                  <RunDetails
+                    run={selectedRun}
+                    stateStore={stateStore}
+                    nowMs={nowMs}
+                    stepsExpanded={stepsExpanded}
+                  />
                 ) : null}
               </Box>
             </Box>
