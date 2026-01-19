@@ -93,6 +93,10 @@ const COMMAND_META: Record<string, HelpMeta> = {
     examples: ['silvan init', 'silvan init --yes'],
     seeAlso: ['silvan doctor', 'silvan config show'],
   },
+  quickstart: {
+    examples: ['silvan quickstart', 'silvan quickstart --yes'],
+    seeAlso: ['silvan init', 'silvan doctor', 'silvan task start "Your task"'],
+  },
   doctor: {
     examples: ['silvan doctor', 'silvan doctor --network'],
     seeAlso: ['silvan config validate', 'silvan config show'],

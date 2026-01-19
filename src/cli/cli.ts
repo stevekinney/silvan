@@ -13,6 +13,7 @@ import {
   renderConversationSummary,
   summarizeConversationSnapshot,
 } from '../ai/conversation';
+import { type EnvLoadSummary, getLoadedEnvSummary } from '../config/env';
 import {
   collectInitContext,
   getInitDefaults,
@@ -61,6 +62,11 @@ import {
 } from '../run/controls';
 import type { ArtifactEntry } from '../state/artifacts';
 import { readArtifact } from '../state/artifacts';
+import {
+  loadOnboardingState,
+  markFirstRunCompleted,
+  markQuickstartCompleted,
+} from '../state/onboarding';
 import { deleteQueueRequest, listQueueRequests } from '../state/queue';
 import { initStateStore } from '../state/store';
 import { promptLocalTaskInput } from '../task/prompt-local-task';
@@ -93,6 +99,17 @@ import {
   renderSectionHeader,
   renderSuccessSummary,
 } from './output';
+import {
+  type QuickstartCheck,
+  type QuickstartRunSummary,
+  renderFirstRunWelcome,
+  renderQuickstartChecks,
+  renderQuickstartHeader,
+  renderQuickstartMissingRequirements,
+  renderQuickstartStep,
+  renderReturningSummary,
+  renderWorkflowOverview,
+} from './quickstart-output';
 import {
   renderRunListMinimal,
   renderRunListTable,
@@ -309,6 +326,252 @@ cli
     }
   });
 
+cli
+  .command('quickstart', 'Guided setup and sample task')
+  .option('--yes', 'Skip prompts and use defaults')
+  .action(async (options: CliOptions) => {
+    const jsonMode = Boolean(options.json);
+    const showOutput = !options.quiet && !jsonMode;
+    const useDefaults = options.yes ?? jsonMode;
+    const promptAllowed =
+      process.stdin.isTTY && !options.quiet && !jsonMode && !useDefaults;
+
+    if (!promptAllowed && !useDefaults) {
+      throw new SilvanError({
+        code: 'quickstart.non_interactive',
+        message: 'Quickstart requires a TTY or --yes.',
+        userMessage: 'Quickstart requires a TTY or --yes.',
+        kind: 'validation',
+        nextSteps: ['Re-run with --yes to accept defaults.'],
+      });
+    }
+
+    let repo;
+    try {
+      repo = await detectRepoContext({ cwd: process.cwd() });
+    } catch {
+      throw new SilvanError({
+        code: 'quickstart.no_repo',
+        message: 'Quickstart must be run inside a git repository.',
+        userMessage: 'Quickstart must be run inside a git repository.',
+        kind: 'validation',
+        nextSteps: ['Run `git init` or change to a git repository first.'],
+      });
+    }
+
+    const context = await collectInitContext(repo.repoRoot);
+    const configResult = await loadConfig(buildConfigOverrides(options));
+    const envSummary = getLoadedEnvSummary();
+    const checkSummary = buildQuickstartChecks({
+      repoRoot: repo.repoRoot,
+      config: configResult.config,
+      envSummary,
+      ...(context.existingConfigPath ? { configPath: context.existingConfigPath } : {}),
+    });
+
+    const jsonSummary: {
+      ok: boolean;
+      checks: QuickstartCheck[];
+      config?: {
+        action: string;
+        path?: string;
+        backupPath?: string;
+        changes?: string[];
+      };
+      sample?: {
+        skipped?: boolean;
+        reason?: string;
+        runId?: string;
+        worktreePath?: string;
+        worktreeName?: string;
+      };
+      nextSteps?: string[];
+    } = {
+      ok: checkSummary.blockers.length === 0,
+      checks: checkSummary.checks,
+    };
+
+    if (showOutput) {
+      console.log(renderQuickstartHeader());
+      console.log(
+        renderQuickstartChecks(checkSummary.checks, {
+          title: 'Step 1: Environment check',
+        }),
+      );
+    }
+
+    if (checkSummary.blockers.length > 0) {
+      if (showOutput) {
+        console.log('');
+        if (checkSummary.requiredKey) {
+          console.log(
+            renderQuickstartMissingRequirements({
+              providerLabel: checkSummary.requiredKey.providerLabel,
+              envVar: checkSummary.requiredKey.envVar,
+              url: checkSummary.requiredKey.url,
+            }),
+          );
+        } else {
+          console.log(
+            renderSectionHeader('Missing required setup', { width: 60, kind: 'minor' }),
+          );
+          for (const blocker of checkSummary.blockers) {
+            console.log(`- ${blocker.label}: ${blocker.detail}`);
+          }
+        }
+        console.log(renderNextSteps(['silvan quickstart']));
+      }
+      if (jsonMode) {
+        console.log(JSON.stringify(jsonSummary, null, 2));
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    if (showOutput && checkSummary.warnings.length > 0) {
+      const notes = buildQuickstartNotes(checkSummary.checks);
+      if (notes.length > 0) {
+        console.log('');
+        for (const note of notes) {
+          console.log(note);
+        }
+      }
+    }
+
+    if (promptAllowed) {
+      const proceed = await confirmAction('Continue?', { defaultValue: true });
+      if (!proceed) {
+        if (jsonMode) {
+          jsonSummary.sample = { skipped: true, reason: 'user_canceled' };
+          console.log(JSON.stringify(jsonSummary, null, 2));
+        }
+        return;
+      }
+    }
+
+    if (showOutput) {
+      console.log('');
+      console.log(renderQuickstartStep('Step 2: Configuration'));
+      console.log(renderInitDetection(context));
+    }
+
+    const answers = useDefaults
+      ? getInitDefaults(context)
+      : await promptInitAnswers(context);
+    let configResultSummary;
+    if (context.existingConfigPath && context.existingConfig) {
+      const preview = await writeInitConfig(context, answers, {
+        updateExisting: false,
+      });
+      if (showOutput) {
+        console.log(renderInitExistingConfig(context, preview.changes));
+      }
+
+      if (preview.changes && preview.changes.length > 0) {
+        const shouldUpdate = useDefaults
+          ? true
+          : await confirmAction('Add missing settings to config?', {
+              defaultValue: true,
+            });
+        configResultSummary = shouldUpdate
+          ? await writeInitConfig(context, answers, { updateExisting: true })
+          : preview;
+      } else {
+        configResultSummary = preview;
+      }
+    } else {
+      configResultSummary = await writeInitConfig(context, answers);
+    }
+
+    jsonSummary.config = {
+      action: configResultSummary.action,
+      ...(configResultSummary.path ? { path: configResultSummary.path } : {}),
+      ...(configResultSummary.backupPath
+        ? { backupPath: configResultSummary.backupPath }
+        : {}),
+      ...(configResultSummary.changes ? { changes: configResultSummary.changes } : {}),
+    };
+
+    if (showOutput) {
+      console.log(renderInitResult(configResultSummary));
+      console.log('');
+      console.log(renderWorkflowOverview());
+    }
+
+    const shouldRunSample =
+      !jsonMode &&
+      (useDefaults
+        ? true
+        : await confirmAction('Run sample task?', { defaultValue: true }));
+
+    if (!shouldRunSample) {
+      jsonSummary.sample = {
+        skipped: true,
+        reason: jsonMode ? 'json_mode' : 'user_skipped',
+      };
+      if (showOutput) {
+        console.log('');
+        console.log(renderQuickstartStep('Step 4: Sample task'));
+        console.log('Skipping sample task.');
+      }
+    } else {
+      if (showOutput) {
+        console.log('');
+        console.log(renderQuickstartStep('Step 4: Sample task'));
+        console.log('Creating a sample task to demonstrate the workflow...');
+      }
+      await withCliContext(options, 'headless', async (ctx) =>
+        withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
+          const sampleResult = await runQuickstartSample({
+            ctx,
+            sessions,
+            input: buildSampleTaskInput(),
+          });
+          jsonSummary.sample = {
+            runId: sampleResult.runId,
+            ...(sampleResult.worktreePath
+              ? { worktreePath: sampleResult.worktreePath }
+              : {}),
+            ...(sampleResult.worktreeName
+              ? { worktreeName: sampleResult.worktreeName }
+              : {}),
+          };
+          if (showOutput) {
+            console.log(
+              renderReadySection({
+                title: 'Sample task created',
+                runId: sampleResult.runId,
+                ...(sampleResult.worktreePath
+                  ? { worktreePath: sampleResult.worktreePath }
+                  : {}),
+              }),
+            );
+          }
+        }),
+      );
+    }
+
+    jsonSummary.nextSteps = buildQuickstartNextSteps({
+      ...(jsonSummary.sample ? { sample: jsonSummary.sample } : {}),
+    });
+
+    if (showOutput) {
+      console.log('');
+      console.log(renderQuickstartStep("Step 5: What's next"));
+      console.log(
+        buildQuickstartNextStepsText({
+          ...(jsonSummary.sample ? { sample: jsonSummary.sample } : {}),
+        }),
+      );
+    }
+
+    await markQuickstartCompleted(pkg.version);
+
+    if (jsonMode) {
+      console.log(JSON.stringify(jsonSummary, null, 2));
+    }
+  });
+
 function parseNumberFlag(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
@@ -337,6 +600,136 @@ function deriveRunListStatus(
   if (convergenceStatus === 'failed') return 'failed';
   if (convergenceStatus === 'aborted') return 'canceled';
   return runStatus ?? 'running';
+}
+
+type CognitionKey = {
+  providerLabel: string;
+  envVar: string;
+  url: string;
+};
+
+function resolveCognitionKey(config: Config): CognitionKey {
+  switch (config.ai.cognition.provider) {
+    case 'openai':
+      return {
+        providerLabel: 'OpenAI',
+        envVar: 'OPENAI_API_KEY',
+        url: 'https://platform.openai.com/account/api-keys',
+      };
+    case 'gemini':
+      return {
+        providerLabel: 'Gemini',
+        envVar: 'GEMINI_API_KEY',
+        url: 'https://aistudio.google.com/app/apikey',
+      };
+    case 'anthropic':
+    default:
+      return {
+        providerLabel: 'Anthropic',
+        envVar: 'ANTHROPIC_API_KEY',
+        url: 'https://console.anthropic.com/',
+      };
+  }
+}
+
+function formatEnvDetail(keys: string[], envSummary: EnvLoadSummary | null): string {
+  const fromEnv = envSummary?.keys.some((key) => keys.includes(key));
+  return fromEnv ? 'Set (from .env)' : 'Set';
+}
+
+function buildQuickstartChecks(options: {
+  repoRoot: string;
+  config: Config;
+  configPath?: string;
+  envSummary: EnvLoadSummary | null;
+}): {
+  checks: QuickstartCheck[];
+  blockers: QuickstartCheck[];
+  warnings: QuickstartCheck[];
+  requiredKey?: CognitionKey;
+} {
+  const checks: QuickstartCheck[] = [];
+  checks.push({
+    label: 'Git repository',
+    status: 'ok',
+    detail: `Detected at ${options.repoRoot}`,
+  });
+
+  const bunPath = Bun.which('bun');
+  const bunVersion = typeof Bun.version === 'string' ? Bun.version : 'unknown';
+  checks.push({
+    label: 'Bun',
+    status: bunPath ? 'ok' : 'fail',
+    detail: bunPath ? `v${bunVersion}` : 'Not found',
+  });
+
+  const cognitionKey = resolveCognitionKey(options.config);
+  const hasCognitionKey = Boolean(Bun.env[cognitionKey.envVar]);
+  checks.push({
+    label: `${cognitionKey.providerLabel} API key`,
+    status: hasCognitionKey ? 'ok' : 'fail',
+    detail: hasCognitionKey
+      ? formatEnvDetail([cognitionKey.envVar], options.envSummary)
+      : `Missing ${cognitionKey.envVar}`,
+  });
+
+  const githubToken = options.config.github.token;
+  checks.push({
+    label: 'GITHUB_TOKEN',
+    status: githubToken ? 'ok' : 'warn',
+    detail: githubToken
+      ? formatEnvDetail(['GITHUB_TOKEN', 'GH_TOKEN'], options.envSummary)
+      : 'Not set (optional for PR automation)',
+  });
+
+  const linearToken = options.config.linear.token;
+  checks.push({
+    label: 'LINEAR_API_KEY',
+    status: linearToken ? 'ok' : 'warn',
+    detail: linearToken
+      ? formatEnvDetail(['LINEAR_API_KEY'], options.envSummary)
+      : 'Not set (optional for Linear integration)',
+  });
+
+  checks.push({
+    label: 'silvan.config',
+    status: options.configPath ? 'ok' : 'warn',
+    detail: options.configPath
+      ? `Found at ${options.configPath}`
+      : 'Not found (will create)',
+  });
+
+  const blockers = checks.filter((check) => check.status === 'fail');
+  const warnings = checks.filter((check) => check.status === 'warn');
+
+  return {
+    checks,
+    blockers,
+    warnings,
+    ...(hasCognitionKey ? {} : { requiredKey: cognitionKey }),
+  };
+}
+
+function buildQuickstartNotes(checks: QuickstartCheck[]): string[] {
+  const notes: string[] = [];
+  const githubMissing = checks.some(
+    (check) => check.label === 'GITHUB_TOKEN' && check.status === 'warn',
+  );
+  const linearMissing = checks.some(
+    (check) => check.label === 'LINEAR_API_KEY' && check.status === 'warn',
+  );
+
+  if (githubMissing) {
+    notes.push('Note: Set GITHUB_TOKEN to enable automatic PR creation.');
+    notes.push('Get one at: https://github.com/settings/tokens');
+  }
+
+  if (linearMissing) {
+    notes.push('Note: Set LINEAR_API_KEY to enable Linear task sync.');
+    notes.push('Get one at: https://linear.app/settings/api');
+  }
+
+  return notes;
 }
 
 function buildConfigOverrides(options: CliOptions): ConfigInput {
@@ -2265,6 +2658,266 @@ function openShellInWorktree(worktreePath: string): void {
   }
 }
 
+type QuickstartSampleInfo = {
+  worktreePath?: string;
+  worktreeName?: string;
+  skipped?: boolean;
+  reason?: string;
+};
+
+type QuickstartSampleResult = {
+  runId: string;
+  worktreePath?: string;
+  worktreeName?: string;
+};
+
+function buildSampleTaskInput(): LocalTaskInput {
+  return {
+    title: 'Add a hello world function',
+    description: 'Add a small hello world helper and a basic test.',
+    acceptanceCriteria: [
+      'Introduce a hello world function in the codebase.',
+      'Add a unit test that verifies the output.',
+    ],
+  };
+}
+
+async function runQuickstartSample(options: {
+  ctx: RunContext;
+  sessions?: ReturnType<typeof createSessionPool>;
+  input: LocalTaskInput;
+}): Promise<QuickstartSampleResult> {
+  const ctx = options.ctx;
+  const mode = ctx.events.mode;
+  let logger = createCliLogger(ctx);
+
+  const resolved = await runStep(ctx, 'task.resolve', 'Resolving task', () =>
+    resolveTask(options.input.title, {
+      config: ctx.config,
+      repoRoot: ctx.repo.repoRoot,
+      state: ctx.state,
+      runId: ctx.runId,
+      localInput: options.input,
+      bus: ctx.events.bus,
+      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+    }),
+  );
+
+  await logger.info(renderTaskHeader(resolved.task));
+
+  const worktreeName = buildWorktreeName(resolved.task);
+  const worktree = await runStep(
+    ctx,
+    'git.worktree.create',
+    'Creating worktree',
+    async () =>
+      createWorktree({
+        repoRoot: ctx.repo.repoRoot,
+        name: worktreeName,
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+      }),
+  );
+
+  const worktreePath = worktree.path;
+  ctx.repo.worktreePath = worktreePath;
+  if (worktree.branch) {
+    ctx.repo.branch = worktree.branch;
+  }
+  ctx.repo.isWorktree = true;
+  logger = createCliLogger(ctx);
+
+  await normalizeClaudeSettings({ worktreePath });
+
+  const installResult = await runStep(
+    ctx,
+    'deps.install',
+    'Installing dependencies',
+    () => installDependencies({ worktreePath }),
+  );
+  if (!installResult.ok) {
+    await logger.warn(`Warning: bun install failed in ${worktreePath}`, {
+      stderr: installResult.stderr,
+      stdout: installResult.stdout,
+    });
+  }
+
+  const plan = await runPlanner(ctx, {
+    taskRef: resolved.ref.raw,
+    task: resolved.task,
+    worktreeName,
+    allowMissingClarifications: true,
+    ...(options.sessions ? { sessions: options.sessions } : {}),
+  });
+
+  const planSummary = summarizePlan(plan);
+  await logger.info(renderPlanSummary(planSummary));
+
+  return {
+    runId: ctx.runId,
+    worktreePath,
+    worktreeName,
+  };
+}
+
+function buildQuickstartNextSteps(options: { sample?: QuickstartSampleInfo }): string[] {
+  const steps: string[] = [];
+  if (options.sample?.worktreePath) {
+    steps.push(`cd ${options.sample.worktreePath}`);
+    steps.push('silvan agent run --apply');
+  }
+  if (options.sample?.worktreeName) {
+    steps.push(`silvan tree remove ${options.sample.worktreeName}`);
+  }
+  steps.push('silvan task start "Your actual task description"');
+  steps.push('silvan run list');
+  steps.push('silvan help');
+  return steps;
+}
+
+function buildQuickstartNextStepsText(options: {
+  sample?: QuickstartSampleInfo;
+}): string {
+  const lines: string[] = [];
+
+  if (options.sample?.worktreePath) {
+    lines.push('Execute the plan:');
+    lines.push(`  cd ${options.sample.worktreePath}`);
+    lines.push('  silvan agent run --apply');
+    lines.push('');
+  }
+
+  if (options.sample?.worktreeName) {
+    lines.push('Clean up the sample:');
+    lines.push(`  silvan tree remove ${options.sample.worktreeName}`);
+    lines.push('');
+  }
+
+  lines.push('Start a real task:');
+  lines.push('  silvan task start "Your actual task description"');
+  lines.push('  silvan task start gh-42');
+  lines.push('  silvan task start ENG-99');
+  lines.push('');
+  lines.push('Learn more:');
+  lines.push('  silvan help worktrees');
+  lines.push('  silvan help task-refs');
+  lines.push('  silvan --help');
+
+  return lines.join('\n');
+}
+
+async function collectActiveRuns(
+  state: Awaited<ReturnType<typeof initStateStore>>,
+): Promise<QuickstartRunSummary[]> {
+  const runEntries = await readdir(state.runsDir);
+  const files = runEntries.filter((entry) => entry.endsWith('.json'));
+  const runs: Array<QuickstartRunSummary & { updatedAt?: string }> = [];
+
+  for (const file of files) {
+    const runId = file.replace(/\.json$/, '');
+    const snapshot = await state.readRunState(runId);
+    if (!snapshot) continue;
+    const data = snapshot.data as Record<string, unknown>;
+    const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
+      status?: string;
+      updatedAt?: string;
+    };
+    const task = (
+      typeof data['task'] === 'object' && data['task'] ? data['task'] : {}
+    ) as {
+      title?: string;
+    };
+    const taskRef = (
+      typeof data['taskRef'] === 'object' && data['taskRef'] ? data['taskRef'] : {}
+    ) as { raw?: string };
+    const convergence = deriveConvergenceFromSnapshot(snapshot);
+    const status = deriveRunListStatus(run.status, convergence.status);
+    if (['success', 'failed', 'canceled'].includes(status)) continue;
+    const title = task.title ?? taskRef.raw ?? 'Untitled';
+    const runEntry: QuickstartRunSummary & { updatedAt?: string } = {
+      runId,
+      status,
+      title,
+      ...(run.updatedAt ? { updatedAt: run.updatedAt } : {}),
+    };
+    runs.push(runEntry);
+  }
+
+  runs.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+  return runs.slice(0, 5).map(({ runId, status, title }) => ({
+    runId,
+    status,
+    title,
+  }));
+}
+
+function formatRepoLabel(config: Config, repoRoot: string): string {
+  if (config.github.owner && config.github.repo) {
+    return `github.com/${config.github.owner}/${config.github.repo}`;
+  }
+  return repoRoot;
+}
+
+async function buildReturningSummaryData(): Promise<{
+  repo?: string;
+  runs?: QuickstartRunSummary[];
+}> {
+  try {
+    const repo = await detectRepoContext({ cwd: process.cwd() });
+    const configResult = await loadConfig();
+    const state = await initStateStore(repo.repoRoot, {
+      lock: false,
+      mode: configResult.config.state.mode,
+      ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+    });
+    const runs = await collectActiveRuns(state);
+    await state.lockRelease();
+    return {
+      repo: formatRepoLabel(configResult.config, repo.repoRoot),
+      runs,
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function handleRootCommand(options: CliOptions): Promise<void> {
+  const onboarding = await loadOnboardingState();
+  const firstRun = !onboarding.firstRunCompleted && !onboarding.quickstartCompleted;
+
+  if (options.json) {
+    const summary = firstRun ? {} : await buildReturningSummaryData();
+    const payload = {
+      firstRun,
+      quickstartCompleted: Boolean(onboarding.quickstartCompleted),
+      ...(summary.repo ? { repo: summary.repo } : {}),
+      ...(summary.runs ? { activeRuns: summary.runs } : {}),
+    };
+    console.log(JSON.stringify(payload, null, 2));
+    if (firstRun) {
+      await markFirstRunCompleted(pkg.version);
+    }
+    return;
+  }
+
+  if (options.quiet) {
+    if (firstRun) {
+      await markFirstRunCompleted(pkg.version);
+    }
+    return;
+  }
+
+  if (firstRun) {
+    console.log(renderFirstRunWelcome());
+    await markFirstRunCompleted(pkg.version);
+    return;
+  }
+
+  const summary = await buildReturningSummaryData();
+  console.log(renderReturningSummary(summary));
+}
+
 async function loadRunSnapshotForCli(
   runId: string,
   options: CliOptions,
@@ -2836,6 +3489,15 @@ export async function run(argv: string[]): Promise<void> {
   cli.parse(processedArgv, { run: false });
 
   try {
+    const wantsHelp = argv.includes('--help') || argv.includes('-h');
+    const isRootCommand =
+      cli.args.length === 0 &&
+      (!cli.matchedCommand || cli.matchedCommand.isGlobalCommand);
+    if (isRootCommand && !wantsHelp) {
+      await handleRootCommand(cli.options as CliOptions);
+      return;
+    }
+
     if (!cli.matchedCommand && cli.args.length > 0) {
       const unknownCommand = cli.args.join(' ');
       throw new SilvanError({

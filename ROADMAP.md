@@ -77,7 +77,7 @@ These issues make Silvan learnable. Users can explore concepts and get help with
 
   > Explains concepts like "worktrees" and "convergence" inline.
 
-- [ ] [#22 - First-Run Experience and Quickstart Command](https://github.com/stevekinney/silvan/issues/22)
+- [x] [#22 - First-Run Experience and Quickstart Command](https://github.com/stevekinney/silvan/issues/22)
   > Guided introduction for new users. Try before you understand.
 
 ### Phase 4: Scripting (Enable Automation)
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status         |
-| ------------------ | -------------------------- | -------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
-| Discoverability    | #21, #22                   | Not started    |
-| Scripting          | #19, #18                   | Not started    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |
+| Phase              | Issues                     | Status            |
+| ------------------ | -------------------------- | ----------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4)    |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
+| Discoverability    | #21, #22                   | In progress (1/2) |
+| Scripting          | #19, #18                   | Not started       |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started       |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

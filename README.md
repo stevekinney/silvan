@@ -305,6 +305,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 ### Agent workflows
 
 - `task start [task]` — create worktree + generate plan (`--answer`, `--plan-only`)
+- `quickstart` — guided setup + sample task
 - `init` — scaffold a baseline `silvan.config.ts`
 - `agent plan` — generate a structured plan
 - `agent clarify` — answer required questions and re‑plan
