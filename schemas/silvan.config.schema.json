@@ -306,6 +306,34 @@
       "required": ["mode"],
       "additionalProperties": false
     },
+    "ui": {
+      "default": {
+        "worktrees": {
+          "staleAfterDays": 7
+        }
+      },
+      "type": "object",
+      "properties": {
+        "worktrees": {
+          "default": {
+            "staleAfterDays": 7
+          },
+          "type": "object",
+          "properties": {
+            "staleAfterDays": {
+              "default": 7,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["staleAfterDays"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["worktrees"],
+      "additionalProperties": false
+    },
     "ai": {
       "default": {
         "models": {},
@@ -991,6 +1019,7 @@
     "naming",
     "features",
     "state",
+    "ui",
     "ai",
     "review",
     "learning"

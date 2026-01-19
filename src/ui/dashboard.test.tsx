@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { render } from 'ink-testing-library';
 
+import { configSchema } from '../config/schema';
 import { EventBus } from '../events/bus';
 import { initStateStore } from '../state/store';
 import { Dashboard } from './dashboard';
@@ -22,8 +23,11 @@ describe('Dashboard', () => {
   test('renders empty state when no runs exist', async () => {
     await withTempRepo(async (repoRoot) => {
       const state = await initStateStore(repoRoot, { lock: false, mode: 'repo' });
+      const config = configSchema.parse({});
       const bus = new EventBus();
-      const { lastFrame, unmount } = render(<Dashboard bus={bus} stateStore={state} />);
+      const { lastFrame, unmount } = render(
+        <Dashboard bus={bus} stateStore={state} config={config} />,
+      );
       await new Promise((resolve) => setTimeout(resolve, 20));
       const frame = lastFrame() ?? '';
       expect(frame).toContain('No runs yet');
@@ -34,12 +38,15 @@ describe('Dashboard', () => {
   test('renders runs loaded from disk', async () => {
     await withTempRepo(async (repoRoot) => {
       const state = await initStateStore(repoRoot, { lock: false, mode: 'repo' });
+      const config = configSchema.parse({});
       await state.writeRunState('run-1', {
         run: { status: 'running', phase: 'verify', updatedAt: new Date().toISOString() },
         summary: { ci: 'passing', unresolvedReviewCount: 2 },
       });
       const bus = new EventBus();
-      const { lastFrame, unmount } = render(<Dashboard bus={bus} stateStore={state} />);
+      const { lastFrame, unmount } = render(
+        <Dashboard bus={bus} stateStore={state} config={config} />,
+      );
       await new Promise((resolve) => setTimeout(resolve, 20));
       const frame = lastFrame() ?? '';
       expect(frame).toContain('run-1'.slice(0, 8));

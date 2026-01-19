@@ -130,6 +130,11 @@ export function reduceDashboard(state: DashboardState, event: AllEvents): Dashbo
           id: worktree.id,
           path: worktree.path,
           ...(worktree.branch ? { branch: worktree.branch } : {}),
+          ...(worktree.headSha ? { headSha: worktree.headSha } : {}),
+          ...(worktree.isBare !== undefined ? { isBare: worktree.isBare } : {}),
+          ...(worktree.isLocked !== undefined ? { isLocked: worktree.isLocked } : {}),
+          ...(worktree.isDirty !== undefined ? { isDirty: worktree.isDirty } : {}),
+          ...(event.repoId ? { repoId: event.repoId } : {}),
         })),
       };
     }
@@ -240,6 +245,8 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const data = snapshot.data;
   const eventSummary = snapshot.eventSummary;
   const runMeta = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
+  const worktreeData =
+    typeof data['worktree'] === 'object' && data['worktree'] ? data['worktree'] : null;
   const stepsRecord: Record<string, StepRecord> =
     typeof data['steps'] === 'object' && data['steps']
       ? (data['steps'] as Record<string, StepRecord>)
@@ -260,6 +267,15 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
   const phase = (runMeta as { phase?: Phase }).phase ?? 'idle';
   const status = mapRunStatus((runMeta as { status?: string }).status);
   const stepId = (runMeta as { step?: string }).step;
+  const worktree =
+    worktreeData && typeof (worktreeData as { path?: string }).path === 'string'
+      ? {
+          path: (worktreeData as { path: string }).path,
+          ...(typeof (worktreeData as { branch?: string }).branch === 'string'
+            ? { branch: (worktreeData as { branch?: string }).branch }
+            : {}),
+        }
+      : undefined;
 
   const stepSummaries = mapStepSummaries(stepsRecord);
   const currentStep = stepId
@@ -361,6 +377,7 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
     runId: snapshot.runId,
     ...(snapshot.repoId ? { repoId: snapshot.repoId } : {}),
     ...(snapshot.repoLabel ? { repoLabel: snapshot.repoLabel } : {}),
+    ...(worktree ? { worktree } : {}),
     status,
     phase,
     ...(currentStep ? { step: currentStep } : {}),

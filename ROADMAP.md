@@ -115,7 +115,7 @@ These issues transform the dashboard from a simple viewer to a full operator con
 
   > Deep inspection for debugging. View plans and reports without leaving UI.
 
-- [ ] [#13 - Queue and Worktree monitor](https://github.com/stevekinney/silvan/issues/13)
+- [x] [#13 - Queue and Worktree monitor](https://github.com/stevekinney/silvan/issues/13)
   > Multi-repo workspace management. See pending tasks and worktree health.
 
 _Note: [#7 - UI Mission Control milestone](https://github.com/stevekinney/silvan/issues/7) is the tracking epic for Phase 5._
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status            |
-| ------------------ | -------------------------- | ----------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4)    |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
-| Discoverability    | #21, #22                   | Complete (2/2)    |
-| Scripting          | #19, #18                   | Complete (2/2)    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (5/6) |
+| Phase              | Issues                     | Status         |
+| ------------------ | -------------------------- | -------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
+| Discoverability    | #21, #22                   | Complete (2/2) |
+| Scripting          | #19, #18                   | Complete (2/2) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Complete (6/6) |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

@@ -28,6 +28,10 @@ export type RunRecord = {
   runId: string;
   repoId?: string;
   repoLabel?: string;
+  worktree?: {
+    path: string;
+    branch?: string;
+  };
   status: RunStatus;
   phase: Phase;
   step?: RunStepSummary;
@@ -128,6 +132,29 @@ export type RunRecord = {
   finishedAt?: string;
 };
 
+export type QueueRecord = {
+  id: string;
+  title: string;
+  description?: string;
+  createdAt: string;
+  repoId?: string;
+  repoLabel?: string;
+};
+
+export type WorktreeRecord = {
+  id: string;
+  path: string;
+  relativePath?: string;
+  branch?: string;
+  headSha?: string;
+  isBare?: boolean;
+  isLocked?: boolean;
+  isDirty?: boolean;
+  repoId?: string;
+  repoLabel?: string;
+  lastActivityAt?: string;
+};
+
 export type DashboardState = {
   runs: Record<string, RunRecord>;
   runIndex: string[];
@@ -143,12 +170,8 @@ export type DashboardState = {
     pr: string[];
   };
   helpVisible: boolean;
-  worktrees: Array<{
-    id: string;
-    path: string;
-    branch?: string;
-    pr?: { id: string; ci: CiState; unresolvedReviewCount: number };
-  }>;
+  queueRequests: QueueRecord[];
+  worktrees: WorktreeRecord[];
   openPrs: Array<{
     id: string;
     title: string;
@@ -177,6 +200,7 @@ export function initialDashboardState(): DashboardState {
       pr: [],
     },
     helpVisible: false,
+    queueRequests: [],
     worktrees: [],
     openPrs: [],
   };

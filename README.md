@@ -275,6 +275,11 @@ export default defineConfig({
   state: {
     mode: 'global',
   },
+  ui: {
+    worktrees: {
+      staleAfterDays: 7,
+    },
+  },
 });
 ```
 

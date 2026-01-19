@@ -105,6 +105,15 @@ export const configSchema = z.object({
       root: z.string().optional(),
     })
     .default({ mode: 'global' }),
+  ui: z
+    .object({
+      worktrees: z
+        .object({
+          staleAfterDays: z.number().int().positive().default(7),
+        })
+        .default({ staleAfterDays: 7 }),
+    })
+    .default({ worktrees: { staleAfterDays: 7 } }),
   ai: z
     .object({
       models: z

@@ -12,7 +12,8 @@ export function HelpOverlay(): React.ReactElement {
       <Text color="gray">1-5: open filters (status/phase/convergence/provider/repo)</Text>
       <Text color="gray">6-7: open filters (task/pr)</Text>
       <Text color="gray">a: toggle attention mode</Text>
-      <Text color="gray">g: toggle repo grouping</Text>
+      <Text color="gray">g: toggle scope (current/all)</Text>
+      <Text color="gray">p: toggle repo grouping</Text>
       <Text color="gray">s: cycle sort (updated/started/duration)</Text>
       <Text color="gray">v: toggle artifacts</Text>
       <Text color="gray">t: toggle step history</Text>

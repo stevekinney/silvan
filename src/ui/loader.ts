@@ -1,10 +1,12 @@
-import { readdir, stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { readdir, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 import type { Event } from '../events/schema';
+import { listWorktrees } from '../git/worktree';
+import { listQueueRequestsInDir } from '../state/queue';
 import type { RunStateEnvelope, StateStore } from '../state/store';
 import { readStateMetadata } from '../state/store';
-import type { RunEventSummary } from './types';
+import type { QueueRecord, RunEventSummary, WorktreeRecord } from './types';
 
 export type RunSnapshot = {
   runId: string;
@@ -27,6 +29,8 @@ export type RunSnapshotPage = {
   nextCursor?: RunSnapshotCursor;
 };
 
+export type DashboardScope = 'all' | 'current';
+
 export type RunSnapshotCache = {
   snapshots: Map<string, CachedSnapshot>;
   auditSummaries: Map<string, CachedAuditSummary>;
@@ -48,6 +52,16 @@ type CachedRunFiles = {
   key: string;
   rootsKey: string;
   files: RunFileEntry[];
+};
+
+type RepoRoot = {
+  repoId?: string;
+  repoLabel?: string;
+  stateRoot: string;
+  runsDir: string;
+  auditDir: string;
+  queueDir: string;
+  repoRoot?: string;
 };
 
 type RunRoot = {
@@ -83,11 +97,12 @@ export async function loadRunSnapshots(
     cursor?: RunSnapshotCursor;
     cache?: RunSnapshotCache;
     includeAudit?: boolean;
+    scope?: DashboardScope;
   },
 ): Promise<RunSnapshotPage> {
   const limit = options?.limit ?? DEFAULT_RUN_LIMIT;
   const offset = options?.cursor?.offset ?? 0;
-  const roots = await resolveRunRoots(state, options?.cache);
+  const roots = await resolveRunRoots(state, options?.cache, options?.scope);
   const rootsKey = roots
     .map((root) => root.runsDir)
     .sort()
@@ -157,6 +172,94 @@ export async function loadRunEvents(options: {
   });
 }
 
+export async function loadQueueRequests(
+  state: StateStore,
+  options?: { cache?: RunSnapshotCache; scope?: DashboardScope },
+): Promise<QueueRecord[]> {
+  const roots = await resolveRepoRoots(state, {
+    ...(options?.cache ? { cache: options.cache } : {}),
+    ...(options?.scope ? { scope: options.scope } : {}),
+  });
+  const requests: QueueRecord[] = [];
+  for (const root of roots) {
+    const entries = await listQueueRequestsInDir(root.queueDir);
+    for (const request of entries) {
+      requests.push({
+        id: request.id,
+        title: request.title,
+        ...(request.description ? { description: request.description } : {}),
+        createdAt: request.createdAt,
+        ...(root.repoId ? { repoId: root.repoId } : {}),
+        ...(root.repoLabel ? { repoLabel: root.repoLabel } : {}),
+      });
+    }
+  }
+  return requests.sort((a, b) => {
+    const repoA = a.repoLabel ?? a.repoId ?? '';
+    const repoB = b.repoLabel ?? b.repoId ?? '';
+    if (repoA !== repoB) return repoA.localeCompare(repoB);
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+}
+
+export async function loadWorktrees(
+  state: StateStore,
+  options?: { cache?: RunSnapshotCache; scope?: DashboardScope; includeStatus?: boolean },
+): Promise<WorktreeRecord[]> {
+  const roots = await resolveRepoRoots(state, {
+    ...(options?.cache ? { cache: options.cache } : {}),
+    ...(options?.scope ? { scope: options.scope } : {}),
+  });
+  const worktrees: WorktreeRecord[] = [];
+  for (const root of roots) {
+    if (!root.repoRoot) continue;
+    try {
+      await stat(join(root.repoRoot, '.git'));
+    } catch {
+      continue;
+    }
+    const repoRootResolved = await realpath(root.repoRoot).catch(() => root.repoRoot);
+    let entries = [];
+    try {
+      entries = await listWorktrees({
+        repoRoot: root.repoRoot,
+        includeStatus: options?.includeStatus ?? true,
+        context: { runId: 'ui', repoRoot: root.repoRoot },
+      });
+    } catch {
+      continue;
+    }
+
+    for (const worktree of entries) {
+      const worktreeResolved = await realpath(worktree.path).catch(() => worktree.path);
+      if (repoRootResolved && worktreeResolved === repoRootResolved) continue;
+      const lastActivityAt = await readWorktreeActivityAt(worktree.path);
+      const candidatePath = repoRootResolved
+        ? relative(repoRootResolved, worktreeResolved)
+        : undefined;
+      const relativePath =
+        candidatePath && !candidatePath.startsWith('..') && !isAbsolute(candidatePath)
+          ? candidatePath
+          : undefined;
+      worktrees.push({
+        id: worktree.id,
+        path: worktree.path,
+        ...(relativePath ? { relativePath } : {}),
+        ...(worktree.branch ? { branch: worktree.branch } : {}),
+        ...(worktree.headSha ? { headSha: worktree.headSha } : {}),
+        ...(worktree.isBare !== undefined ? { isBare: worktree.isBare } : {}),
+        ...(worktree.isLocked !== undefined ? { isLocked: worktree.isLocked } : {}),
+        ...(worktree.isDirty !== undefined ? { isDirty: worktree.isDirty } : {}),
+        ...(root.repoId ? { repoId: root.repoId } : {}),
+        ...(root.repoLabel ? { repoLabel: root.repoLabel } : {}),
+        ...(lastActivityAt ? { lastActivityAt } : {}),
+      });
+    }
+  }
+
+  return worktrees;
+}
+
 async function listRunFiles(roots: RunRoot[]): Promise<RunFileEntry[]> {
   const entries: RunFileEntry[] = [];
   for (const root of roots) {
@@ -190,19 +293,31 @@ async function listRunFiles(roots: RunRoot[]): Promise<RunFileEntry[]> {
   return entries;
 }
 
-async function resolveRunRoots(
+async function resolveRepoRoots(
   state: StateStore,
-  cache?: RunSnapshotCache,
-): Promise<RunRoot[]> {
-  const roots: RunRoot[] = [];
+  options?: { cache?: RunSnapshotCache; scope?: DashboardScope },
+): Promise<RepoRoot[]> {
+  const cache = options?.cache;
+  const scope = options?.scope ?? 'all';
+  const roots: RepoRoot[] = [];
   const base = state.root;
   if (basename(base) === '.silvan') {
     const metadataPath = join(base, 'metadata.json');
-    const repoLabel = await readRepoLabel(metadataPath, 'current', cache);
+    const repoRootFallback = dirname(base);
+    const metadata = await readRepoMetadata(
+      metadataPath,
+      basename(repoRootFallback) || 'current',
+      cache,
+    );
     roots.push({
+      stateRoot: base,
       runsDir: state.runsDir,
       auditDir: state.auditDir,
-      repoLabel,
+      queueDir: state.queueDir,
+      repoLabel: metadata.label,
+      ...(metadata.repoRoot
+        ? { repoRoot: metadata.repoRoot }
+        : { repoRoot: repoRootFallback }),
     });
     return roots;
   }
@@ -214,32 +329,63 @@ async function resolveRunRoots(
   try {
     repoIds = await readdir(globalReposDir);
   } catch {
-    roots.push({ runsDir: state.runsDir, auditDir: state.auditDir });
+    const metadataPath = join(base, 'metadata.json');
+    const metadata = await readRepoMetadata(metadataPath, 'current', cache);
+    roots.push({
+      stateRoot: base,
+      runsDir: state.runsDir,
+      auditDir: state.auditDir,
+      queueDir: state.queueDir,
+      repoLabel: metadata.label,
+      ...(metadata.repoRoot ? { repoRoot: metadata.repoRoot } : {}),
+    });
     return roots;
   }
 
-  for (const repoId of repoIds) {
+  const scopedIds =
+    scope === 'current' ? repoIds.filter((repoId) => repoId === state.repoId) : repoIds;
+  const effectiveIds = scopedIds.length > 0 ? scopedIds : repoIds;
+
+  for (const repoId of effectiveIds) {
     const repoRoot = join(globalReposDir, repoId);
     const metadataPath = join(repoRoot, 'metadata.json');
-    const repoLabel = await readRepoLabel(metadataPath, repoId, cache);
+    const metadata = await readRepoMetadata(metadataPath, repoId, cache);
     roots.push({
       repoId,
-      repoLabel,
+      repoLabel: metadata.label,
+      stateRoot: repoRoot,
       runsDir: join(repoRoot, 'runs'),
       auditDir: join(repoRoot, 'audit'),
+      queueDir: join(repoRoot, 'queue', 'requests'),
+      ...(metadata.repoRoot ? { repoRoot: metadata.repoRoot } : {}),
     });
   }
 
   return roots;
 }
 
-async function readRepoLabel(
+async function resolveRunRoots(
+  state: StateStore,
+  cache?: RunSnapshotCache,
+  scope?: DashboardScope,
+): Promise<RunRoot[]> {
+  const roots = await resolveRepoRoots(state, {
+    ...(cache ? { cache } : {}),
+    ...(scope ? { scope } : {}),
+  });
+  return roots.map((root) => ({
+    runsDir: root.runsDir,
+    auditDir: root.auditDir,
+    ...(root.repoId ? { repoId: root.repoId } : {}),
+    ...(root.repoLabel ? { repoLabel: root.repoLabel } : {}),
+  }));
+}
+
+async function readRepoMetadata(
   metadataPath: string,
   fallback: string,
   cache?: RunSnapshotCache,
-): Promise<string> {
-  const cached = cache?.repoLabels.get(metadataPath);
-  if (cached) return cached;
+): Promise<{ label: string; repoRoot?: string }> {
   try {
     const metadata = await readStateMetadata(metadataPath);
     const label =
@@ -247,10 +393,65 @@ async function readRepoLabel(
         ? metadata.repoLabel
         : fallback;
     cache?.repoLabels.set(metadataPath, label);
-    return label;
+    const repoRoot =
+      typeof metadata.repoRoot === 'string' && metadata.repoRoot.length > 0
+        ? metadata.repoRoot
+        : undefined;
+    return { label, ...(repoRoot ? { repoRoot } : {}) };
   } catch {
     cache?.repoLabels.set(metadataPath, fallback);
-    return fallback;
+    return { label: fallback };
+  }
+}
+
+async function readWorktreeActivityAt(worktreePath: string): Promise<string | undefined> {
+  const gitDir = await resolveWorktreeGitDir(worktreePath);
+  const candidates = gitDir
+    ? [join(gitDir, 'logs', 'HEAD'), join(gitDir, 'index'), join(gitDir, 'HEAD')]
+    : [];
+  let latestMs: number | undefined;
+  for (const candidate of candidates) {
+    try {
+      const stats = await stat(candidate);
+      latestMs = Math.max(latestMs ?? 0, stats.mtimeMs);
+    } catch {
+      // ignore missing files
+    }
+  }
+  if (!latestMs) {
+    try {
+      const stats = await stat(worktreePath);
+      latestMs = stats.mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+  return new Date(latestMs).toISOString();
+}
+
+async function resolveWorktreeGitDir(worktreePath: string): Promise<string | null> {
+  const gitPath = join(worktreePath, '.git');
+  let stats: Awaited<ReturnType<typeof stat>>;
+  try {
+    stats = await stat(gitPath);
+  } catch {
+    return null;
+  }
+  if (stats.isDirectory()) {
+    return gitPath;
+  }
+  if (!stats.isFile()) {
+    return null;
+  }
+  try {
+    const raw = await Bun.file(gitPath).text();
+    const match = raw.match(/^gitdir:\s*(.+)$/m);
+    if (!match) return null;
+    const value = match[1]?.trim();
+    if (!value) return null;
+    return isAbsolute(value) ? value : join(worktreePath, value);
+  } catch {
+    return null;
   }
 }
 

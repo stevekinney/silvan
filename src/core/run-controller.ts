@@ -267,6 +267,9 @@ async function updateState(
     const now = new Date().toISOString();
     const existingRun = typeof data['run'] === 'object' && data['run'] ? data['run'] : {};
     const run = existingRun as Partial<RunMeta>;
+    const worktreeInfo = ctx.repo.worktreePath
+      ? { path: ctx.repo.worktreePath, branch: ctx.repo.branch }
+      : undefined;
     const next = updater({
       ...data,
       run: {
@@ -278,11 +281,18 @@ async function updateState(
         updatedAt: now,
       },
       steps: typeof data['steps'] === 'object' && data['steps'] ? data['steps'] : {},
+      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
     });
     const nextRun =
       typeof next['run'] === 'object' && next['run'] ? (next['run'] as RunMeta) : null;
+    const nextWorktree =
+      worktreeInfo ??
+      (typeof next['worktree'] === 'object' && next['worktree']
+        ? (next['worktree'] as { path?: string; branch?: string })
+        : undefined);
     return {
       ...next,
+      ...(nextWorktree ? { worktree: nextWorktree } : {}),
       run: {
         version: '1.0.0',
         status: nextRun?.status ?? 'running',

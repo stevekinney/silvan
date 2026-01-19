@@ -1,6 +1,9 @@
+import { basename } from 'node:path';
+
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import { writeQueueRequest } from '../state/queue';
 import type { StateStore } from '../state/store';
@@ -10,9 +13,11 @@ import { FilterBar } from './components/filter-bar';
 import { FilterPrompt } from './components/filter-prompt';
 import { HelpOverlay } from './components/help-overlay';
 import { OpenPrsPanel } from './components/open-prs-panel';
+import { QueuePanel } from './components/queue-panel';
 import { RequestForm } from './components/request-form';
 import { RunDetails } from './components/run-details';
 import { RunList } from './components/run-list';
+import { WorktreePanel } from './components/worktree-panel';
 import {
   type FilterKey,
   formatFilterSummary,
@@ -22,7 +27,10 @@ import {
 } from './filters';
 import {
   createRunSnapshotCache,
+  type DashboardScope,
+  loadQueueRequests,
   loadRunSnapshots,
+  loadWorktrees,
   type RunSnapshotCursor,
 } from './loader';
 import { calculatePageSize } from './pagination';
@@ -30,7 +38,7 @@ import { groupRunsByRepo, type SortKey, sortRuns } from './runs';
 import { applyDashboardEvent, applyRunSnapshots, createDashboardState } from './state';
 import { buildRunSummary } from './summary';
 import { formatElapsed } from './time';
-import type { DashboardState, RunRecord } from './types';
+import type { DashboardState, RunRecord, WorktreeRecord } from './types';
 
 const EVENT_FLUSH_MS = 120;
 const AUTO_REFRESH_MS = 10_000;
@@ -76,9 +84,11 @@ function createEmptyFilters(): DashboardState['filter'] {
 export function Dashboard({
   bus,
   stateStore,
+  config,
 }: {
   bus: EventBus;
   stateStore: StateStore;
+  config: Config;
 }): React.ReactElement {
   const [snapshot, setSnapshot] = useState<DashboardState>(createDashboardState);
   const [filterActive, setFilterActive] = useState(false);
@@ -87,6 +97,13 @@ export function Dashboard({
   const [filterPromptValue, setFilterPromptValue] = useState('');
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [groupByRepo, setGroupByRepo] = useState(true);
+  const isGlobalState = basename(stateStore.root) !== '.silvan';
+  const [scope, setScope] = useState<DashboardScope>(() =>
+    isGlobalState ? 'all' : 'current',
+  );
+  const effectiveScope = isGlobalState ? scope : 'current';
+  const staleAfterDays = config.ui.worktrees.staleAfterDays;
+  const staleAfterMs = staleAfterDays * 24 * 60 * 60 * 1000;
   const [sortKey, setSortKey] = useState<SortKey>('updated');
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -108,18 +125,32 @@ export function Dashboard({
   const queueRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventQueue = useRef([] as Parameters<typeof applyDashboardEvent>[1][]);
 
-  const refreshRuns = useCallback(
+  const refreshDashboard = useCallback(
     async (limit: number): Promise<void> => {
-      const page = await loadRunSnapshots(stateStore, {
-        limit,
-        cache: loaderCache.current,
+      const [page, queueRequests, worktrees] = await Promise.all([
+        loadRunSnapshots(stateStore, {
+          limit,
+          cache: loaderCache.current,
+          scope: effectiveScope,
+        }),
+        loadQueueRequests(stateStore, {
+          cache: loaderCache.current,
+          scope: effectiveScope,
+        }),
+        loadWorktrees(stateStore, {
+          cache: loaderCache.current,
+          scope: effectiveScope,
+        }),
+      ]);
+      setSnapshot((prev) => {
+        const next = applyRunSnapshots(prev, page.runs);
+        return { ...next, queueRequests, worktrees };
       });
-      setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
       setNextCursor(page.nextCursor ?? null);
       loadedCountRef.current = Math.max(loadedCountRef.current, page.runs.length);
       setLastRefreshAt(Date.now());
     },
-    [stateStore],
+    [effectiveScope, stateStore],
   );
 
   const loadMoreRuns = useCallback(async (): Promise<void> => {
@@ -128,16 +159,19 @@ export function Dashboard({
       limit: pageSize,
       cursor: nextCursor,
       cache: loaderCache.current,
+      scope: effectiveScope,
     });
     setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
     setNextCursor(page.nextCursor ?? null);
     loadedCountRef.current += page.runs.length;
     setLastRefreshAt(Date.now());
-  }, [nextCursor, pageSize, stateStore]);
+  }, [effectiveScope, nextCursor, pageSize, stateStore]);
 
   useEffect(() => {
-    void refreshRuns(Math.max(pageSize, loadedCountRef.current));
-  }, [pageSize, refreshRuns]);
+    loadedCountRef.current = 0;
+    setNextCursor(null);
+    void refreshDashboard(pageSize);
+  }, [pageSize, refreshDashboard]);
 
   useEffect(() => {
     const flush = () => {
@@ -170,10 +204,10 @@ export function Dashboard({
 
   useEffect(() => {
     const interval = setInterval(() => {
-      void refreshRuns(Math.max(pageSize, loadedCountRef.current));
+      void refreshDashboard(Math.max(pageSize, loadedCountRef.current));
     }, AUTO_REFRESH_MS);
     return () => clearInterval(interval);
-  }, [pageSize, refreshRuns]);
+  }, [pageSize, refreshDashboard]);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -200,6 +234,10 @@ export function Dashboard({
   const attentionRuns = useMemo(
     () => filteredRuns.filter((run) => needsAttention(run, nowMs)),
     [filteredRuns, nowMs],
+  );
+  const worktreeRows = useMemo(
+    () => buildWorktreeRows(snapshot.worktrees, allRuns, nowMs, staleAfterMs),
+    [allRuns, nowMs, snapshot.worktrees, staleAfterMs],
   );
   const visibleRuns = attentionOnly ? attentionRuns : filteredRuns;
   const { runs: orderedRuns, repoCounts } = useMemo(() => {
@@ -273,6 +311,12 @@ export function Dashboard({
       return;
     }
     if (input === 'g') {
+      if (isGlobalState) {
+        setScope((prev) => (prev === 'all' ? 'current' : 'all'));
+      }
+      return;
+    }
+    if (input === 'p') {
       setGroupByRepo((prev) => !prev);
       return;
     }
@@ -302,7 +346,7 @@ export function Dashboard({
     }
     if (input === 'r') {
       const limit = Math.max(pageSize, loadedCountRef.current);
-      void refreshRuns(limit);
+      void refreshDashboard(limit);
       return;
     }
     if (input === 'l') {
@@ -389,13 +433,16 @@ export function Dashboard({
   const sortLabel = formatSortLabel(sortKey);
   const phaseSummary = formatCountMap(summary.phase);
   const convergenceSummary = formatCountMap(summary.convergence);
+  const scopeLabel = effectiveScope === 'all' ? 'All Repos' : 'Current Repo';
 
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text>Silvan Mission Control</Text>
         <Text color="gray">
-          Refreshed {refreshAge} • / search • ? help
+          Scope: {scopeLabel}
+          {isGlobalState ? ' • g scope' : ''}
+          {` • Refreshed ${refreshAge} • / search • ? help`}
           {nextCursor ? ' • l load more' : ''}
         </Text>
       </Box>
@@ -448,52 +495,94 @@ export function Dashboard({
         />
       ) : null}
 
-      {allRuns.length === 0 ? (
-        <Text color="gray">
-          No runs yet. Press n to queue a task, then run `silvan queue run`.
+      {allRuns.length > 0 ? (
+        <Box flexDirection="column">
+          <Text color="gray">Summary</Text>
+          <Box flexDirection="row" gap={2}>
+            <Text color="cyan">{summary.status.running} Running</Text>
+            <Text color="yellow">{summary.status.blocked} Blocked</Text>
+            <Text color="red">{summary.status.failed} Failed</Text>
+            <Text color="green">{summary.status.success} Success</Text>
+            <Text color="gray">{summary.total} Total</Text>
+          </Box>
+          {phaseSummary ? <Text color="gray">Phases: {phaseSummary}</Text> : null}
+          {convergenceSummary ? (
+            <Text color="gray">Convergence: {convergenceSummary}</Text>
+          ) : null}
+        </Box>
+      ) : null}
+
+      {attentionQueueRuns.length > 0 && !attentionOnly && allRuns.length > 0 ? (
+        <AttentionQueue runs={attentionQueueRuns} nowMs={nowMs} />
+      ) : null}
+
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text>
+          {attentionOnly ? 'Attention' : 'Runs'} ({visibleRuns.length}
+          {filtersActive && !attentionOnly ? ` of ${summary.total}` : ''})
         </Text>
+        <Text color="gray">
+          Sort: {sortLabel} • Group: {groupByRepo ? 'On' : 'Off'} (p) • a{' '}
+          {attentionOnly ? 'all' : 'attention'}
+        </Text>
+      </Box>
+
+      {filtersActive ? (
+        <Text color="gray">
+          Showing {visibleRuns.length} of {summary.total} runs
+        </Text>
+      ) : null}
+
+      {visibleRuns.length === 0 ? (
+        <Text color="gray">
+          {allRuns.length === 0
+            ? 'No runs yet. Press n to queue a task, then run `silvan queue run`.'
+            : 'No runs match the current filters.'}
+        </Text>
+      ) : isNarrow ? (
+        detailsView && selectedRun ? (
+          <RunDetails
+            run={selectedRun}
+            stateStore={stateStore}
+            nowMs={nowMs}
+            stepsExpanded={stepsExpanded}
+            artifactView={artifactView}
+            onCloseArtifacts={() => setArtifactView(false)}
+          />
+        ) : (
+          <RunList
+            runs={orderedRuns}
+            {...(selectedRunId ? { selectedRunId } : {})}
+            groupByRepo={groupByRepo}
+            repoCounts={repoCounts}
+            nowMs={nowMs}
+          />
+        )
       ) : (
-        <>
-          <Box flexDirection="column">
-            <Text color="gray">Summary</Text>
-            <Box flexDirection="row" gap={2}>
-              <Text color="cyan">{summary.status.running} Running</Text>
-              <Text color="yellow">{summary.status.blocked} Blocked</Text>
-              <Text color="red">{summary.status.failed} Failed</Text>
-              <Text color="green">{summary.status.success} Success</Text>
-              <Text color="gray">{summary.total} Total</Text>
+        <Box flexDirection="row" gap={4}>
+          <Box width={40} flexDirection="column">
+            <RunList
+              runs={orderedRuns}
+              {...(selectedRunId ? { selectedRunId } : {})}
+              groupByRepo={groupByRepo}
+              repoCounts={repoCounts}
+              nowMs={nowMs}
+            />
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="gray">Open PRs</Text>
+              <OpenPrsPanel prs={snapshot.openPrs} />
             </Box>
-            {phaseSummary ? <Text color="gray">Phases: {phaseSummary}</Text> : null}
-            {convergenceSummary ? (
-              <Text color="gray">Convergence: {convergenceSummary}</Text>
-            ) : null}
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="gray">Queue ({snapshot.queueRequests.length} pending)</Text>
+              <QueuePanel requests={snapshot.queueRequests} nowMs={nowMs} />
+            </Box>
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="gray">Worktrees ({worktreeRows.length})</Text>
+              <WorktreePanel worktrees={worktreeRows} nowMs={nowMs} />
+            </Box>
           </Box>
-
-          {attentionQueueRuns.length > 0 && !attentionOnly ? (
-            <AttentionQueue runs={attentionQueueRuns} nowMs={nowMs} />
-          ) : null}
-
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text>
-              {attentionOnly ? 'Attention' : 'Runs'} ({visibleRuns.length}
-              {filtersActive && !attentionOnly ? ` of ${summary.total}` : ''})
-            </Text>
-            <Text color="gray">
-              Sort: {sortLabel} • Group: {groupByRepo ? 'On' : 'Off'} • a{' '}
-              {attentionOnly ? 'all' : 'attention'}
-            </Text>
-          </Box>
-
-          {filtersActive ? (
-            <Text color="gray">
-              Showing {visibleRuns.length} of {summary.total} runs
-            </Text>
-          ) : null}
-
-          {visibleRuns.length === 0 ? (
-            <Text color="gray">No runs match the current filters.</Text>
-          ) : isNarrow ? (
-            detailsView && selectedRun ? (
+          <Box flexGrow={1} flexDirection="column">
+            {selectedRun ? (
               <RunDetails
                 run={selectedRun}
                 stateStore={stateStore}
@@ -502,45 +591,9 @@ export function Dashboard({
                 artifactView={artifactView}
                 onCloseArtifacts={() => setArtifactView(false)}
               />
-            ) : (
-              <RunList
-                runs={orderedRuns}
-                {...(selectedRunId ? { selectedRunId } : {})}
-                groupByRepo={groupByRepo}
-                repoCounts={repoCounts}
-                nowMs={nowMs}
-              />
-            )
-          ) : (
-            <Box flexDirection="row" gap={4}>
-              <Box width={40} flexDirection="column">
-                <RunList
-                  runs={orderedRuns}
-                  {...(selectedRunId ? { selectedRunId } : {})}
-                  groupByRepo={groupByRepo}
-                  repoCounts={repoCounts}
-                  nowMs={nowMs}
-                />
-                <Box flexDirection="column" marginTop={1}>
-                  <Text color="gray">Open PRs</Text>
-                  <OpenPrsPanel prs={snapshot.openPrs} />
-                </Box>
-              </Box>
-              <Box flexGrow={1} flexDirection="column">
-                {selectedRun ? (
-                  <RunDetails
-                    run={selectedRun}
-                    stateStore={stateStore}
-                    nowMs={nowMs}
-                    stepsExpanded={stepsExpanded}
-                    artifactView={artifactView}
-                    onCloseArtifacts={() => setArtifactView(false)}
-                  />
-                ) : null}
-              </Box>
-            </Box>
-          )}
-        </>
+            ) : null}
+          </Box>
+        </Box>
       )}
 
       {snapshot.helpVisible ? <HelpOverlay /> : null}
@@ -572,4 +625,110 @@ function cycleSort(current: SortKey): SortKey {
   const order: SortKey[] = ['updated', 'started', 'duration'];
   const index = order.indexOf(current);
   return order[(index + 1) % order.length] ?? 'updated';
+}
+
+type WorktreeView = WorktreeRecord & {
+  repoLabel: string;
+  run?: RunRecord;
+  isStale: boolean;
+  isOrphaned: boolean;
+  activityMs?: number;
+};
+
+function buildWorktreeRows(
+  worktrees: WorktreeRecord[],
+  runs: RunRecord[],
+  nowMs: number,
+  staleAfterMs: number,
+): WorktreeView[] {
+  if (worktrees.length === 0) return [];
+  const byPath = new Map<string, RunRecord>();
+  const byBranch = new Map<string, RunRecord>();
+
+  for (const run of runs) {
+    const runStamp = resolveRunTimestamp(run);
+    if (run.worktree?.path) {
+      const existing = byPath.get(run.worktree.path);
+      if (!existing || resolveRunTimestamp(existing) < runStamp) {
+        byPath.set(run.worktree.path, run);
+      }
+    }
+    if (run.pr?.headBranch) {
+      const existing = byBranch.get(run.pr.headBranch);
+      if (!existing || resolveRunTimestamp(existing) < runStamp) {
+        byBranch.set(run.pr.headBranch, run);
+      }
+    }
+  }
+
+  const rows = worktrees.map((worktree) => {
+    const repoLabel = worktree.repoLabel ?? worktree.repoId ?? 'current';
+    const run =
+      (worktree.path ? byPath.get(worktree.path) : undefined) ??
+      (worktree.branch ? byBranch.get(worktree.branch) : undefined);
+    const activityMs = resolveActivityMs(worktree, run);
+    const isOrphaned = !run;
+    const isStale =
+      typeof activityMs === 'number' ? nowMs - activityMs > staleAfterMs : false;
+    return {
+      ...worktree,
+      repoLabel,
+      isOrphaned,
+      isStale,
+      ...(run ? { run } : {}),
+      ...(typeof activityMs === 'number' ? { activityMs } : {}),
+    };
+  });
+
+  return rows.sort((a, b) => {
+    if (a.repoLabel !== b.repoLabel) {
+      return a.repoLabel.localeCompare(b.repoLabel);
+    }
+    return compareWorktreePriority(a, b);
+  });
+}
+
+function resolveRunTimestamp(run: RunRecord): number {
+  const stamp = run.latestEventAt ?? run.updatedAt;
+  const parsed = Date.parse(stamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function resolveActivityMs(
+  worktree: WorktreeRecord,
+  run: RunRecord | undefined,
+): number | undefined {
+  const worktreeTs = worktree.lastActivityAt ? Date.parse(worktree.lastActivityAt) : NaN;
+  const runTs = run ? resolveRunTimestamp(run) : NaN;
+  const hasWorktree = Number.isFinite(worktreeTs);
+  const hasRun = Number.isFinite(runTs);
+  if (hasWorktree && hasRun) {
+    return Math.max(worktreeTs, runTs);
+  }
+  if (hasWorktree) return worktreeTs;
+  if (hasRun) return runTs;
+  return undefined;
+}
+
+function compareWorktreePriority(a: WorktreeView, b: WorktreeView): number {
+  const dirtyRank = (worktree: WorktreeView) => (worktree.isDirty ? 0 : 1);
+  const lockedRank = (worktree: WorktreeView) => (worktree.isLocked ? 0 : 1);
+  const staleRank = (worktree: WorktreeView) =>
+    worktree.isStale || worktree.isOrphaned ? 1 : 0;
+  const activityRank = (worktree: WorktreeView) => {
+    if (typeof worktree.activityMs !== 'number') return 0;
+    return -worktree.activityMs;
+  };
+
+  const ranks: Array<(worktree: WorktreeView) => number> = [
+    dirtyRank,
+    lockedRank,
+    staleRank,
+    activityRank,
+  ];
+  for (const rank of ranks) {
+    const diff = rank(a) - rank(b);
+    if (diff !== 0) return diff;
+  }
+  return a.path.localeCompare(b.path);
 }

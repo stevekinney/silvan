@@ -2391,7 +2391,7 @@ cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions)
       }
 
       try {
-        await mountDashboard(ctx.events.bus, ctx.state);
+        await mountDashboard(ctx.events.bus, ctx.state, ctx.config);
       } finally {
         stopPolling();
       }

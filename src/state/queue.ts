@@ -30,12 +30,10 @@ export async function writeQueueRequest(options: {
   return path;
 }
 
-export async function listQueueRequests(options: {
-  state: StateStore;
-}): Promise<QueueRequest[]> {
+export async function listQueueRequestsInDir(queueDir: string): Promise<QueueRequest[]> {
   let entries: string[] = [];
   try {
-    entries = await readdir(options.state.queueDir);
+    entries = await readdir(queueDir);
   } catch {
     return [];
   }
@@ -43,13 +41,19 @@ export async function listQueueRequests(options: {
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
     try {
-      const raw = await Bun.file(join(options.state.queueDir, entry)).text();
+      const raw = await Bun.file(join(queueDir, entry)).text();
       requests.push(JSON.parse(raw) as QueueRequest);
     } catch {
       // skip invalid entries
     }
   }
   return requests.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listQueueRequests(options: {
+  state: StateStore;
+}): Promise<QueueRequest[]> {
+  return listQueueRequestsInDir(options.state.queueDir);
 }
 
 export async function deleteQueueRequest(options: {
