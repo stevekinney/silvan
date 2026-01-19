@@ -194,7 +194,11 @@ function createRunStub(runId: string, repoId: string, ts: string): RunRecord {
 
 function buildRunIndex(runs: Record<string, RunRecord>): string[] {
   return Object.values(runs)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .sort((a, b) => {
+      const aTimestamp = a.latestEventAt ?? a.updatedAt;
+      const bTimestamp = b.latestEventAt ?? b.updatedAt;
+      return bTimestamp.localeCompare(aTimestamp);
+    })
     .map((run) => run.runId);
 }
 

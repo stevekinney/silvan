@@ -40,8 +40,11 @@ export type StateStoreOptions = {
   root?: string;
 };
 
-type StateMetadata = {
+export type StateMetadata = {
   notifiedAt?: string;
+  repoRoot?: string;
+  repoLabel?: string;
+  lastAccessedAt?: string;
 };
 
 const stateVersion = '1.0.0';
@@ -88,6 +91,10 @@ export async function initStateStore(
       dataRoot: paths.dataRoot,
     });
   }
+  await updateRepoMetadata({
+    metadataPath,
+    repoRoot,
+  });
 
   async function writeRunState(runId: string, data: RunStateData): Promise<string> {
     const envelope: RunStateEnvelope = {
@@ -156,6 +163,25 @@ async function ensureGlobalNotice(options: {
   await writeMetadata(options.metadataPath, {
     notifiedAt: new Date().toISOString(),
   });
+}
+
+export async function readStateMetadata(path: string): Promise<StateMetadata> {
+  return readMetadata(path);
+}
+
+export async function updateRepoMetadata(options: {
+  metadataPath: string;
+  repoRoot: string;
+  repoLabel?: string;
+}): Promise<void> {
+  const current = await readMetadata(options.metadataPath);
+  const fallbackLabel = basename(options.repoRoot) || options.repoRoot;
+  const next: StateMetadata = {
+    repoRoot: options.repoRoot,
+    repoLabel: options.repoLabel ?? current.repoLabel ?? fallbackLabel,
+    lastAccessedAt: new Date().toISOString(),
+  };
+  await writeMetadata(options.metadataPath, next);
 }
 
 async function readMetadata(path: string): Promise<StateMetadata> {

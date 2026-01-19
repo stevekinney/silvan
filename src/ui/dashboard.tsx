@@ -15,12 +15,11 @@ import {
   loadRunSnapshots,
   type RunSnapshotCursor,
 } from './loader';
+import { calculatePageSize } from './pagination';
 import { applyDashboardEvent, applyRunSnapshots, createDashboardState } from './state';
 import type { DashboardState, RunRecord } from './types';
 
 const EVENT_FLUSH_MS = 120;
-const PAGE_SIZE = 25;
-
 export function Dashboard({
   bus,
   stateStore,
@@ -38,16 +37,18 @@ export function Dashboard({
   const [requestDescription, setRequestDescription] = useState('');
   const [nextCursor, setNextCursor] = useState<RunSnapshotCursor | null>(null);
   const { stdout } = useStdout();
+  const pageSize = useMemo(() => calculatePageSize(stdout?.rows ?? 24), [stdout?.rows]);
   const isNarrow = (stdout?.columns ?? 100) < 100;
   const { exit } = useApp();
   const loaderCache = useRef(createRunSnapshotCache());
+  const loadedCountRef = useRef(0);
 
   const queueRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const eventQueue = useRef([] as Parameters<typeof applyDashboardEvent>[1][]);
 
   useEffect(() => {
-    void refreshRuns(PAGE_SIZE);
-  }, [stateStore]);
+    void refreshRuns(Math.max(pageSize, loadedCountRef.current));
+  }, [pageSize, stateStore]);
 
   useEffect(() => {
     const flush = () => {
@@ -133,7 +134,7 @@ export function Dashboard({
       return;
     }
     if (input === 'r') {
-      const limit = Math.max(PAGE_SIZE, snapshot.runIndex.length || 0);
+      const limit = Math.max(pageSize, loadedCountRef.current);
       void refreshRuns(limit);
       return;
     }
@@ -196,17 +197,19 @@ export function Dashboard({
     });
     setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
     setNextCursor(page.nextCursor ?? null);
+    loadedCountRef.current = Math.max(loadedCountRef.current, page.runs.length);
   }
 
   async function loadMoreRuns(): Promise<void> {
     if (!nextCursor) return;
     const page = await loadRunSnapshots(stateStore, {
-      limit: PAGE_SIZE,
+      limit: pageSize,
       cursor: nextCursor,
       cache: loaderCache.current,
     });
     setSnapshot((prev) => applyRunSnapshots(prev, page.runs));
     setNextCursor(page.nextCursor ?? null);
+    loadedCountRef.current += page.runs.length;
   }
 
   return (

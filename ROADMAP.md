@@ -95,7 +95,7 @@ These issues make Silvan a reliable building block for automation and CI pipelin
 
 These issues transform the dashboard from a simple viewer to a full operator control panel. Build in order due to dependencies.
 
-- [ ] [#8 - UI Data Layer: pagination + audit integration](https://github.com/stevekinney/silvan/issues/8)
+- [x] [#8 - UI Data Layer: pagination + audit integration](https://github.com/stevekinney/silvan/issues/8)
 
   > **Prerequisite for all UI work**. Enables handling 100+ runs without performance issues.
 
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status         |
-| ------------------ | -------------------------- | -------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
-| Discoverability    | #21, #22                   | Complete (2/2) |
-| Scripting          | #19, #18                   | Complete (2/2) |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |
+| Phase              | Issues                     | Status            |
+| ------------------ | -------------------------- | ----------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4)    |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
+| Discoverability    | #21, #22                   | Complete (2/2)    |
+| Scripting          | #19, #18                   | Complete (2/2)    |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (1/6) |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

@@ -3,6 +3,7 @@ import { basename, dirname, join } from 'node:path';
 
 import type { Event } from '../events/schema';
 import type { RunStateEnvelope, StateStore } from '../state/store';
+import { readStateMetadata } from '../state/store';
 import type { RunEventSummary } from './types';
 
 export type RunSnapshot = {
@@ -17,6 +18,7 @@ export type RunSnapshot = {
 
 export type RunSnapshotCursor = {
   offset: number;
+  listKey?: string;
 };
 
 export type RunSnapshotPage = {
@@ -28,6 +30,8 @@ export type RunSnapshotPage = {
 export type RunSnapshotCache = {
   snapshots: Map<string, CachedSnapshot>;
   auditSummaries: Map<string, CachedAuditSummary>;
+  runFiles?: CachedRunFiles;
+  repoLabels: Map<string, string>;
 };
 
 type CachedSnapshot = {
@@ -38,6 +42,12 @@ type CachedSnapshot = {
 type CachedAuditSummary = {
   mtimeMs: number;
   summary: RunEventSummary;
+};
+
+type CachedRunFiles = {
+  key: string;
+  rootsKey: string;
+  files: RunFileEntry[];
 };
 
 type RunRoot = {
@@ -62,6 +72,7 @@ export function createRunSnapshotCache(): RunSnapshotCache {
   return {
     snapshots: new Map(),
     auditSummaries: new Map(),
+    repoLabels: new Map(),
   };
 }
 
@@ -76,14 +87,34 @@ export async function loadRunSnapshots(
 ): Promise<RunSnapshotPage> {
   const limit = options?.limit ?? DEFAULT_RUN_LIMIT;
   const offset = options?.cursor?.offset ?? 0;
-  const roots = await resolveRunRoots(state);
-  const files = await listRunFiles(roots);
-  files.sort((a, b) => {
-    if (a.mtimeMs !== b.mtimeMs) {
-      return b.mtimeMs - a.mtimeMs;
+  const roots = await resolveRunRoots(state, options?.cache);
+  const rootsKey = roots
+    .map((root) => root.runsDir)
+    .sort()
+    .join('|');
+  let files: RunFileEntry[] = [];
+  let listKey = options?.cursor?.listKey;
+  const cachedFiles = options?.cache?.runFiles;
+  if (
+    listKey &&
+    cachedFiles &&
+    cachedFiles.key === listKey &&
+    cachedFiles.rootsKey === rootsKey
+  ) {
+    files = cachedFiles.files;
+  } else {
+    files = await listRunFiles(roots);
+    files.sort((a, b) => {
+      if (a.mtimeMs !== b.mtimeMs) {
+        return b.mtimeMs - a.mtimeMs;
+      }
+      return a.path.localeCompare(b.path);
+    });
+    listKey = crypto.randomUUID();
+    if (options?.cache) {
+      options.cache.runFiles = { key: listKey, rootsKey, files };
     }
-    return a.path.localeCompare(b.path);
-  });
+  }
 
   const total = files.length;
   const page = files.slice(offset, offset + limit);
@@ -105,7 +136,9 @@ export async function loadRunSnapshots(
   return {
     runs,
     total,
-    ...(offset + limit < total ? { nextCursor: { offset: offset + limit } } : {}),
+    ...(offset + limit < total
+      ? { nextCursor: { offset: offset + limit, ...(listKey ? { listKey } : {}) } }
+      : {}),
   };
 }
 
@@ -157,14 +190,19 @@ async function listRunFiles(roots: RunRoot[]): Promise<RunFileEntry[]> {
   return entries;
 }
 
-async function resolveRunRoots(state: StateStore): Promise<RunRoot[]> {
+async function resolveRunRoots(
+  state: StateStore,
+  cache?: RunSnapshotCache,
+): Promise<RunRoot[]> {
   const roots: RunRoot[] = [];
   const base = state.root;
   if (basename(base) === '.silvan') {
+    const metadataPath = join(base, 'metadata.json');
+    const repoLabel = await readRepoLabel(metadataPath, 'current', cache);
     roots.push({
       runsDir: state.runsDir,
       auditDir: state.auditDir,
-      repoLabel: 'current',
+      repoLabel,
     });
     return roots;
   }
@@ -182,15 +220,38 @@ async function resolveRunRoots(state: StateStore): Promise<RunRoot[]> {
 
   for (const repoId of repoIds) {
     const repoRoot = join(globalReposDir, repoId);
+    const metadataPath = join(repoRoot, 'metadata.json');
+    const repoLabel = await readRepoLabel(metadataPath, repoId, cache);
     roots.push({
       repoId,
-      repoLabel: repoId,
+      repoLabel,
       runsDir: join(repoRoot, 'runs'),
       auditDir: join(repoRoot, 'audit'),
     });
   }
 
   return roots;
+}
+
+async function readRepoLabel(
+  metadataPath: string,
+  fallback: string,
+  cache?: RunSnapshotCache,
+): Promise<string> {
+  const cached = cache?.repoLabels.get(metadataPath);
+  if (cached) return cached;
+  try {
+    const metadata = await readStateMetadata(metadataPath);
+    const label =
+      typeof metadata.repoLabel === 'string' && metadata.repoLabel.length > 0
+        ? metadata.repoLabel
+        : fallback;
+    cache?.repoLabels.set(metadataPath, label);
+    return label;
+  } catch {
+    cache?.repoLabels.set(metadataPath, fallback);
+    return fallback;
+  }
 }
 
 async function readRunSnapshotWithCache(
@@ -266,14 +327,12 @@ async function readAuditSummary(
     return cached.summary;
   }
 
-  let raw = '';
-  try {
-    raw = await Bun.file(path).text();
-  } catch {
-    return { eventCount: 0 };
-  }
-
-  const summary = buildEventSummary(raw);
+  const eventCount = await countAuditLines(path);
+  const latestEventAt = await readLatestEventAt(path);
+  const summary: RunEventSummary = {
+    eventCount,
+    ...(latestEventAt ? { latestEventAt } : {}),
+  };
   cache?.auditSummaries.set(path, { mtimeMs: fileStat.mtimeMs, summary });
   return summary;
 }
@@ -336,26 +395,57 @@ async function readAuditLogEvents(
   return events;
 }
 
-function buildEventSummary(raw: string): RunEventSummary {
-  const trimmed = raw.trim();
-  if (!trimmed) return { eventCount: 0 };
-  const lines = trimmed.split('\n');
-  const lastLine = lines[lines.length - 1];
-  let latestEventAt: string | undefined;
-  if (lastLine) {
-    try {
-      const parsed = JSON.parse(lastLine) as { ts?: string };
-      if (typeof parsed.ts === 'string') {
-        latestEventAt = parsed.ts;
+async function countAuditLines(path: string): Promise<number> {
+  const file = Bun.file(path);
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder();
+  let count = 0;
+  let pending = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const text = pending + decoder.decode(value, { stream: true });
+    const lines = text.split('\n');
+    pending = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.trim().length > 0) {
+        count += 1;
       }
-    } catch {
-      latestEventAt = undefined;
     }
   }
-  return {
-    eventCount: lines.length,
-    ...(latestEventAt ? { latestEventAt } : {}),
-  };
+  if (pending.trim().length > 0) {
+    count += 1;
+  }
+  return count;
+}
+
+async function readLatestEventAt(path: string): Promise<string | undefined> {
+  const file = Bun.file(path);
+  const size = file.size;
+  if (!Number.isFinite(size) || size <= 0) return undefined;
+  const chunkSize = 64 * 1024;
+  let start = Math.max(0, size - chunkSize);
+  let buffer = await file.slice(start, size).text();
+  while (start > 0 && !buffer.includes('\n')) {
+    start = Math.max(0, start - chunkSize);
+    buffer = await file.slice(start, size).text();
+  }
+  const lines = buffer
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(lines[i] ?? '') as { ts?: string };
+      if (typeof parsed.ts === 'string') {
+        return parsed.ts;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 function extractUpdatedAt(data: Record<string, unknown>): string | undefined {

@@ -4,10 +4,11 @@ import { loadConfig } from '../config/load';
 import type { ConfigInput } from '../config/schema';
 import { createEnvelope, toEventError } from '../events/emit';
 import type { EventMode, RunFinished } from '../events/schema';
-import { initStateStore } from '../state/store';
+import { initStateStore, updateRepoMetadata } from '../state/store';
 import { normalizeError, RunCanceledError } from './errors';
 import { initEvents } from './events';
 import { detectRepoContext } from './repo';
+import { formatRepoLabel } from './repo-label';
 
 export type RunContext = {
   runId: string;
@@ -33,6 +34,19 @@ export async function createRunContext(options: {
     mode: configResult.config.state.mode,
     ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
   });
+  const metadataPath = join(state.root, 'metadata.json');
+  try {
+    await updateRepoMetadata({
+      metadataPath,
+      repoRoot: repo.repoRoot,
+      repoLabel: formatRepoLabel(configResult.config, repo.repoRoot, {
+        includeHost: false,
+        fallback: 'basename',
+      }),
+    });
+  } catch {
+    // Best-effort metadata update.
+  }
   const events = initEvents(state, options.mode);
 
   await state.updateRunState(runId, (data) => {

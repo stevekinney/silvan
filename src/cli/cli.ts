@@ -28,6 +28,7 @@ import { withRunContext } from '../core/context';
 import { normalizeError, SilvanError } from '../core/errors';
 import { createLogger } from '../core/logger';
 import { detectRepoContext } from '../core/repo';
+import { formatRepoLabel } from '../core/repo-label';
 import {
   resumeRun,
   runImplementation,
@@ -3001,13 +3002,6 @@ async function collectActiveRuns(
     status,
     title,
   }));
-}
-
-function formatRepoLabel(config: Config, repoRoot: string): string {
-  if (config.github.owner && config.github.repo) {
-    return `github.com/${config.github.owner}/${config.github.repo}`;
-  }
-  return repoRoot;
 }
 
 async function buildReturningSummaryData(): Promise<{
