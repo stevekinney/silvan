@@ -88,7 +88,7 @@ These issues make Silvan a reliable building block for automation and CI pipelin
 
   > Makes every command scriptable. JSON everywhere, errors included.
 
-- [ ] [#18 - Add --quiet and --verbose Modes](https://github.com/stevekinney/silvan/issues/18)
+- [x] [#18 - Add --quiet and --verbose Modes](https://github.com/stevekinney/silvan/issues/18)
   > Control output verbosity for scripts and debugging.
 
 ### Phase 5: Mission Control UI (Scale to Many Runs)
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status            |
-| ------------------ | -------------------------- | ----------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4)    |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
-| Discoverability    | #21, #22                   | Complete (2/2)    |
-| Scripting          | #19, #18                   | In progress (1/2) |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started       |
+| Phase              | Issues                     | Status         |
+| ------------------ | -------------------------- | -------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
+| Discoverability    | #21, #22                   | Complete (2/2) |
+| Scripting          | #19, #18                   | Complete (2/2) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

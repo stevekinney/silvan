@@ -325,7 +325,8 @@ function classifyOption(name: string): OptionGroup {
   if (name.startsWith('model') || name.startsWith('cognition')) return 'AI';
   if (name.startsWith('max') || ['maxToolCalls', 'maxToolMs'].includes(name))
     return 'Limits';
-  if (['json', 'debug', 'trace', 'noUi', 'quiet'].includes(name)) return 'Output';
+  if (['json', 'debug', 'trace', 'noUi', 'quiet', 'verbose'].includes(name))
+    return 'Output';
   if (['stateMode', 'verifyShell', 'persistSessions'].includes(name)) return 'State';
   if (['title', 'desc', 'ac', 'fromFile'].includes(name)) return 'Task input';
   return 'Behavior';

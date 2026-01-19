@@ -12,6 +12,8 @@ let lastSummary: EnvLoadSummary | null = null;
 
 function logDebug(message: string): void {
   if (!process.env['SILVAN_DEBUG']) return;
+  if (process.env['SILVAN_QUIET']) return;
+  if (process.env['SILVAN_JSON']) return;
   console.log(`[debug] ${message}`);
 }
 

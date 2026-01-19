@@ -84,6 +84,28 @@ export class HeadlessRenderer {
       return;
     }
     switch (event.type) {
+      case 'git.command_started': {
+        if (!process.env['SILVAN_DEBUG']) {
+          return;
+        }
+        const command = formatGitCommand(event.payload.args);
+        this.printLine(chalk.dim(`[debug] ${command}`));
+        return;
+      }
+      case 'git.command_finished': {
+        if (!process.env['SILVAN_DEBUG']) {
+          return;
+        }
+        const command = formatGitCommand(event.payload.args);
+        const exitCode =
+          event.payload.exitCode !== undefined ? ` exit ${event.payload.exitCode}` : '';
+        const duration =
+          event.payload.durationMs !== undefined
+            ? ` (${formatDurationShort(event.payload.durationMs)})`
+            : '';
+        this.printLine(chalk.dim(`[debug] ${command}${exitCode}${duration}`));
+        return;
+      }
       case 'log.message': {
         if (event.level === 'debug' && !process.env['SILVAN_DEBUG']) {
           return;
@@ -311,6 +333,10 @@ function formatDurationClock(durationMs: number): string {
 
 function ciKey(pr: { owner: string; repo: string; number: number }): string {
   return `${pr.owner}/${pr.repo}#${pr.number}`;
+}
+
+function formatGitCommand(args: string[]): string {
+  return ['git', ...args].join(' ');
 }
 
 function formatCiCheckLine(

@@ -64,6 +64,14 @@ export async function emitJsonResult(options: JsonOutputOptions): Promise<void> 
     return;
   }
 
+  if (
+    process.env['SILVAN_QUIET'] &&
+    envelope.level !== 'warn' &&
+    envelope.level !== 'error'
+  ) {
+    return;
+  }
+
   console.log(JSON.stringify(envelope));
 }
 

@@ -130,7 +130,7 @@ import {
 const cli = cac('silvan');
 
 cli.help((sections) => buildHelpSections(sections, cli));
-cli.version(pkg.version);
+cli.version(pkg.version, '--version, -V');
 
 type CliOptions = {
   json?: boolean;
@@ -148,6 +148,7 @@ type CliOptions = {
   openShell?: boolean;
   exec?: string;
   quiet?: boolean;
+  verbose?: boolean;
   debug?: boolean;
   trace?: boolean;
   task?: string;
@@ -209,6 +210,7 @@ cli.option('--json', 'Output JSON events (com.silvan.events)');
 cli.option('--yes, -y', 'Skip all confirmation prompts');
 cli.option('--no-ui', 'Disable interactive UI');
 cli.option('--quiet, -q', 'Suppress non-error output');
+cli.option('--verbose, -v', 'Show debug-level output');
 cli.option('--debug', 'Show stack traces for errors');
 cli.option('--trace', 'Show error causes and stack traces');
 
@@ -1661,7 +1663,7 @@ cli
   .option('--source <source>', 'Filter by task source (comma-separated)')
   .option('--limit <n>', 'Number of runs to show', { default: '20' })
   .option('--offset <n>', 'Skip the first N runs', { default: '0' })
-  .option('--verbose', 'Include task source column')
+  .option('--show-source', 'Include task source column')
   .action(
     async (
       options: CliOptions & {
@@ -1671,7 +1673,7 @@ cli
         source?: string;
         limit?: string;
         offset?: string;
-        verbose?: boolean;
+        showSource?: boolean;
       },
     ) => {
       const repo = await detectRepoContext({ cwd: process.cwd() });
@@ -1836,7 +1838,7 @@ cli
         showing: paged.length,
         limit,
         offset,
-        showSource: Boolean(options.verbose),
+        showSource: Boolean(options.showSource),
         filters: {
           ...(statusFilter ? { status: statusFilter } : {}),
           ...(phaseFilter ? { phase: phaseFilter } : {}),
@@ -3690,7 +3692,13 @@ function combineMultiWordCommand(argv: string[]): string[] {
 }
 
 export async function run(argv: string[]): Promise<void> {
-  const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
+  const jsonEnabled = argv.includes('--json');
+  if (jsonEnabled) {
+    process.env['SILVAN_JSON'] = '1';
+  }
+  const verboseEnabled = argv.includes('--verbose') || argv.includes('-v');
+  const debugEnabled =
+    verboseEnabled || argv.includes('--debug') || argv.includes('--trace');
   if (debugEnabled) {
     process.env['SILVAN_DEBUG'] = '1';
   }
@@ -3698,9 +3706,11 @@ export async function run(argv: string[]): Promise<void> {
   if (quietEnabled) {
     process.env['SILVAN_QUIET'] = '1';
   }
-  const versionRequested = argv.includes('--version') || argv.includes('-v');
+  const versionRequested = argv.includes('--version') || argv.includes('-V');
   if (versionRequested) {
-    await outputVersionInfo();
+    if (!quietEnabled) {
+      await outputVersionInfo();
+    }
     return;
   }
 

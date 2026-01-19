@@ -102,6 +102,7 @@ Silvan output is designed to be scannable in terminals and scriptable in CI.
 - Commands end with a clear next steps block when there is a logical follow-on
 - Non-TTY output is plain text (no ANSI colors)
 - Use `--json` for machine-readable output (JSONL events with `cli.result` payloads)
+- Use `--quiet` to suppress non-error output and `--verbose` for debug-level detail
 
 ## What Silvan Does Today
 
