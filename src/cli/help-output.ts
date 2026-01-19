@@ -210,6 +210,11 @@ export function buildHelpSections(sections: HelpSection[], cli: CAC): HelpSectio
     nextSections.push(optionSection);
   }
 
+  const jsonSection = buildJsonOutputSection(commandKey);
+  if (jsonSection) {
+    nextSections.push(jsonSection);
+  }
+
   const examples = buildExamples(commandKey, command, meta.examples);
   if (examples.length > 0) {
     nextSections.push({
@@ -231,6 +236,20 @@ export function buildHelpSections(sections: HelpSection[], cli: CAC): HelpSectio
   }
 
   return nextSections;
+}
+
+function buildJsonOutputSection(commandKey: string): HelpSection | null {
+  if (commandKey === 'silvan') return null;
+  const lines = [
+    '  Emits com.silvan.events JSONL on stdout.',
+    '  Single-response commands emit cli.result with:',
+    '    success, command, data, nextSteps, error',
+    '  Long-running commands stream progress events.',
+  ];
+  return {
+    title: 'JSON output',
+    body: lines.join('\n'),
+  };
 }
 
 function buildGroupedOptionsSection(

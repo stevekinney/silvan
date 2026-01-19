@@ -314,6 +314,22 @@ export type LogMessage = {
   details?: Record<string, unknown>;
 };
 
+export type JsonError = {
+  code?: string;
+  message: string;
+  details?: Record<string, unknown>;
+  suggestions?: string[];
+  docsUrl?: string;
+};
+
+export type CliResult = {
+  command: string;
+  success: boolean;
+  data?: unknown;
+  nextSteps?: string[];
+  error?: JsonError;
+};
+
 export type Event =
   | EventEnvelope<'run.started', RunStarted>
   | EventEnvelope<'run.phase_changed', RunPhaseChanged>
@@ -345,4 +361,5 @@ export type Event =
   | EventEnvelope<'ai.tool_call_started', AiToolCall>
   | EventEnvelope<'ai.tool_call_finished', AiToolCallResult>
   | EventEnvelope<'ai.error', AiError>
-  | EventEnvelope<'log.message', LogMessage>;
+  | EventEnvelope<'log.message', LogMessage>
+  | EventEnvelope<'cli.result', CliResult>;

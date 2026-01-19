@@ -101,7 +101,7 @@ Silvan output is designed to be scannable in terminals and scriptable in CI.
 - Section headers use consistent separators for fast scanning
 - Commands end with a clear next steps block when there is a logical follow-on
 - Non-TTY output is plain text (no ANSI colors)
-- Use `--json` for machine-readable output
+- Use `--json` for machine-readable output (JSONL events with `cli.result` payloads)
 
 ## What Silvan Does Today
 

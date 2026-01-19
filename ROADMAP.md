@@ -84,7 +84,7 @@ These issues make Silvan learnable. Users can explore concepts and get help with
 
 These issues make Silvan a reliable building block for automation and CI pipelines.
 
-- [ ] [#19 - --json Output Consistency and Schema Documentation](https://github.com/stevekinney/silvan/issues/19)
+- [x] [#19 - --json Output Consistency and Schema Documentation](https://github.com/stevekinney/silvan/issues/19)
 
   > Makes every command scriptable. JSON everywhere, errors included.
 
@@ -238,12 +238,12 @@ $ silvan run list
 
 ## Progress Tracking
 
-| Phase              | Issues                     | Status         |
-| ------------------ | -------------------------- | -------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
-| Discoverability    | #21, #22                   | Complete (2/2) |
-| Scripting          | #19, #18                   | Not started    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started    |
+| Phase              | Issues                     | Status            |
+| ------------------ | -------------------------- | ----------------- |
+| Foundation         | #6, #14, #3, #2            | Complete (4/4)    |
+| Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
+| Discoverability    | #21, #22                   | Complete (2/2)    |
+| Scripting          | #19, #18                   | In progress (1/2) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | Not started       |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

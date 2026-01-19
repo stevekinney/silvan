@@ -25,7 +25,7 @@ import type { Config, ConfigInput } from '../config/schema';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
-import { SilvanError } from '../core/errors';
+import { normalizeError, SilvanError } from '../core/errors';
 import { createLogger } from '../core/logger';
 import { detectRepoContext } from '../core/repo';
 import {
@@ -92,6 +92,7 @@ import {
   renderInitHeader,
   renderInitResult,
 } from './init-output';
+import { emitJsonError, emitJsonResult, emitJsonSuccess } from './json-output';
 import {
   colors,
   formatKeyList,
@@ -204,7 +205,7 @@ type CliOptions = {
 };
 
 // Essential options (shown in default help)
-cli.option('--json', 'Output as JSON event stream');
+cli.option('--json', 'Output JSON events (com.silvan.events)');
 cli.option('--yes, -y', 'Skip all confirmation prompts');
 cli.option('--no-ui', 'Disable interactive UI');
 cli.option('--quiet, -q', 'Suppress non-error output');
@@ -276,8 +277,9 @@ cli
   .option('--yes', 'Skip prompts and use defaults')
   .action(async (options: CliOptions) => {
     const repo = await detectRepoContext({ cwd: process.cwd() });
-    const useDefaults = options.yes ?? false;
-    const showOutput = !options.quiet;
+    const jsonMode = Boolean(options.json);
+    const useDefaults = options.yes ?? jsonMode ?? false;
+    const showOutput = !options.quiet && !jsonMode;
 
     const context = await collectInitContext(repo.repoRoot);
     if (showOutput) {
@@ -323,7 +325,18 @@ cli
       'silvan doctor',
       'silvan task start "Your first task"',
     ];
-    if (showOutput) {
+    if (jsonMode) {
+      await emitJsonSuccess({
+        command: 'init',
+        data: {
+          detection: context.detection,
+          existingConfigPath: context.existingConfigPath ?? null,
+          result,
+        },
+        nextSteps,
+        repoRoot: repo.repoRoot,
+      });
+    } else if (showOutput) {
       console.log(renderNextSteps(nextSteps));
     }
   });
@@ -424,7 +437,18 @@ cli
         console.log(renderNextSteps(['silvan quickstart']));
       }
       if (jsonMode) {
-        console.log(JSON.stringify(jsonSummary, null, 2));
+        await emitJsonResult({
+          command: 'quickstart',
+          success: false,
+          data: jsonSummary,
+          error: {
+            code: 'quickstart.blocked',
+            message: 'Missing required setup.',
+            details: { blockers: checkSummary.blockers },
+            suggestions: ['Run `silvan quickstart` after fixing blockers.'],
+          },
+          repoRoot: repo.repoRoot,
+        });
       }
       process.exitCode = 1;
       return;
@@ -445,7 +469,12 @@ cli
       if (!proceed) {
         if (jsonMode) {
           jsonSummary.sample = { skipped: true, reason: 'user_canceled' };
-          console.log(JSON.stringify(jsonSummary, null, 2));
+          await emitJsonResult({
+            command: 'quickstart',
+            success: jsonSummary.ok,
+            data: jsonSummary,
+            repoRoot: repo.repoRoot,
+          });
         }
         return;
       }
@@ -570,7 +599,12 @@ cli
     await markQuickstartCompleted(pkg.version);
 
     if (jsonMode) {
-      console.log(JSON.stringify(jsonSummary, null, 2));
+      await emitJsonResult({
+        command: 'quickstart',
+        success: jsonSummary.ok,
+        data: jsonSummary,
+        repoRoot: repo.repoRoot,
+      });
     }
   });
 
@@ -943,28 +977,25 @@ async function withCliContext<T>(
 
 cli
   .command('help [topic]', 'View help topics and concepts')
-  .action((topic: string | undefined, options: CliOptions) => {
+  .action(async (topic: string | undefined, options: CliOptions) => {
     const topics = listHelpTopics();
     const jsonMode = Boolean(options.json);
 
     if (!topic) {
       if (jsonMode) {
-        console.log(
-          JSON.stringify(
-            {
-              topics: topics.map(({ id, title, summary, category }) => ({
-                id,
-                title,
-                summary,
-                category,
-              })),
-              usage: 'silvan help <topic>',
-              commandHelp: 'silvan <command> --help',
-            },
-            null,
-            2,
-          ),
-        );
+        await emitJsonSuccess({
+          command: 'help',
+          data: {
+            topics: topics.map(({ id, title, summary, category }) => ({
+              id,
+              title,
+              summary,
+              category,
+            })),
+            usage: 'silvan help <topic>',
+            commandHelp: 'silvan <command> --help',
+          },
+        });
         return;
       }
 
@@ -991,24 +1022,21 @@ cli
     }
 
     if (jsonMode) {
-      console.log(
-        JSON.stringify(
-          {
-            topic: {
-              id: matched.id,
-              title: matched.title,
-              summary: matched.summary,
-              category: matched.category,
-              intro: matched.intro,
-              sections: matched.sections,
-              examples: matched.examples ?? [],
-              seeAlso: matched.seeAlso ?? [],
-            },
+      await emitJsonSuccess({
+        command: 'help',
+        data: {
+          topic: {
+            id: matched.id,
+            title: matched.title,
+            summary: matched.summary,
+            category: matched.category,
+            intro: matched.intro,
+            sections: matched.sections,
+            examples: matched.examples ?? [],
+            seeAlso: matched.seeAlso ?? [],
           },
-          null,
-          2,
-        ),
-      );
+        },
+      });
       return;
     }
 
@@ -1779,19 +1807,17 @@ cli
               `silvan run status ${firstRun.runId}`,
             ]
           : ['silvan task start "Your task"'];
-        console.log(
-          JSON.stringify(
-            {
-              total,
-              filtered: filteredTotal,
-              showing: paged.length,
-              runs: jsonRuns,
-              nextSteps,
-            },
-            null,
-            2,
-          ),
-        );
+        await emitJsonSuccess({
+          command: 'run list',
+          data: {
+            total,
+            filtered: filteredTotal,
+            showing: paged.length,
+            runs: jsonRuns,
+          },
+          nextSteps,
+          repoRoot: repo.repoRoot,
+        });
         return;
       }
 
@@ -1857,7 +1883,11 @@ cli
       .filter((event): event is Event => event !== null);
 
     if (options.json) {
-      console.log(JSON.stringify({ runId, events }, null, 2));
+      await emitJsonSuccess({
+        command: 'logs',
+        data: { runId, events },
+        repoRoot: repo.repoRoot,
+      });
       return;
     }
 
@@ -1881,7 +1911,12 @@ cli
       throw new Error(`Run not found: ${runId}`);
     }
     if (options.json) {
-      console.log(JSON.stringify(snapshot, null, 2));
+      await emitJsonSuccess({
+        command: 'run inspect',
+        data: { snapshot },
+        repoRoot: repo.repoRoot,
+        runId,
+      });
       return;
     }
     if (options.quiet) {
@@ -1948,23 +1983,22 @@ cli
 cli
   .command('run status <runId>', 'Show convergence status for a run')
   .action(async (runId: string, options: CliOptions) => {
-    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const { snapshot, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const convergence = deriveConvergenceFromSnapshot(snapshot);
     if (options.json) {
-      console.log(
-        JSON.stringify(
-          {
-            runId,
-            status: convergence.status,
-            reasonCode: convergence.reasonCode,
-            message: convergence.message,
-            nextActions: convergence.nextActions,
-            blockingArtifacts: convergence.blockingArtifacts ?? [],
-          },
-          null,
-          2,
-        ),
-      );
+      await emitJsonSuccess({
+        command: 'run status',
+        data: {
+          runId,
+          status: convergence.status,
+          reasonCode: convergence.reasonCode,
+          message: convergence.message,
+          nextActions: convergence.nextActions,
+          blockingArtifacts: convergence.blockingArtifacts ?? [],
+        },
+        repoRoot,
+        runId,
+      });
       return;
     }
     if (options.quiet) {
@@ -2012,7 +2046,7 @@ cli
 cli
   .command('run explain <runId>', 'Explain why a run is waiting or blocked')
   .action(async (runId: string, options: CliOptions) => {
-    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const { snapshot, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const data = snapshot.data as Record<string, unknown>;
     const run = (typeof data['run'] === 'object' && data['run'] ? data['run'] : {}) as {
       status?: string;
@@ -2036,24 +2070,23 @@ cli
     const lastStep = findLastSuccessfulStep(steps);
 
     if (options.json) {
-      console.log(
-        JSON.stringify(
-          {
-            runId,
-            run: { status: run.status, phase: run.phase },
-            convergence,
-            lastSuccessfulStep: lastStep ?? null,
-            summaries: {
-              ci: summary.ci ?? null,
-              unresolvedReviewCount: summary.unresolvedReviewCount ?? null,
-              blockedReason: summary.blockedReason ?? null,
-              localGate,
-            },
+      await emitJsonSuccess({
+        command: 'run explain',
+        data: {
+          runId,
+          run: { status: run.status, phase: run.phase },
+          convergence,
+          lastSuccessfulStep: lastStep ?? null,
+          summaries: {
+            ci: summary.ci ?? null,
+            unresolvedReviewCount: summary.unresolvedReviewCount ?? null,
+            blockedReason: summary.blockedReason ?? null,
+            localGate,
           },
-          null,
-          2,
-        ),
-      );
+        },
+        repoRoot,
+        runId,
+      });
       return;
     }
     if (options.quiet) {
@@ -2130,7 +2163,7 @@ cli
 cli
   .command('learning show <runId>', 'Show learning notes for a run')
   .action(async (runId: string, options: CliOptions) => {
-    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const { snapshot, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const data = snapshot.data as Record<string, unknown>;
     const artifactsIndex =
       typeof data['artifactsIndex'] === 'object' && data['artifactsIndex']
@@ -2147,7 +2180,12 @@ cli
     }
     const content = await readArtifact({ entry: notesEntry });
     if (options.json) {
-      console.log(JSON.stringify(content, null, 2));
+      await emitJsonSuccess({
+        command: 'learning show',
+        data: { runId, kind: notesEntry.kind, content },
+        repoRoot,
+        runId,
+      });
       return;
     }
     if (notesEntry.kind === 'text') {
@@ -2176,22 +2214,21 @@ cli
   .option('--apply', 'Allow mutating tools')
   .option('--dangerous', 'Allow dangerous tools (requires --apply)')
   .action(async (runId: string, options: CliOptions) => {
-    const { snapshot } = await loadRunSnapshotForCli(runId, options);
+    const { snapshot, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const convergence = deriveConvergenceFromSnapshot(snapshot);
     if (convergence.status === 'converged' || convergence.status === 'aborted') {
       if (options.json) {
-        console.log(
-          JSON.stringify(
-            {
-              runId,
-              status: convergence.status,
-              reason: convergence.reasonCode,
-              message: 'Resume is not applicable.',
-            },
-            null,
-            2,
-          ),
-        );
+        await emitJsonSuccess({
+          command: 'run resume',
+          data: {
+            runId,
+            status: convergence.status,
+            reason: convergence.reasonCode,
+            message: 'Resume is not applicable.',
+          },
+          repoRoot,
+          runId,
+        });
         return;
       }
       if (!options.quiet) {
@@ -2211,7 +2248,7 @@ cli
     }
     await withCliContext(
       options,
-      'headless',
+      options.json ? 'json' : 'headless',
       async (ctx) => {
         const logger = createCliLogger(ctx);
         await withAgentSessions(
@@ -2245,10 +2282,15 @@ cli
     if (!message) {
       throw new Error('Override reason is required.');
     }
-    const { state } = await loadRunSnapshotForCli(runId, options);
+    const { state, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const entry = await writeOverrideArtifact({ state, runId, reason: message });
     if (options.json) {
-      console.log(JSON.stringify({ runId, override: entry }, null, 2));
+      await emitJsonSuccess({
+        command: 'run override',
+        data: { runId, override: entry },
+        repoRoot,
+        runId,
+      });
       return;
     }
     if (options.quiet) {
@@ -2269,10 +2311,15 @@ cli
 cli
   .command('run abort <runId> [reason]', 'Abort a run and mark it as canceled')
   .action(async (runId: string, reason: string | undefined, options: CliOptions) => {
-    const { state } = await loadRunSnapshotForCli(runId, options);
+    const { state, repoRoot } = await loadRunSnapshotForCli(runId, options);
     const entry = await markRunAborted({ state, runId, ...(reason ? { reason } : {}) });
     if (options.json) {
-      console.log(JSON.stringify({ runId, aborted: entry }, null, 2));
+      await emitJsonSuccess({
+        command: 'run abort',
+        data: { runId, aborted: entry },
+        repoRoot,
+        runId,
+      });
       return;
     }
     if (options.quiet) {
@@ -2291,6 +2338,20 @@ cli
   });
 
 cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
+  if (options.json) {
+    await emitJsonError({
+      command: 'ui',
+      error: new SilvanError({
+        code: 'ui.json_unsupported',
+        message: 'JSON output is not supported for the UI command.',
+        userMessage: 'JSON output is not supported for the UI command.',
+        kind: 'validation',
+        nextSteps: ['Run `silvan ui` without --json.'],
+      }),
+    });
+    process.exitCode = 1;
+    return;
+  }
   if (options.noUi) {
     throw new Error('The --no-ui flag cannot be used with silvan ui.');
   }
@@ -2353,7 +2414,7 @@ cli
   .option('--open-shell', 'Open interactive shell in worktree')
   .option('--exec <cmd>', 'Run command in worktree then exit')
   .action((taskRef: string | undefined, options: CliOptions) =>
-    withCliContext(options, 'headless', async (ctx) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         let localInput = await buildLocalTaskInput(options);
         let inferred =
@@ -2396,7 +2457,7 @@ cli
   );
 
 cli.command('queue run', 'Process queued task requests').action((options: CliOptions) =>
-  withCliContext(options, 'headless', async (ctx) => {
+  withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
     const logger = createCliLogger(ctx);
     const requests = await listQueueRequests({ state: ctx.state });
     if (requests.length === 0) {
@@ -2409,7 +2470,7 @@ cli.command('queue run', 'Process queued task requests').action((options: CliOpt
       await withRunContext(
         {
           cwd: process.cwd(),
-          mode: 'headless',
+          mode: options.json ? 'json' : 'headless',
           lock: true,
           configOverrides: buildConfigOverrides(options),
         },
@@ -2982,7 +3043,10 @@ async function handleRootCommand(options: CliOptions): Promise<void> {
       ...(summary.repo ? { repo: summary.repo } : {}),
       ...(summary.runs ? { activeRuns: summary.runs } : {}),
     };
-    console.log(JSON.stringify(payload, null, 2));
+    await emitJsonSuccess({
+      command: 'silvan',
+      data: payload,
+    });
     if (firstRun) {
       await markFirstRunCompleted(pkg.version);
     }
@@ -3010,6 +3074,7 @@ async function loadRunSnapshotForCli(
   runId: string,
   options: CliOptions,
 ): Promise<{
+  repoRoot: string;
   state: Awaited<ReturnType<typeof initStateStore>>;
   snapshot: Awaited<ReturnType<typeof loadRunSnapshot>>;
   config: Awaited<ReturnType<typeof loadConfig>>['config'];
@@ -3022,7 +3087,7 @@ async function loadRunSnapshotForCli(
     ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
   });
   const snapshot = await loadRunSnapshot(state, runId);
-  return { state, snapshot, config: configResult.config };
+  return { repoRoot: repo.repoRoot, state, snapshot, config: configResult.config };
 }
 
 function parseAuditEvent(line: string): Event | null {
@@ -3064,7 +3129,7 @@ cli
   .command('agent plan', 'Generate plan')
   .option('--task <task>', 'Task reference (Linear ID, gh-<number>, or URL)')
   .action((options: CliOptions) =>
-    withCliContext(options, 'headless', async (ctx) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), (sessions) =>
         runPlanner(ctx, {
           ...(options.task ? { taskRef: options.task } : {}),
@@ -3078,7 +3143,7 @@ cli
   .command('agent clarify', 'Answer plan questions')
   .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
   .action((options: CliOptions & { answer?: string | string[] }) =>
-    withCliContext(options, 'headless', async (ctx) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         const logger = createCliLogger(ctx);
         const state = await ctx.state.readRunState(ctx.runId);
@@ -3150,7 +3215,7 @@ cli
   .option('--apply', 'Allow file modifications (edits, writes, deletes)')
   .option('--dangerous', 'Allow shell commands and network access (requires --apply)')
   .action((options: CliOptions) =>
-    withCliContext(options, 'headless', async (ctx) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
         const runOptions = {
           ...(options.dryRun ? { dryRun: true } : {}),
@@ -3169,7 +3234,7 @@ cli
 cli
   .command('agent resume', 'Resume agent')
   .action((options: CliOptions) =>
-    withCliContext(options, 'headless', async (ctx) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
       withAgentSessions(Boolean(ctx.config.ai.sessions.persist), () => runRecovery(ctx)),
     ),
   );
@@ -3177,22 +3242,50 @@ cli
 // Shell completion
 cli
   .command('completion <shell>', 'Generate shell completion script (bash, zsh, fish)')
-  .action((shell: string) => {
+  .action(async (shell: string, options: CliOptions) => {
+    const normalized = shell.toLowerCase();
+    const command = 'completion';
+    const instructions: Record<string, string> = {
+      bash: '# Add to ~/.bashrc: eval "$(silvan completion bash)"',
+      zsh: '# Add to ~/.zshrc: eval "$(silvan completion zsh)"',
+      fish: '# Save to ~/.config/fish/completions/silvan.fish',
+    };
+
+    let script: string;
     switch (shell.toLowerCase()) {
       case 'bash':
-        console.log(generateBashCompletion());
-        console.log('# Add to ~/.bashrc: eval "$(silvan completion bash)"');
+        script = generateBashCompletion();
         break;
       case 'zsh':
-        console.log(generateZshCompletion());
-        console.log('# Add to ~/.zshrc: eval "$(silvan completion zsh)"');
+        script = generateZshCompletion();
         break;
       case 'fish':
-        console.log(generateFishCompletion());
-        console.log('# Save to ~/.config/fish/completions/silvan.fish');
+        script = generateFishCompletion();
         break;
       default:
         throw new Error(`Unknown shell: ${shell}. Supported: bash, zsh, fish`);
+    }
+
+    if (options.json) {
+      await emitJsonSuccess({
+        command,
+        data: {
+          shell: normalized,
+          script,
+          instructions: instructions[normalized] ?? '',
+        },
+      });
+      return;
+    }
+
+    if (options.quiet) {
+      return;
+    }
+
+    console.log(script);
+    const hint = instructions[normalized];
+    if (hint) {
+      console.log(hint);
     }
   });
 
@@ -3202,7 +3295,10 @@ cli
   .action(async (options: CliOptions) => {
     const { config, source } = await loadConfig(buildConfigOverrides(options));
     if (options.json) {
-      console.log(JSON.stringify({ source, config }, null, 2));
+      await emitJsonSuccess({
+        command: 'config show',
+        data: { source, config },
+      });
       return;
     }
     if (options.quiet) {
@@ -3317,8 +3413,26 @@ cli
 
       if (options.json) {
         const allOk = checks.every((c) => c.ok);
-        console.log(JSON.stringify({ ok: allOk, checks }, null, 2));
-        if (!allOk) process.exitCode = 1;
+        await emitJsonResult({
+          command: 'config validate',
+          success: allOk,
+          data: { ok: allOk, checks },
+          ...(allOk
+            ? {}
+            : {
+                error: {
+                  code: 'config.validation_warnings',
+                  message: 'Configuration checks returned warnings.',
+                  details: {
+                    warnings: checks.filter((check) => !check.ok),
+                  },
+                  suggestions: ['Run `silvan config show` for details.'],
+                },
+              }),
+        });
+        if (!allOk) {
+          process.exitCode = 1;
+        }
         return;
       }
 
@@ -3352,16 +3466,7 @@ cli
       console.log(lines.join('\n'));
     } catch (error) {
       if (options.json) {
-        console.log(
-          JSON.stringify(
-            {
-              ok: false,
-              error: error instanceof Error ? error.message : String(error),
-            },
-            null,
-            2,
-          ),
-        );
+        await emitJsonError({ command: 'config validate', error });
       } else {
         const rendered = renderCliError(error, {
           debug: Boolean(options.debug),
@@ -3384,7 +3489,13 @@ cli
         network: Boolean(options.network),
       });
       if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
+        await emitJsonSuccess({
+          command: 'doctor',
+          data: report,
+          bus: ctx.events.bus,
+          runId: ctx.runId,
+          repoRoot: ctx.repo.repoRoot,
+        });
       } else {
         if (options.quiet) {
           if (!report.ok) {
@@ -3411,13 +3522,26 @@ cli
   .command('convo show <runId>', 'Show conversation context')
   .option('--limit <limit>', 'Number of messages to show', { default: '20' })
   .action((runId: string, options: CliOptions & { limit?: string }) =>
-    withCliContext(options, 'headless', async (ctx) => {
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
       const snapshot = await loadConversationSnapshot(ctx.state, runId);
       if (!snapshot) {
         throw new Error(`No conversation found for run ${runId}`);
       }
       const limit = Math.max(1, Number(options.limit ?? 20) || 20);
       const summary = summarizeConversationSnapshot(snapshot, { limit });
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'convo show',
+          data: { runId, summary },
+          bus: ctx.events.bus,
+          runId: ctx.runId,
+          repoRoot: ctx.repo.repoRoot,
+        });
+        return;
+      }
+      if (options.quiet) {
+        return;
+      }
       console.log(renderConversationSummary(summary));
     }),
   );
@@ -3426,7 +3550,7 @@ cli
   .command('convo export <runId>', 'Export conversation snapshot')
   .option('--format <format>', 'json or md', { default: 'json' })
   .action((runId: string, options: CliOptions & { format?: string }) =>
-    withCliContext(options, 'headless', async (ctx) => {
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
       const snapshot = await loadConversationSnapshot(ctx.state, runId);
       if (!snapshot) {
         throw new Error(`No conversation found for run ${runId}`);
@@ -3435,7 +3559,21 @@ cli
       if (format !== 'json' && format !== 'md') {
         throw new Error('Format must be json or md');
       }
-      console.log(exportConversationSnapshot(snapshot, { format }));
+      const content = exportConversationSnapshot(snapshot, { format });
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'convo export',
+          data: { runId, format, content },
+          bus: ctx.events.bus,
+          runId: ctx.runId,
+          repoRoot: ctx.repo.repoRoot,
+        });
+        return;
+      }
+      if (options.quiet) {
+        return;
+      }
+      console.log(content);
     }),
   );
 
@@ -3607,16 +3745,23 @@ export async function run(argv: string[]): Promise<void> {
       await runPromise;
     }
   } catch (error) {
-    const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
-    const traceEnabled = argv.includes('--trace');
-    const rendered = renderCliError(error, {
-      debug: debugEnabled,
-      trace: traceEnabled,
-      commandNames: getRegisteredCommandNames(),
-    });
-    console.error(rendered.message);
-    if (rendered.error.exitCode !== undefined) {
-      process.exitCode = rendered.error.exitCode;
+    const normalized = normalizeError(error);
+    const jsonMode = argv.includes('--json');
+    if (jsonMode) {
+      const commandName = cli.matchedCommand?.name ?? 'silvan';
+      await emitJsonError({ command: commandName, error: normalized });
+    } else {
+      const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
+      const traceEnabled = argv.includes('--trace');
+      const rendered = renderCliError(normalized, {
+        debug: debugEnabled,
+        trace: traceEnabled,
+        commandNames: getRegisteredCommandNames(),
+      });
+      console.error(rendered.message);
+    }
+    if (normalized.exitCode !== undefined) {
+      process.exitCode = normalized.exitCode;
     } else if (process.exitCode === undefined) {
       process.exitCode = 1;
     }
