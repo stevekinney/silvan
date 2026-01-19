@@ -99,7 +99,7 @@ These issues transform the dashboard from a simple viewer to a full operator con
 
   > **Prerequisite for all UI work**. Enables handling 100+ runs without performance issues.
 
-- [ ] [#9 - Dashboard Overview: filtering, grouping, attention queue](https://github.com/stevekinney/silvan/issues/9)
+- [x] [#9 - Dashboard Overview: filtering, grouping, attention queue](https://github.com/stevekinney/silvan/issues/9)
 
   > Core operator use case. Find and triage runs across repos.
 
@@ -244,6 +244,6 @@ $ silvan run list
 | Polish             | #15, #17, #16, #23, #20    | Complete (5/5)    |
 | Discoverability    | #21, #22                   | Complete (2/2)    |
 | Scripting          | #19, #18                   | Complete (2/2)    |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (1/6) |
+| Mission Control UI | #8, #9, #10, #12, #11, #13 | In progress (2/6) |
 
 **Total: 19 issues** (excludes #7 which is a tracking epic)

@@ -9,6 +9,12 @@ export function HelpOverlay(): React.ReactElement {
       <Text color="gray">Enter: focus details (narrow view)</Text>
       <Text color="gray">b: back</Text>
       <Text color="gray">/: filter runs</Text>
+      <Text color="gray">1-5: open filters (status/phase/convergence/provider/repo)</Text>
+      <Text color="gray">6-7: open filters (task/pr)</Text>
+      <Text color="gray">a: toggle attention mode</Text>
+      <Text color="gray">g: toggle repo grouping</Text>
+      <Text color="gray">s: cycle sort (updated/started/duration)</Text>
+      <Text color="gray">c: clear filters</Text>
       <Text color="gray">n: new task request</Text>
       <Text color="gray">l: load more runs</Text>
       <Text color="gray">r: refresh from disk</Text>

@@ -116,7 +116,16 @@ export type DashboardState = {
   runs: Record<string, RunRecord>;
   runIndex: string[];
   selection?: string;
-  filter: { query: string };
+  filter: {
+    query: string;
+    status: string[];
+    phase: string[];
+    convergence: string[];
+    provider: string[];
+    repo: string[];
+    task: string[];
+    pr: string[];
+  };
   helpVisible: boolean;
   worktrees: Array<{
     id: string;
@@ -141,7 +150,16 @@ export function initialDashboardState(): DashboardState {
   return {
     runs: {},
     runIndex: [],
-    filter: { query: '' },
+    filter: {
+      query: '',
+      status: [],
+      phase: [],
+      convergence: [],
+      provider: [],
+      repo: [],
+      task: [],
+      pr: [],
+    },
     helpVisible: false,
     worktrees: [],
     openPrs: [],
