@@ -1,7 +1,9 @@
 import { Octokit } from 'octokit';
 
+import { readEnvValue } from '../utils/env';
+
 export function getGitHubToken(): string {
-  const token = Bun.env['GITHUB_TOKEN'] ?? Bun.env['GH_TOKEN'];
+  const token = readEnvValue('GITHUB_TOKEN') ?? readEnvValue('GH_TOKEN');
   if (!token) {
     throw new Error(
       'Missing GitHub token (configure github.token or set GITHUB_TOKEN/GH_TOKEN).',

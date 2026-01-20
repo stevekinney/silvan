@@ -1,6 +1,7 @@
 import { LinearClient } from '@linear/sdk';
 
 import { SilvanError } from '../core/errors';
+import { readEnvValue } from '../utils/env';
 
 export type LinearTicket = {
   id: string;
@@ -16,7 +17,7 @@ export type LinearTicket = {
 };
 
 function getLinearClient(apiKey?: string): LinearClient {
-  const resolved = apiKey ?? Bun.env['LINEAR_API_KEY'];
+  const resolved = apiKey ?? readEnvValue('LINEAR_API_KEY');
   if (!resolved) {
     throw new SilvanError({
       code: 'auth.linear.missing_token',

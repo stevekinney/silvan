@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 
 import { config as loadDotenv } from 'dotenv';
 
+import { setEnvValue } from '../utils/env';
+
 export type EnvLoadSummary = {
   path?: string;
   keys: string[];
@@ -54,7 +56,7 @@ export async function loadProjectEnv(options: {
   const keys = result.parsed ? Object.keys(result.parsed) : [];
   if (result.parsed) {
     for (const [key, value] of Object.entries(result.parsed)) {
-      Bun.env[key] = value;
+      setEnvValue(key, value);
     }
   }
   logDebug(`Loaded ${keys.length} environment variable${keys.length === 1 ? '' : 's'}`);

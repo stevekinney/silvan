@@ -55,12 +55,11 @@ Troubleshooting:
 
 ### Publishing (maintainers)
 
-- GitHub Releases and npm publish are automated on tag pushes (`v*.*.*`).
-- The workflow requires `NPM_TOKEN` as a repository secret.
-- npm authentication uses `NODE_AUTH_TOKEN` and supports `--provenance` in CI.
-- npm is moving away from long‑lived classic tokens. Prefer trusted publishing or
-  granular tokens with rotation to keep release automation compliant with upcoming
-  npm security changes.
+- GitHub Releases and npm publish are automated on tag pushes (`v*.*.*`) using trusted publishing (OIDC).
+- Configure the npm trusted publisher for `stevekinney/silvan` and `.github/workflows/release.yml`.
+- No `NPM_TOKEN` or `NODE_AUTH_TOKEN` is required once trusted publishing is enabled.
+- Release with `bun run release:patch`, `bun run release:minor`, or `bun run release:major`.
+- If the package is not yet bootstrapped on npm, do one interactive publish from a maintainer machine first.
 
 ## Quick Start
 
@@ -69,7 +68,7 @@ Troubleshooting:
 silvan init
 
 # List worktrees
-silvan wt list
+silvan tree list
 
 # Start from a local task (no external tracker required)
 silvan task start "Improve run status visibility"
@@ -236,6 +235,10 @@ Supported filenames:
 - `silvan.config.yaml`
 - `silvan.config.yml`
 
+Silvan searches upward from the current working directory and treats the nearest
+configuration file location as the project root for state, queue, and worktree
+operations.
+
 Example `silvan.config.ts`:
 
 ```ts
@@ -306,6 +309,7 @@ Example `silvan.config.json` with schema:
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`: cognition lane providers
 - `SILVAN_STATE_MODE=global|repo`: override state storage mode
 - Silvan auto-loads `.env` from the config directory or repo root and overrides existing env values.
+- API keys are read at runtime from the environment and are never embedded in build output.
 
 See `silvan doctor` for a full diagnostic report of effective configuration.
 
@@ -313,11 +317,11 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 ### Worktrees
 
-- `wt list` — list worktrees
-- `wt add <name>` — create worktree + branch
-- `wt remove <name>` — remove worktree (`--force` to override dirty check)
-- `wt clean` — remove worktrees with merged PRs (`--all` to skip prompts)
-- `wt prune | wt lock | wt unlock | wt rebase` — worktree maintenance
+- `tree list` — list worktrees
+- `tree add <name>` — create worktree + branch
+- `tree remove <name>` — remove worktree (`--force` to override dirty check)
+- `tree clean` — remove worktrees with merged PRs (`--all` to skip prompts)
+- `tree prune | tree lock | tree unlock | tree rebase` — worktree maintenance
 
 ### Agent workflows
 
@@ -331,7 +335,7 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 ### Runs + operator control
 
-- `runs list` / `runs inspect <runId>` / `runs resume <runId>`
+- `run list` / `run inspect <runId>` / `run resume <runId>`
 - `run status <runId>` / `run explain <runId>` / `run override <runId> <reason...>` / `run abort <runId>`
 
 ### Diagnostics
@@ -363,4 +367,4 @@ bun test
 
 ## License
 
-TBD
+MIT

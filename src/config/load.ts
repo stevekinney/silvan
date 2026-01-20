@@ -1,9 +1,12 @@
+import { access, readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { cosmiconfig } from 'cosmiconfig';
 import { ProseWriter } from 'prose-writer';
 
 import { SilvanError } from '../core/errors';
+import { readEnvValue } from '../utils/env';
 import { loadProjectEnv } from './env';
 import type { Config, ConfigInput } from './schema';
 import { configSchema } from './schema';
@@ -11,6 +14,7 @@ import { configSchema } from './schema';
 export type ConfigResult = {
   config: Config;
   source: { path: string; format: string } | null;
+  projectRoot: string;
 };
 
 async function loadTsConfig(path: string): Promise<unknown> {
@@ -63,22 +67,72 @@ function mergeConfig(base: Config, override?: ConfigInput): Config {
   return output as Config;
 }
 
-function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
-  const override: ConfigInput = {};
+const CONFIG_FILES = [
+  'silvan.config.ts',
+  'silvan.config.js',
+  'silvan.config.json',
+  'silvan.config.yaml',
+  'silvan.config.yml',
+];
 
-  const githubToken = env['GITHUB_TOKEN'] ?? env['GH_TOKEN'];
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function findConfigPath(searchFrom: string): Promise<string | null> {
+  let current = searchFrom;
+  while (true) {
+    for (const candidate of CONFIG_FILES) {
+      const path = join(current, candidate);
+      if (await pathExists(path)) {
+        return path;
+      }
+    }
+
+    const packagePath = join(current, 'package.json');
+    if (await pathExists(packagePath)) {
+      try {
+        const raw = await readFile(packagePath, 'utf8');
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object' && 'silvan' in parsed) {
+          return packagePath;
+        }
+      } catch {
+        // ignore invalid package.json
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function configFromEnv(): ConfigInput {
+  const override: ConfigInput = {};
+  const env = (key: string): EnvValue => readEnvValue(key);
+
+  const githubToken = env('GITHUB_TOKEN') ?? env('GH_TOKEN');
   if (githubToken) {
     override.github = { ...(override.github ?? {}), token: githubToken };
   }
 
-  if (env['LINEAR_API_KEY']) {
-    override.linear = { ...(override.linear ?? {}), token: env['LINEAR_API_KEY'] };
+  const linearToken = env('LINEAR_API_KEY');
+  if (linearToken) {
+    override.linear = { ...(override.linear ?? {}), token: linearToken };
   }
 
-  if (env['CLAUDE_MODEL']) {
+  const claudeModel = env('CLAUDE_MODEL');
+  if (claudeModel) {
     override.ai = {
       ...(override.ai ?? {}),
-      models: { ...(override.ai?.models ?? {}), default: env['CLAUDE_MODEL'] },
+      models: { ...(override.ai?.models ?? {}), default: claudeModel },
     };
   }
 
@@ -91,7 +145,7 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     ['recovery', 'SILVAN_MODEL_RECOVERY'],
   ];
   for (const [phase, key] of phaseModels) {
-    const value = env[key];
+    const value = env(key);
     if (!value) continue;
     override.ai = {
       ...(override.ai ?? {}),
@@ -99,9 +153,9 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
-  const maxTurns = parseNumber(env['SILVAN_MAX_TURNS']);
-  const maxBudgetUsd = parseNumber(env['SILVAN_MAX_BUDGET_USD']);
-  const maxThinkingTokens = parseNumber(env['SILVAN_MAX_THINKING_TOKENS']);
+  const maxTurns = parseNumber(env('SILVAN_MAX_TURNS'));
+  const maxBudgetUsd = parseNumber(env('SILVAN_MAX_BUDGET_USD'));
+  const maxThinkingTokens = parseNumber(env('SILVAN_MAX_THINKING_TOKENS'));
   if (maxTurns || maxBudgetUsd || maxThinkingTokens) {
     override.ai = {
       ...(override.ai ?? {}),
@@ -158,9 +212,9 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     ],
   ];
   for (const [phase, turnsKey, budgetKey, thinkingKey] of phaseBudgets) {
-    const turns = parseNumber(env[turnsKey]);
-    const budget = parseNumber(env[budgetKey]);
-    const thinking = parseNumber(env[thinkingKey]);
+    const turns = parseNumber(env(turnsKey));
+    const budget = parseNumber(env(budgetKey));
+    const thinking = parseNumber(env(thinkingKey));
     if (!turns && !budget && !thinking) continue;
     override.ai = {
       ...(override.ai ?? {}),
@@ -176,8 +230,8 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
-  const maxCalls = parseNumber(env['SILVAN_MAX_TOOL_CALLS']);
-  const maxDurationMs = parseNumber(env['SILVAN_MAX_TOOL_MS']);
+  const maxCalls = parseNumber(env('SILVAN_MAX_TOOL_CALLS'));
+  const maxDurationMs = parseNumber(env('SILVAN_MAX_TOOL_MS'));
   if (maxCalls || maxDurationMs) {
     override.ai = {
       ...(override.ai ?? {}),
@@ -189,7 +243,7 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
-  const persistSessions = parseBool(env['SILVAN_PERSIST_SESSIONS']);
+  const persistSessions = parseBool(env('SILVAN_PERSIST_SESSIONS'));
   if (persistSessions !== undefined) {
     override.ai = {
       ...(override.ai ?? {}),
@@ -197,7 +251,7 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
-  const cognitionProvider = env['SILVAN_COGNITION_PROVIDER'];
+  const cognitionProvider = env('SILVAN_COGNITION_PROVIDER');
   if (cognitionProvider) {
     override.ai = {
       ...(override.ai ?? {}),
@@ -223,7 +277,7 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     ['conversationSummary', 'SILVAN_COGNITION_MODEL_CONVERSATION_SUMMARY'],
   ];
   for (const [task, key] of cognitionModels) {
-    const value = env[key];
+    const value = env(key);
     if (!value) continue;
     override.ai = {
       ...(override.ai ?? {}),
@@ -237,16 +291,17 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
     };
   }
 
-  const reviewLoops = parseNumber(env['SILVAN_MAX_REVIEW_LOOPS']);
+  const reviewLoops = parseNumber(env('SILVAN_MAX_REVIEW_LOOPS'));
   if (reviewLoops) {
     override.review = { ...(override.review ?? {}), maxIterations: reviewLoops };
   }
 
-  if (env['SHELL']) {
-    override.verify = { ...(override.verify ?? {}), shell: env['SHELL'] };
+  const shell = env('SHELL');
+  if (shell) {
+    override.verify = { ...(override.verify ?? {}), shell };
   }
 
-  const stateMode = env['SILVAN_STATE_MODE'];
+  const stateMode = env('SILVAN_STATE_MODE');
   if (stateMode === 'global' || stateMode === 'repo') {
     override.state = { ...(override.state ?? {}), mode: stateMode };
   }
@@ -254,7 +309,10 @@ function configFromEnv(env: Record<string, EnvValue>): ConfigInput {
   return override;
 }
 
-export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult> {
+export async function loadConfig(
+  overrides?: ConfigInput,
+  options?: { cwd?: string },
+): Promise<ConfigResult> {
   const explorer = cosmiconfig('silvan', {
     searchPlaces: [
       'silvan.config.ts',
@@ -269,10 +327,13 @@ export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult>
     },
   });
 
-  const result = await explorer.search();
+  const searchFrom = options?.cwd ? resolve(options.cwd) : process.cwd();
+  const configPath = await findConfigPath(searchFrom);
+  const result = configPath ? await explorer.load(configPath) : null;
+  const projectRoot = configPath ? dirname(configPath) : searchFrom;
   await loadProjectEnv({
-    cwd: process.cwd(),
-    ...(result?.filepath ? { configPath: result.filepath } : {}),
+    cwd: searchFrom,
+    ...(configPath ? { configPath } : {}),
   });
 
   const baseConfig: unknown = result ? (result.config ?? {}) : {};
@@ -303,7 +364,7 @@ export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult>
       ],
     });
   }
-  const envOverrides = configFromEnv(Bun.env);
+  const envOverrides = configFromEnv();
   const merged = mergeConfig(mergeConfig(parsed.data, envOverrides), overrides);
   const finalParsed = configSchema.safeParse(merged);
   if (!finalParsed.success) {
@@ -329,5 +390,6 @@ export async function loadConfig(overrides?: ConfigInput): Promise<ConfigResult>
     source: result
       ? { path: result.filepath, format: result.isEmpty ? 'empty' : 'file' }
       : null,
+    projectRoot,
   };
 }

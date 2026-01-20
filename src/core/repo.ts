@@ -1,8 +1,12 @@
-import { resolve } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 
 export type RepoContext = {
   repoRoot: string;
+  projectRoot: string;
+  gitRoot: string;
   gitDir: string;
+  gitCommonDir: string;
   branch: string;
   isWorktree: boolean;
   worktreePath?: string;
@@ -21,17 +25,29 @@ async function gitStdout(args: string[], cwd: string): Promise<string> {
 
 export async function detectRepoContext(options: { cwd: string }): Promise<RepoContext> {
   const cwd = resolve(options.cwd);
-  const repoRoot = await gitStdout(['rev-parse', '--show-toplevel'], cwd);
-  const gitDir = await gitStdout(['rev-parse', '--git-dir'], cwd);
+  const gitRoot = await gitStdout(['rev-parse', '--show-toplevel'], cwd);
+  const gitDirRaw = await gitStdout(['rev-parse', '--git-dir'], cwd);
+  const gitCommonDirRaw = await gitStdout(['rev-parse', '--git-common-dir'], cwd);
   const branch = await gitStdout(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
   const isBare = await gitStdout(['rev-parse', '--is-bare-repository'], cwd);
 
-  const isWorktree = isBare !== 'true' && repoRoot !== cwd;
-  const worktreePath = isWorktree ? cwd : undefined;
+  const gitDir = isAbsolute(gitDirRaw) ? gitDirRaw : resolve(cwd, gitDirRaw);
+  const gitCommonDir = isAbsolute(gitCommonDirRaw)
+    ? gitCommonDirRaw
+    : resolve(cwd, gitCommonDirRaw);
+  const gitDirResolved = await realpath(gitDir).catch(() => gitDir);
+  const gitCommonDirResolved = await realpath(gitCommonDir).catch(() => gitCommonDir);
+  const gitRootResolved = await realpath(gitRoot).catch(() => gitRoot);
+  const isWorktree = isBare !== 'true' && gitDirResolved !== gitCommonDirResolved;
+  const worktreePath = isWorktree ? gitRootResolved : undefined;
+  const repoRoot = cwd;
 
   return {
     repoRoot,
-    gitDir,
+    projectRoot: repoRoot,
+    gitRoot: gitRootResolved,
+    gitDir: gitDirResolved,
+    gitCommonDir: gitCommonDirResolved,
     branch,
     isWorktree,
     ...(worktreePath ? { worktreePath } : {}),

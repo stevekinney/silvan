@@ -27,19 +27,22 @@ export async function createRunContext(options: {
   configOverrides?: ConfigInput;
 }): Promise<RunContext> {
   const runId = options.runId ?? crypto.randomUUID();
-  const repo = await detectRepoContext({ cwd: options.cwd });
-  const configResult = await loadConfig(options.configOverrides);
-  const state = await initStateStore(repo.repoRoot, {
+  const configResult = await loadConfig(options.configOverrides, {
+    cwd: options.cwd,
+  });
+  const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+  const state = await initStateStore(repo.projectRoot, {
     ...(options.lock !== undefined ? { lock: options.lock } : {}),
     mode: configResult.config.state.mode,
     ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+    metadataRepoRoot: repo.gitRoot,
   });
   const metadataPath = join(state.root, 'metadata.json');
   try {
     await updateRepoMetadata({
       metadataPath,
-      repoRoot: repo.repoRoot,
-      repoLabel: formatRepoLabel(configResult.config, repo.repoRoot, {
+      repoRoot: repo.gitRoot,
+      repoLabel: formatRepoLabel(configResult.config, repo.projectRoot, {
         includeHost: false,
         fallback: 'basename',
       }),
@@ -75,7 +78,7 @@ export async function createRunContext(options: {
 
   const emitContext = {
     runId,
-    repoRoot: repo.repoRoot,
+    repoRoot: repo.projectRoot,
     mode: options.mode,
     ...(repo.worktreePath ? { worktreePath: repo.worktreePath } : {}),
   };
@@ -91,7 +94,7 @@ export async function createRunContext(options: {
         command: 'silvan',
         args: [],
         cwd: options.cwd,
-        repoRoot: repo.repoRoot,
+        repoRoot: repo.projectRoot,
       },
     }),
   );
@@ -123,7 +126,7 @@ export async function withRunContext<T>(
   let cancel: ((reason: RunCanceledError) => void) | undefined;
   const emitContext = {
     runId: ctx.runId,
-    repoRoot: ctx.repo.repoRoot,
+    repoRoot: ctx.repo.projectRoot,
     mode: options.mode,
     ...(ctx.repo.worktreePath ? { worktreePath: ctx.repo.worktreePath } : {}),
   };

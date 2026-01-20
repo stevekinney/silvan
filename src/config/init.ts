@@ -6,7 +6,9 @@ import { pathToFileURL } from 'node:url';
 import chalk from 'chalk';
 import { cosmiconfig } from 'cosmiconfig';
 
+import { readEnvValue } from '../utils/env';
 import { loadProjectEnv } from './env';
+import { findConfigPath } from './load';
 import type { ConfigInput } from './schema';
 import { parseGitHubRemote } from './validate';
 
@@ -43,8 +45,6 @@ type InitDetection = {
   defaultBranch: string;
   github?: { owner: string; repo: string };
 };
-
-const CONFIG_CANDIDATES = ['silvan.config.ts', 'silvan.config.js', 'silvan.config.json'];
 
 async function gitStdout(args: string[], repoRoot: string): Promise<string | null> {
   const proc = Bun.spawn(['git', ...args], {
@@ -162,19 +162,6 @@ async function detectVerifyScripts(
   return detected;
 }
 
-async function findExistingConfigPath(repoRoot: string): Promise<string | undefined> {
-  for (const candidate of CONFIG_CANDIDATES) {
-    const path = join(repoRoot, candidate);
-    try {
-      await access(path);
-      return path;
-    } catch {
-      // Not found, continue.
-    }
-  }
-  return undefined;
-}
-
 async function loadConfigFile(path: string): Promise<ConfigInput | undefined> {
   const explorer = cosmiconfig('silvan', {
     loaders: {
@@ -207,7 +194,7 @@ function normalizeProviders(
 }
 
 export async function collectInitContext(repoRoot: string): Promise<InitContext> {
-  const existingConfigPath = await findExistingConfigPath(repoRoot);
+  const existingConfigPath = await findConfigPath(repoRoot);
   await loadProjectEnv({
     cwd: repoRoot,
     ...(existingConfigPath ? { configPath: existingConfigPath } : {}),
@@ -245,7 +232,7 @@ export function getInitDefaults(context: InitContext): InitAnswers {
   if (context.detection.github) {
     enabled.add('github');
   }
-  if (Bun.env['LINEAR_API_KEY']) {
+  if (readEnvValue('LINEAR_API_KEY')) {
     enabled.add('linear');
   }
   const normalized = normalizeProviders([...enabled]);

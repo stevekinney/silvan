@@ -279,12 +279,15 @@ cli
   .command('init', 'Initialize silvan.config.ts with guided prompts')
   .option('--yes', 'Skip prompts and use defaults')
   .action(async (options: CliOptions) => {
-    const repo = await detectRepoContext({ cwd: process.cwd() });
+    const configResult = await loadConfig(buildConfigOverrides(options), {
+      cwd: process.cwd(),
+    });
+    const repo = await detectRepoContext({ cwd: configResult.projectRoot });
     const jsonMode = Boolean(options.json);
     const useDefaults = options.yes ?? jsonMode ?? false;
     const showOutput = !options.quiet && !jsonMode;
 
-    const context = await collectInitContext(repo.repoRoot);
+    const context = await collectInitContext(repo.projectRoot);
     if (showOutput) {
       console.log(renderInitHeader());
       console.log(renderInitDetection(context));
@@ -337,7 +340,7 @@ cli
           result,
         },
         nextSteps,
-        repoRoot: repo.repoRoot,
+        repoRoot: repo.projectRoot,
       });
     } else if (showOutput) {
       console.log(renderNextSteps(nextSteps));
@@ -364,9 +367,12 @@ cli
       });
     }
 
+    const configResult = await loadConfig(buildConfigOverrides(options), {
+      cwd: process.cwd(),
+    });
     let repo;
     try {
-      repo = await detectRepoContext({ cwd: process.cwd() });
+      repo = await detectRepoContext({ cwd: configResult.projectRoot });
     } catch {
       throw new SilvanError({
         code: 'quickstart.no_repo',
@@ -377,11 +383,10 @@ cli
       });
     }
 
-    const context = await collectInitContext(repo.repoRoot);
-    const configResult = await loadConfig(buildConfigOverrides(options));
+    const context = await collectInitContext(repo.projectRoot);
     const envSummary = getLoadedEnvSummary();
     const checkSummary = buildQuickstartChecks({
-      repoRoot: repo.repoRoot,
+      repoRoot: repo.projectRoot,
       config: configResult.config,
       envSummary,
       ...(context.existingConfigPath ? { configPath: context.existingConfigPath } : {}),
@@ -450,7 +455,7 @@ cli
             details: { blockers: checkSummary.blockers },
             suggestions: ['Run `silvan quickstart` after fixing blockers.'],
           },
-          repoRoot: repo.repoRoot,
+          repoRoot: repo.projectRoot,
         });
       }
       process.exitCode = 1;
@@ -476,7 +481,7 @@ cli
             command: 'quickstart',
             success: jsonSummary.ok,
             data: jsonSummary,
-            repoRoot: repo.repoRoot,
+            repoRoot: repo.projectRoot,
           });
         }
         return;
@@ -606,7 +611,7 @@ cli
         command: 'quickstart',
         success: jsonSummary.ok,
         data: jsonSummary,
-        repoRoot: repo.repoRoot,
+        repoRoot: repo.projectRoot,
       });
     }
   });
@@ -1229,7 +1234,7 @@ cli
 
       const defaultBranch = ctx.config.repo.defaultBranch;
       const candidates = worktrees.filter((worktree) => {
-        if (worktree.path === ctx.repo.repoRoot) return false;
+        if (worktree.path === ctx.repo.gitRoot) return false;
         if (!worktree.branch || worktree.branch === '(detached)') return false;
         if (worktree.branch === defaultBranch) return false;
         return true;
@@ -1677,14 +1682,17 @@ cli
         showSource?: boolean;
       },
     ) => {
-      const repo = await detectRepoContext({ cwd: process.cwd() });
-      const configResult = await loadConfig(buildConfigOverrides(options));
-      const state = await initStateStore(repo.repoRoot, {
+      const configResult = await loadConfig(buildConfigOverrides(options), {
+        cwd: process.cwd(),
+      });
+      const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+      const state = await initStateStore(repo.projectRoot, {
         lock: false,
         mode: configResult.config.state.mode,
         ...(configResult.config.state.root
           ? { root: configResult.config.state.root }
           : {}),
+        metadataRepoRoot: repo.gitRoot,
       });
       const runEntries = await readdir(state.runsDir);
       const files = runEntries.filter((entry) => entry.endsWith('.json'));
@@ -1819,7 +1827,7 @@ cli
             runs: jsonRuns,
           },
           nextSteps,
-          repoRoot: repo.repoRoot,
+          repoRoot: repo.projectRoot,
         });
         return;
       }
@@ -1854,12 +1862,15 @@ cli
   .command('logs <runId>', 'Show audit log for a run')
   .option('--tail <n>', 'Show the last N events')
   .action(async (runId: string, options: CliOptions & { tail?: string }) => {
-    const repo = await detectRepoContext({ cwd: process.cwd() });
-    const configResult = await loadConfig(buildConfigOverrides(options));
-    const state = await initStateStore(repo.repoRoot, {
+    const configResult = await loadConfig(buildConfigOverrides(options), {
+      cwd: process.cwd(),
+    });
+    const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+    const state = await initStateStore(repo.projectRoot, {
       lock: false,
       mode: configResult.config.state.mode,
       ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+      metadataRepoRoot: repo.gitRoot,
     });
     const logPath = join(state.auditDir, `${runId}.jsonl`);
     const logFile = Bun.file(logPath);
@@ -1889,7 +1900,7 @@ cli
       await emitJsonSuccess({
         command: 'logs',
         data: { runId, events },
-        repoRoot: repo.repoRoot,
+        repoRoot: repo.projectRoot,
       });
       return;
     }
@@ -1902,12 +1913,15 @@ cli
 cli
   .command('run inspect <runId>', 'Inspect a run snapshot')
   .action(async (runId: string, options: CliOptions) => {
-    const repo = await detectRepoContext({ cwd: process.cwd() });
-    const configResult = await loadConfig(buildConfigOverrides(options));
-    const state = await initStateStore(repo.repoRoot, {
+    const configResult = await loadConfig(buildConfigOverrides(options), {
+      cwd: process.cwd(),
+    });
+    const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+    const state = await initStateStore(repo.projectRoot, {
       lock: false,
       mode: configResult.config.state.mode,
       ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+      metadataRepoRoot: repo.gitRoot,
     });
     const snapshot = await state.readRunState(runId);
     if (!snapshot) {
@@ -1917,7 +1931,7 @@ cli
       await emitJsonSuccess({
         command: 'run inspect',
         data: { snapshot },
-        repoRoot: repo.repoRoot,
+        repoRoot: repo.projectRoot,
         runId,
       });
       return;
@@ -3009,17 +3023,18 @@ async function buildReturningSummaryData(): Promise<{
   runs?: QuickstartRunSummary[];
 }> {
   try {
-    const repo = await detectRepoContext({ cwd: process.cwd() });
-    const configResult = await loadConfig();
-    const state = await initStateStore(repo.repoRoot, {
+    const configResult = await loadConfig(undefined, { cwd: process.cwd() });
+    const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+    const state = await initStateStore(repo.projectRoot, {
       lock: false,
       mode: configResult.config.state.mode,
       ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+      metadataRepoRoot: repo.gitRoot,
     });
     const runs = await collectActiveRuns(state);
     await state.lockRelease();
     return {
-      repo: formatRepoLabel(configResult.config, repo.repoRoot),
+      repo: formatRepoLabel(configResult.config, repo.projectRoot),
       runs,
     };
   } catch {
@@ -3075,15 +3090,18 @@ async function loadRunSnapshotForCli(
   snapshot: Awaited<ReturnType<typeof loadRunSnapshot>>;
   config: Awaited<ReturnType<typeof loadConfig>>['config'];
 }> {
-  const repo = await detectRepoContext({ cwd: process.cwd() });
-  const configResult = await loadConfig(buildConfigOverrides(options));
-  const state = await initStateStore(repo.repoRoot, {
+  const configResult = await loadConfig(buildConfigOverrides(options), {
+    cwd: process.cwd(),
+  });
+  const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+  const state = await initStateStore(repo.projectRoot, {
     lock: false,
     mode: configResult.config.state.mode,
     ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+    metadataRepoRoot: repo.gitRoot,
   });
   const snapshot = await loadRunSnapshot(state, runId);
-  return { repoRoot: repo.repoRoot, state, snapshot, config: configResult.config };
+  return { repoRoot: repo.projectRoot, state, snapshot, config: configResult.config };
 }
 
 function parseAuditEvent(line: string): Event | null {

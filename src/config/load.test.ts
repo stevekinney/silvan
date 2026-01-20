@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -64,6 +64,16 @@ describe('loadConfig', () => {
           Bun.env['GITHUB_TOKEN'] = previous;
         }
       }
+    });
+  });
+
+  test('uses the nearest config as the project root', async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, 'silvan.config.json'), JSON.stringify({}));
+      const nested = join(dir, 'apps', 'web');
+      await mkdir(nested, { recursive: true });
+      const result = await loadConfig(undefined, { cwd: nested });
+      expect(result.projectRoot).toBe(dir);
     });
   });
 });

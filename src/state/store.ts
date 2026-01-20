@@ -38,6 +38,7 @@ export type StateStoreOptions = {
   lock?: boolean;
   mode?: StateMode;
   root?: string;
+  metadataRepoRoot?: string;
 };
 
 export type StateMetadata = {
@@ -93,7 +94,7 @@ export async function initStateStore(
   }
   await updateRepoMetadata({
     metadataPath,
-    repoRoot,
+    repoRoot: options?.metadataRepoRoot ?? repoRoot,
   });
 
   async function writeRunState(runId: string, data: RunStateData): Promise<string> {
@@ -159,7 +160,10 @@ async function ensureGlobalNotice(options: {
   const metadata = await readMetadata(options.metadataPath);
   if (metadata.notifiedAt) return;
 
-  console.warn(`Silvan state is stored in ${options.dataRoot}.`);
+  const machineSafe = process.env['SILVAN_JSON'] || process.env['SILVAN_QUIET'];
+  if (!machineSafe) {
+    console.warn(`Silvan state is stored in ${options.dataRoot}.`);
+  }
   await writeMetadata(options.metadataPath, {
     notifiedAt: new Date().toISOString(),
   });

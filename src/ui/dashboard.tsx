@@ -5,7 +5,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
-import { writeQueueRequest } from '../state/queue';
 import type { StateStore } from '../state/store';
 import { needsAttention } from './attention';
 import { AttentionQueue } from './components/attention-queue';
@@ -34,6 +33,7 @@ import {
   type RunSnapshotCursor,
 } from './loader';
 import { calculatePageSize } from './pagination';
+import { enqueueQueueRequest } from './queue-requests';
 import { groupRunsByRepo, type SortKey, sortRuns } from './runs';
 import { applyDashboardEvent, applyRunSnapshots, createDashboardState } from './state';
 import { buildRunSummary } from './summary';
@@ -401,16 +401,14 @@ export function Dashboard({
   async function enqueueTaskRequest(): Promise<void> {
     const title = requestTitle.trim();
     if (!title) return;
-    await writeQueueRequest({
+    const queueRequests = await enqueueQueueRequest({
       state: stateStore,
-      request: {
-        id: crypto.randomUUID(),
-        type: 'start-task',
-        title,
-        ...(requestDescription.trim() ? { description: requestDescription.trim() } : {}),
-        createdAt: new Date().toISOString(),
-      },
+      cache: loaderCache.current,
+      scope: effectiveScope,
+      title,
+      description: requestDescription,
     });
+    setSnapshot((prev) => ({ ...prev, queueRequests }));
     setRequestActive(false);
     setRequestStep('title');
     setRequestTitle('');
