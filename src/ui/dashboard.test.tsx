@@ -19,6 +19,22 @@ async function withTempRepo(fn: (repoRoot: string) => Promise<void>): Promise<vo
   }
 }
 
+async function waitForFrame(
+  getFrame: () => string,
+  predicate: (frame: string) => boolean,
+  options?: { timeoutMs?: number; intervalMs?: number },
+): Promise<string> {
+  const timeoutMs = options?.timeoutMs ?? 500;
+  const intervalMs = options?.intervalMs ?? 20;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const frame = getFrame();
+    if (predicate(frame)) return frame;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return getFrame();
+}
+
 describe('Dashboard', () => {
   test('renders empty state when no runs exist', async () => {
     await withTempRepo(async (repoRoot) => {
@@ -28,8 +44,10 @@ describe('Dashboard', () => {
       const { lastFrame, unmount } = render(
         <Dashboard bus={bus} stateStore={state} config={config} />,
       );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const frame = lastFrame() ?? '';
+      const frame = await waitForFrame(
+        () => lastFrame() ?? '',
+        (value) => value.includes('No runs yet'),
+      );
       expect(frame).toContain('No runs yet');
       unmount();
     });
@@ -47,8 +65,10 @@ describe('Dashboard', () => {
       const { lastFrame, unmount } = render(
         <Dashboard bus={bus} stateStore={state} config={config} />,
       );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const frame = lastFrame() ?? '';
+      const frame = await waitForFrame(
+        () => lastFrame() ?? '',
+        (value) => value.includes('run-1'.slice(0, 8)),
+      );
       expect(frame).toContain('run-1'.slice(0, 8));
       expect(frame).toContain('verify');
       unmount();
