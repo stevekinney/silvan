@@ -63,7 +63,17 @@ try {
   ok = false;
 }
 
-// 4) test
+// 4) build
+info('Running build…');
+try {
+  await $`bun run build`;
+  success('build passed');
+} catch {
+  error('build failed');
+  ok = false;
+}
+
+// 5) test
 info('Running test…');
 try {
   await $`bun run test`;
@@ -73,7 +83,7 @@ try {
   ok = false;
 }
 
-// 5) lint-staged (format staged files; always last)
+// 6) lint-staged (format staged files; always last)
 info('Running lint-staged…');
 try {
   await $`bun exec lint-staged`;

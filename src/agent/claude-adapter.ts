@@ -248,8 +248,9 @@ function isDangerous(tool: ArmorerTool): boolean {
 function toSdkToolResult(result: ToolResult): CallToolResult {
   if (result.outcome === 'error') {
     const message = result.error ?? stringifyResult(result.content);
+    const messageText = typeof message === 'string' ? message : stringifyResult(message);
     return {
-      content: toTextContent(message),
+      content: toTextContent(messageText),
       isError: true,
     };
   }
