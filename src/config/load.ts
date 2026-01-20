@@ -1,6 +1,7 @@
-import { access, readdir, readFile, realpath } from 'node:fs/promises';
+import { access, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { cosmiconfig } from 'cosmiconfig';
 import { ProseWriter } from 'prose-writer';
@@ -19,12 +20,37 @@ export type ConfigResult = {
   projectRoot: string;
 };
 
-async function loadTsConfig(path: string): Promise<unknown> {
-  const module = (await import(pathToFileURL(path).toString())) as {
-    default?: unknown;
-    config?: unknown;
-  };
-  return module.default ?? module.config ?? module;
+async function loadTsConfig(filepath: string, content: string): Promise<unknown> {
+  return loadTsConfigFile(filepath, { content });
+}
+
+async function loadTsConfigFile(
+  path: string,
+  options: { retry?: boolean; content?: string } = {},
+): Promise<unknown> {
+  try {
+    const module = (await import(pathToFileURL(path).toString())) as {
+      default?: unknown;
+      config?: unknown;
+    };
+    return module.default ?? module.config ?? module;
+  } catch (error) {
+    if (options.retry || !isMissingSilvanConfigImport(error)) {
+      throw error;
+    }
+    const replacement = await resolveLocalConfigModuleUrl();
+    if (!replacement) {
+      throw error;
+    }
+    const raw = options.content ?? (await readFile(path, 'utf8'));
+    if (!raw.includes('silvan/config')) {
+      throw error;
+    }
+    const rewritten = raw.replace(/(['"])silvan\/config\1/g, `$1${replacement}$1`);
+    const tempPath = join(tmpdir(), `silvan-config-${crypto.randomUUID()}.ts`);
+    await writeFile(tempPath, rewritten);
+    return loadTsConfigFile(tempPath, { retry: true });
+  }
 }
 
 type EnvValue = string | undefined;
@@ -84,6 +110,30 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function isMissingSilvanConfigImport(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const message =
+    'message' in error && typeof error.message === 'string' ? error.message : '';
+  return (
+    message.includes("Cannot find module 'silvan/config'") ||
+    message.includes('Cannot find module "silvan/config"')
+  );
+}
+
+async function resolveLocalConfigModuleUrl(): Promise<string | null> {
+  const candidates = [
+    new URL('./index.js', import.meta.url),
+    new URL('./index.ts', import.meta.url),
+  ];
+  for (const candidate of candidates) {
+    const path = fileURLToPath(candidate);
+    if (await pathExists(path)) {
+      return candidate.toString();
+    }
+  }
+  return null;
 }
 
 export async function findConfigPath(searchFrom: string): Promise<string | null> {

@@ -72,6 +72,24 @@ describe('loadConfig', () => {
     });
   });
 
+  test('loads a TypeScript config that imports silvan/config', async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, 'silvan.config.ts');
+      await writeFile(
+        path,
+        [
+          "import { defineConfig } from 'silvan/config';",
+          '',
+          'export default defineConfig({',
+          "  naming: { worktreeDir: '.custom-from-import' }",
+          '});',
+        ].join('\n'),
+      );
+      const result = await loadConfig();
+      expect(result.config.naming.worktreeDir).toBe('.custom-from-import');
+    });
+  });
+
   test('loads a JSON config', async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'silvan.config.json');
