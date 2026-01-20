@@ -239,6 +239,10 @@ Silvan searches upward from the current working directory and treats the nearest
 configuration file location as the project root for state, queue, and worktree
 operations.
 
+If no config file is found, Silvan infers defaults from the git root, existing
+worktrees, optional `worktrees.toml`, and environment tokens. Run `silvan init`
+to write a `silvan.config.ts` based on those detections.
+
 Example `silvan.config.ts`:
 
 ```ts

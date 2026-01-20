@@ -1,15 +1,17 @@
-import { access, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, readdir, readFile, realpath } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { cosmiconfig } from 'cosmiconfig';
 import { ProseWriter } from 'prose-writer';
 
+import { formatKeyValues, renderNextSteps, renderSectionHeader } from '../cli/output';
 import { SilvanError } from '../core/errors';
 import { readEnvValue } from '../utils/env';
 import { loadProjectEnv } from './env';
 import type { Config, ConfigInput } from './schema';
 import { configSchema } from './schema';
+import { parseGitHubRemote } from './validate';
 
 export type ConfigResult = {
   config: Config;
@@ -112,6 +114,311 @@ export async function findConfigPath(searchFrom: string): Promise<string | null>
     current = parent;
   }
   return null;
+}
+
+type TaskProvider = 'local' | 'github' | 'linear';
+
+type WorktreesToml = {
+  worktreeDir?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  defaultBranch?: string;
+  linearTeamKey?: string;
+};
+
+const PROVIDER_ORDER: TaskProvider[] = ['local', 'github', 'linear'];
+
+let missingConfigNoticeShown = false;
+
+function shouldShowMissingConfigNotice(): boolean {
+  if (missingConfigNoticeShown) return false;
+  if (!process.stdout.isTTY) return false;
+  if (process.env['SILVAN_JSON']) return false;
+  if (process.env['SILVAN_QUIET']) return false;
+  missingConfigNoticeShown = true;
+  return true;
+}
+
+function renderMissingConfigNotice(config: Config, projectRoot: string): string {
+  const details: Array<[string, string]> = [
+    ['Project root', projectRoot],
+    ['Worktree dir', config.naming.worktreeDir],
+    ['Branch prefix', config.naming.branchPrefix],
+    ['Default branch', config.repo.defaultBranch],
+    ['Providers', config.task.providers.enabled.join(', ')],
+  ];
+  if (config.github.owner && config.github.repo) {
+    details.push(['GitHub', `github.com/${config.github.owner}/${config.github.repo}`]);
+  }
+  return [
+    renderSectionHeader('Detected defaults', { width: 60, kind: 'minor' }),
+    ...formatKeyValues(details, { labelWidth: 16 }),
+    renderNextSteps(['silvan init']),
+  ].join('\n');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasNestedKey(value: unknown, path: string[]): boolean {
+  if (!isRecord(value)) return false;
+  let current: Record<string, unknown> = value;
+  for (const key of path) {
+    if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      return false;
+    }
+    const next = current[key];
+    if (!isRecord(next) && key !== path[path.length - 1]) {
+      return false;
+    }
+    current = next as Record<string, unknown>;
+  }
+  return true;
+}
+
+async function gitStdout(args: string[], cwd: string): Promise<string | null> {
+  const env = { ...process.env };
+  delete env['GIT_DIR'];
+  delete env['GIT_WORK_TREE'];
+  delete env['GIT_INDEX_FILE'];
+  const proc = Bun.spawn(['git', ...args], {
+    cwd,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const trimmed = stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function resolveGitRoot(cwd: string): Promise<string | null> {
+  const root = await gitStdout(['rev-parse', '--show-toplevel'], cwd);
+  if (!root) return null;
+  return (await realpath(root).catch(() => root)) ?? root;
+}
+
+async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
+  const headRef = await gitStdout(['symbolic-ref', 'refs/remotes/origin/HEAD'], repoRoot);
+  if (!headRef) return null;
+  const parts = headRef.split('/');
+  return parts[parts.length - 1] || null;
+}
+
+async function detectGitHubRepo(
+  repoRoot: string,
+): Promise<{ owner: string; repo: string } | null> {
+  const remote = await gitStdout(['remote', 'get-url', 'origin'], repoRoot);
+  if (!remote) return null;
+  return parseGitHubRemote(remote);
+}
+
+async function loadWorktreesToml(repoRoot: string): Promise<WorktreesToml | null> {
+  const path = join(repoRoot, 'worktrees.toml');
+  if (!(await pathExists(path))) return null;
+  if (!Bun.TOML?.parse) return null;
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = Bun.TOML.parse(raw) as Record<string, unknown>;
+    if (!isRecord(parsed)) return null;
+    const output: WorktreesToml = {};
+    const worktreeDir = parsed['worktreeDir'];
+    if (typeof worktreeDir === 'string') {
+      output.worktreeDir = worktreeDir;
+    }
+    const githubOwner = parsed['githubOwner'];
+    if (typeof githubOwner === 'string') {
+      output.githubOwner = githubOwner;
+    }
+    const githubRepo = parsed['githubRepo'];
+    if (typeof githubRepo === 'string') {
+      output.githubRepo = githubRepo;
+    }
+    const defaultBranch = parsed['defaultBranch'];
+    if (typeof defaultBranch === 'string') {
+      output.defaultBranch = defaultBranch;
+    }
+    const linearTeamKey = parsed['linearTeamKey'];
+    if (typeof linearTeamKey === 'string') {
+      output.linearTeamKey = linearTeamKey;
+    }
+    return Object.keys(output).length > 0 ? output : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProviders(values: TaskProvider[]): TaskProvider[] {
+  const unique = new Set<TaskProvider>(values);
+  if (unique.size === 0) {
+    unique.add('local');
+  }
+  return PROVIDER_ORDER.filter((provider) => unique.has(provider));
+}
+
+async function detectWorktreeDirFromGit(repoRoot: string): Promise<string | null> {
+  const output = await gitStdout(['worktree', 'list', '--porcelain'], repoRoot);
+  if (!output) return null;
+  const counts = new Map<string, number>();
+  for (const line of output.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const path = line.slice('worktree '.length).trim();
+    if (!path) continue;
+    const rel = relative(repoRoot, path);
+    if (!rel || rel.startsWith('..')) continue;
+    const segment = rel.split(/[/\\]/)[0];
+    if (!segment) continue;
+    counts.set(segment, (counts.get(segment) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const [best] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  return best ? best[0] : null;
+}
+
+async function detectWorktreeDir(repoRoot: string): Promise<string> {
+  const fromGit = await detectWorktreeDirFromGit(repoRoot);
+  if (fromGit) return fromGit;
+  const candidates = ['.worktrees', 'worktrees', '.trees'];
+  for (const dir of candidates) {
+    const path = join(repoRoot, dir);
+    try {
+      await readdir(path);
+      return dir;
+    } catch {
+      // Directory doesn't exist, continue.
+    }
+  }
+  return '.worktrees';
+}
+
+async function detectBranchPrefix(
+  repoRoot: string,
+  defaultBranch: string,
+): Promise<string | null> {
+  const counts = new Map<string, number>();
+  const worktreeOutput = await gitStdout(['worktree', 'list', '--porcelain'], repoRoot);
+  const branches: string[] = [];
+  if (worktreeOutput) {
+    for (const line of worktreeOutput.split('\n')) {
+      if (!line.startsWith('branch ')) continue;
+      const raw = line.slice('branch '.length).trim();
+      const branch = raw.replace('refs/heads/', '');
+      if (branch && branch !== defaultBranch && branch !== '(detached)') {
+        branches.push(branch);
+      }
+    }
+  }
+  if (branches.length === 0) {
+    const branchOutput = await gitStdout(
+      ['for-each-ref', '--format=%(refname:short)', 'refs/heads'],
+      repoRoot,
+    );
+    if (branchOutput) {
+      branches.push(
+        ...branchOutput
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((branch) => branch && branch !== defaultBranch),
+      );
+    }
+  }
+  for (const branch of branches) {
+    const slashIndex = branch.indexOf('/');
+    if (slashIndex <= 0) continue;
+    const prefix = branch.slice(0, slashIndex + 1);
+    counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const [best] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  if (!best) return null;
+  const [prefix, count] = best;
+  return count >= 2 ? prefix : null;
+}
+
+async function inferConfigDefaults(options: {
+  repoRoot: string;
+  baseConfig: unknown;
+  worktreesToml: WorktreesToml | null;
+}): Promise<ConfigInput> {
+  const output: ConfigInput = {};
+  const baseConfig = options.baseConfig;
+  const hasWorktreeDir = hasNestedKey(baseConfig, ['naming', 'worktreeDir']);
+  const hasBranchPrefix = hasNestedKey(baseConfig, ['naming', 'branchPrefix']);
+  const hasDefaultBranch = hasNestedKey(baseConfig, ['repo', 'defaultBranch']);
+  const hasProviders = hasNestedKey(baseConfig, ['task', 'providers']);
+  const hasGitHubOwner = hasNestedKey(baseConfig, ['github', 'owner']);
+  const hasGitHubRepo = hasNestedKey(baseConfig, ['github', 'repo']);
+
+  const worktreesToml = options.worktreesToml;
+  const defaultBranch =
+    worktreesToml?.defaultBranch ??
+    (hasDefaultBranch ? undefined : await detectDefaultBranch(options.repoRoot)) ??
+    undefined;
+  if (!hasDefaultBranch && defaultBranch) {
+    output.repo = { ...(output.repo ?? {}), defaultBranch };
+  }
+
+  if (!hasWorktreeDir) {
+    const worktreeDir =
+      worktreesToml?.worktreeDir ?? (await detectWorktreeDir(options.repoRoot));
+    output.naming = { ...(output.naming ?? {}), worktreeDir };
+  }
+
+  if (!hasBranchPrefix) {
+    const branchBase =
+      defaultBranch ??
+      (isRecord(baseConfig) && isRecord(baseConfig['repo'])
+        ? (baseConfig['repo']['defaultBranch'] as string | undefined)
+        : undefined) ??
+      'main';
+    const inferredPrefix = await detectBranchPrefix(options.repoRoot, branchBase);
+    if (inferredPrefix) {
+      output.naming = { ...(output.naming ?? {}), branchPrefix: inferredPrefix };
+    }
+  }
+
+  if (!hasGitHubOwner || !hasGitHubRepo) {
+    const github =
+      worktreesToml?.githubOwner && worktreesToml.githubRepo
+        ? { owner: worktreesToml.githubOwner, repo: worktreesToml.githubRepo }
+        : await detectGitHubRepo(options.repoRoot);
+    if (github) {
+      output.github = {
+        ...(output.github ?? {}),
+        ...(hasGitHubOwner ? {} : { owner: github.owner }),
+        ...(hasGitHubRepo ? {} : { repo: github.repo }),
+      };
+    }
+  }
+
+  if (!hasProviders) {
+    const enabled = new Set<TaskProvider>();
+    enabled.add('local');
+    const hasGitHubToken = Boolean(
+      readEnvValue('GITHUB_TOKEN') ?? readEnvValue('GH_TOKEN'),
+    );
+    const hasLinearToken = Boolean(readEnvValue('LINEAR_API_KEY'));
+    if (hasGitHubToken) enabled.add('github');
+    if (hasLinearToken) enabled.add('linear');
+    const normalized = normalizeProviders([...enabled]);
+    let defaultProvider: TaskProvider = 'local';
+    if (worktreesToml?.linearTeamKey && normalized.includes('linear')) {
+      defaultProvider = 'linear';
+    } else if (normalized.includes('github')) {
+      defaultProvider = 'github';
+    } else if (normalized.includes('linear')) {
+      defaultProvider = 'linear';
+    }
+    output.task = {
+      ...(output.task ?? {}),
+      providers: { enabled: normalized, default: defaultProvider },
+    };
+  }
+
+  return output;
 }
 
 function configFromEnv(): ConfigInput {
@@ -329,12 +636,17 @@ export async function loadConfig(
 
   const searchFrom = options?.cwd ? resolve(options.cwd) : process.cwd();
   const configPath = await findConfigPath(searchFrom);
+  const repoRoot =
+    configPath !== null
+      ? dirname(configPath)
+      : ((await resolveGitRoot(searchFrom)) ?? searchFrom);
   const result = configPath ? await explorer.load(configPath) : null;
-  const projectRoot = configPath ? dirname(configPath) : searchFrom;
+  const projectRoot = repoRoot;
   await loadProjectEnv({
     cwd: searchFrom,
     ...(configPath ? { configPath } : {}),
   });
+  const worktreesToml = await loadWorktreesToml(repoRoot);
 
   const baseConfig: unknown = result ? (result.config ?? {}) : {};
   const parsed = configSchema.safeParse(baseConfig);
@@ -364,8 +676,16 @@ export async function loadConfig(
       ],
     });
   }
+  const inferredDefaults = await inferConfigDefaults({
+    repoRoot,
+    baseConfig,
+    worktreesToml,
+  });
   const envOverrides = configFromEnv();
-  const merged = mergeConfig(mergeConfig(parsed.data, envOverrides), overrides);
+  const merged = mergeConfig(
+    mergeConfig(mergeConfig(parsed.data, inferredDefaults), envOverrides),
+    overrides,
+  );
   const finalParsed = configSchema.safeParse(merged);
   if (!finalParsed.success) {
     const issueLines = finalParsed.error.issues.map(
@@ -384,6 +704,9 @@ export async function loadConfig(
     });
   }
   const finalConfig = finalParsed.data;
+  if (!configPath && shouldShowMissingConfigNotice()) {
+    console.log(renderMissingConfigNotice(finalConfig, projectRoot));
+  }
 
   return {
     config: finalConfig,
