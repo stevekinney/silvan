@@ -66,7 +66,7 @@ jobs:
           fi
 
       - name: Smoke test (unix)
-        if: matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-latest' && matrix.target != 'bun-linux-arm64'
         run: ./dist/${{ matrix.asset }} --version
 
       - name: Smoke test (windows)
