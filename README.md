@@ -56,7 +56,7 @@ Troubleshooting:
 ### Publishing (maintainers)
 
 - GitHub Releases and npm publish are automated on tag pushes (`v*.*.*`) using trusted publishing (OIDC).
-- Configure the npm trusted publisher for `stevekinney/silvan` and `.github/workflows/release.yml`.
+- Configure the npm trusted publisher for `stevekinney/silvan` and `.github/workflows/release.yaml`.
 - No `NPM_TOKEN` or `NODE_AUTH_TOKEN` is required once trusted publishing is enabled.
 - Release with `bun run release:patch`, `bun run release:minor`, or `bun run release:major`.
 - If the package is not yet bootstrapped on npm, do one interactive publish from a maintainer machine first.
