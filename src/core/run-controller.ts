@@ -4,6 +4,7 @@ import { ProseWriter } from 'prose-writer';
 import { executePlan } from '../agent/executor';
 import { type Plan, planSchema } from '../agent/schemas';
 import type { SessionPool } from '../agent/session';
+import { suggestVerificationRecovery } from '../ai/cognition/assist';
 import { generateCiFixPlan } from '../ai/cognition/ci-triager';
 import { generateExecutionKickoffPrompt } from '../ai/cognition/kickoff';
 import { generatePlan } from '../ai/cognition/planner';
@@ -15,7 +16,7 @@ import { generateReviewFixPlan } from '../ai/cognition/reviewer';
 import { decideVerification } from '../ai/cognition/verifier';
 import { createConversationStore } from '../ai/conversation';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
-import { createEnvelope, toEventError } from '../events/emit';
+import { createEnvelope, type EmitContext, toEventError } from '../events/emit';
 import type { Phase, RunPhaseChanged, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import { waitForCi } from '../github/ci';
@@ -48,7 +49,7 @@ import {
 import { resolveTask } from '../task/resolve';
 import type { Task } from '../task/types';
 import { hashString } from '../utils/hash';
-import { runVerifyCommands } from '../verify/run';
+import { runVerifyCommands, type VerifyResult } from '../verify/run';
 import { triageVerificationFailures } from '../verify/triage';
 import type { RunContext } from './context';
 import { SilvanError } from './errors';
@@ -122,6 +123,94 @@ function getBudgetsForPhase(
     ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
     ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
   };
+}
+
+type VerificationAssistSummary = {
+  summary?: string;
+  steps?: string[];
+  context: 'verify' | 'review' | 'ci_fix' | 'recovery';
+  commands: string[];
+};
+
+function formatVerificationBlockedReason(
+  context: VerificationAssistSummary['context'],
+  summary?: string,
+): string {
+  const prefix =
+    context === 'review'
+      ? 'Verification failed during review.'
+      : context === 'ci_fix'
+        ? 'Verification failed during CI fix.'
+        : context === 'recovery'
+          ? 'Verification failed during recovery.'
+          : 'Verification failed.';
+  return summary ? `${prefix} ${summary}` : prefix;
+}
+
+async function recordVerificationAssist(options: {
+  ctx: RunContext;
+  report: VerifyResult;
+  context: VerificationAssistSummary['context'];
+  emitContext: EmitContext;
+}): Promise<void> {
+  if (options.report.ok) return;
+  const failures = options.report.results.filter((result) => result.exitCode !== 0);
+  if (failures.length === 0) return;
+
+  let assist: Awaited<ReturnType<typeof suggestVerificationRecovery>> | null = null;
+  try {
+    assist = await suggestVerificationRecovery({
+      report: {
+        results: failures.map((result) => ({
+          name: result.name,
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+        })),
+      },
+      config: options.ctx.config,
+      repoRoot: options.ctx.repo.repoRoot,
+      cacheDir: options.ctx.state.cacheDir,
+      bus: options.ctx.events.bus,
+      context: options.emitContext,
+    });
+  } catch {
+    assist = null;
+  }
+
+  if (!assist) return;
+
+  const commands = failures.map((result) => result.name);
+  await updateState(options.ctx, (data) => {
+    const summary =
+      typeof data['summary'] === 'object' && data['summary']
+        ? (data['summary'] as Record<string, unknown>)
+        : {};
+    const blockedReason =
+      typeof summary['blockedReason'] === 'string' ? summary['blockedReason'] : undefined;
+
+    const verificationAssistSummary: VerificationAssistSummary = {
+      context: options.context,
+      commands,
+      ...(assist.summary ? { summary: assist.summary } : {}),
+      ...(assist.steps.length > 0 ? { steps: assist.steps } : {}),
+    };
+
+    return {
+      ...data,
+      verificationAssistSummary,
+      summary: {
+        ...summary,
+        ...(blockedReason
+          ? {}
+          : {
+              blockedReason: formatVerificationBlockedReason(
+                options.context,
+                assist.summary,
+              ),
+            }),
+      },
+    };
+  });
 }
 
 function getToolBudget(config: RunContext['config']): {
@@ -829,6 +918,12 @@ export async function runImplementation(
   }));
 
   if (!verifyReport.ok) {
+    await recordVerificationAssist({
+      ctx,
+      report: verifyReport,
+      context: 'verify',
+      emitContext,
+    });
     const results = (
       verifyReport.results as Array<{
         name: string;
@@ -1406,6 +1501,12 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
         );
         if (!ciVerify.ok) {
+          await recordVerificationAssist({
+            ctx,
+            report: ciVerify,
+            context: 'ci_fix',
+            emitContext,
+          });
           throw new Error('Verification failed during CI fix');
         }
 
@@ -1820,6 +1921,12 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           },
         }));
         if (!verifyReport.ok) {
+          await recordVerificationAssist({
+            ctx,
+            report: verifyReport,
+            context: 'review',
+            emitContext,
+          });
           throw new Error('Verification failed during review loop');
         }
       }
@@ -2271,6 +2378,12 @@ export async function runRecovery(ctx: RunContext): Promise<void> {
         },
       }));
       if (!verifyReport.ok) {
+        await recordVerificationAssist({
+          ctx,
+          report: verifyReport,
+          context: 'recovery',
+          emitContext,
+        });
         throw new Error('Verification failed during recovery');
       }
       return;

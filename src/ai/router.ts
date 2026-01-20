@@ -15,6 +15,7 @@ import { renderConversationSnapshot } from './conversation';
 import type { ConversationSnapshot } from './conversation/types';
 
 export type CognitionTask =
+  | 'initDefaults'
   | 'kickoffPrompt'
   | 'plan'
   | 'reviewClassify'

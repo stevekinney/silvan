@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 import { describe, expect, test } from 'bun:test';
 
-import { collectInitContext } from './init';
+import type { InitAnswers } from './init';
+import { applyInitSuggestions, collectInitContext } from './init';
 
 async function run(cmd: string[], cwd: string): Promise<string> {
   const proc = Bun.spawnSync({ cmd, cwd });
@@ -70,5 +71,48 @@ describe('init detection', () => {
       const context = await collectInitContext(dir);
       expect(context.detection.defaultBranch).toBe('trunk');
     });
+  });
+
+  test('applyInitSuggestions merges providers and verify commands', async () => {
+    const defaults: InitAnswers = {
+      worktreeDir: '.worktrees',
+      enabledProviders: ['local'],
+      defaultProvider: 'local',
+      verifyCommands: [{ name: 'test', cmd: 'bun test' }],
+    };
+    const suggestions: Partial<InitAnswers> = {
+      enabledProviders: ['github'],
+      defaultProvider: 'github',
+      verifyCommands: [
+        { name: 'lint', cmd: 'bun run lint' },
+        { name: 'test', cmd: 'bun run test' },
+      ],
+    };
+
+    const merged = applyInitSuggestions(defaults, suggestions);
+
+    expect(merged.enabledProviders).toEqual(['local', 'github']);
+    expect(merged.defaultProvider).toBe('github');
+    expect(merged.verifyCommands).toEqual([
+      { name: 'test', cmd: 'bun test' },
+      { name: 'lint', cmd: 'bun run lint' },
+    ]);
+  });
+
+  test('applyInitSuggestions adds the default provider when missing', async () => {
+    const defaults: InitAnswers = {
+      worktreeDir: '.worktrees',
+      enabledProviders: ['local'],
+      defaultProvider: 'local',
+      verifyCommands: [],
+    };
+    const suggestions: Partial<InitAnswers> = {
+      defaultProvider: 'github',
+    };
+
+    const merged = applyInitSuggestions(defaults, suggestions);
+
+    expect(merged.enabledProviders).toEqual(['local', 'github']);
+    expect(merged.defaultProvider).toBe('github');
   });
 });

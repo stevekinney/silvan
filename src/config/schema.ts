@@ -97,8 +97,9 @@ export const configSchema = z.object({
   features: z
     .object({
       autoMode: z.boolean().default(false),
+      cognitionDefaults: z.boolean().default(false),
     })
-    .default({ autoMode: false }),
+    .default({ autoMode: false, cognitionDefaults: false }),
   state: z
     .object({
       mode: z.enum(['global', 'repo']).default('global'),
@@ -213,6 +214,7 @@ export const configSchema = z.object({
           modelByTask: z
             .object({
               kickoffPrompt: z.string().optional(),
+              initDefaults: z.string().optional(),
               plan: z.string().optional(),
               reviewKickoff: z.string().optional(),
               reviewClassify: z.string().optional(),

@@ -159,7 +159,12 @@ const COMMAND_META: Record<string, HelpMeta> = {
     seeAlso: ['silvan agent run --apply', 'silvan run status <runId>'],
   },
   'queue run': {
-    examples: ['silvan queue run', 'silvan queue run --json'],
+    examples: [
+      'silvan queue run',
+      'silvan queue run --concurrency 3',
+      'silvan queue run --continue-on-error',
+      'silvan queue run --json',
+    ],
     seeAlso: ['silvan task start "Your task"', 'silvan run list'],
   },
   'convo show': {

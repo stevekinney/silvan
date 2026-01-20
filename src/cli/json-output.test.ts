@@ -16,10 +16,24 @@ describe('json output helpers', () => {
       nextSteps: ['Retry the command.'],
       details: { id: 1 },
     });
-    const payload = buildJsonError(error);
+    const payload = buildJsonError(error, {
+      assistant: {
+        summary: 'Review your configuration.',
+        steps: ['Run `silvan config validate`.'],
+      },
+    });
     expect(payload.code).toBe('test.error');
     expect(payload.message).toBe('Something went wrong');
-    expect(payload.details).toEqual({ id: 1 });
-    expect(payload.suggestions).toEqual(['Retry the command.']);
+    expect(payload.details).toEqual({
+      id: 1,
+      assistant: {
+        summary: 'Review your configuration.',
+        steps: ['Run `silvan config validate`.'],
+      },
+    });
+    expect(payload.suggestions).toEqual([
+      'Retry the command.',
+      'Run `silvan config validate`.',
+    ]);
   });
 });

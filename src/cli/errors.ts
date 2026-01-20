@@ -1,10 +1,17 @@
 import { normalizeError, SilvanError } from '../core/errors';
-import { colors, formatKeyValues, renderNextSteps } from './output';
+import {
+  colors,
+  formatKeyList,
+  formatKeyValues,
+  renderNextSteps,
+  renderSectionHeader,
+} from './output';
 
 export type CliErrorRenderOptions = {
   debug?: boolean;
   trace?: boolean;
   commandNames?: string[];
+  assistant?: { summary?: string; steps?: string[] };
 };
 
 export function renderCliError(
@@ -43,6 +50,27 @@ export function renderCliError(
     lines.push('Did you mean?');
     for (const suggestion of didYouMean) {
       lines.push(`  ${suggestion}`);
+    }
+  }
+
+  const assistant = options?.assistant;
+  if (assistant?.summary || assistant?.steps?.length) {
+    lines.push('');
+    lines.push(renderSectionHeader('Suggested fix', { width: 60, kind: 'minor' }));
+    if (assistant.summary) {
+      lines.push(
+        ...formatKeyValues([['Summary', assistant.summary]], { labelWidth: 10 }),
+      );
+    }
+    if (assistant.steps && assistant.steps.length > 0) {
+      lines.push(
+        ...formatKeyList(
+          'Steps',
+          `${assistant.steps.length} action(s)`,
+          assistant.steps,
+          { labelWidth: 10 },
+        ),
+      );
     }
   }
 

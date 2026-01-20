@@ -1,15 +1,23 @@
 import { access, copyFile, readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import chalk from 'chalk';
+import { appendMessages, createConversation } from 'conversationalist';
 import { cosmiconfig } from 'cosmiconfig';
+import { ProseWriter } from 'prose-writer';
+import type { ZodSchema } from 'zod';
+import { z } from 'zod';
 
+import { invokeCognition } from '../ai/router';
+import { hashInputs } from '../prompts';
+import { resolveStatePaths } from '../state/paths';
 import { readEnvValue } from '../utils/env';
+import { hashString } from '../utils/hash';
 import { loadProjectEnv } from './env';
 import { findConfigPath } from './load';
-import type { ConfigInput } from './schema';
+import type { Config, ConfigInput } from './schema';
 import { parseGitHubRemote } from './validate';
 
 type TaskProvider = 'github' | 'linear' | 'local';
@@ -44,6 +52,12 @@ type InitDetection = {
   packageManager: PackageManager;
   defaultBranch: string;
   github?: { owner: string; repo: string };
+};
+
+export type InitAssistResult = {
+  suggestions: Partial<InitAnswers>;
+  notes: string[];
+  inputsDigest: string;
 };
 
 async function gitStdout(args: string[], repoRoot: string): Promise<string | null> {
@@ -92,14 +106,30 @@ async function detectWorktreeDir(repoRoot: string): Promise<string> {
   return '.worktrees';
 }
 
-async function readPackageScripts(repoRoot: string): Promise<Record<string, string>> {
+type PackageProfile = {
+  name?: string;
+  scripts: Record<string, string>;
+};
+
+async function readPackageProfile(repoRoot: string): Promise<PackageProfile> {
   try {
     const raw = await Bun.file(join(repoRoot, 'package.json')).text();
-    const pkg = JSON.parse(raw) as { scripts?: Record<string, string> };
-    return pkg.scripts ?? {};
+    const pkg = JSON.parse(raw) as {
+      name?: string;
+      scripts?: Record<string, string>;
+    };
+    return {
+      ...(pkg.name ? { name: pkg.name } : {}),
+      scripts: pkg.scripts ?? {},
+    };
   } catch {
-    return {};
+    return { scripts: {} };
   }
+}
+
+async function readPackageScripts(repoRoot: string): Promise<Record<string, string>> {
+  const profile = await readPackageProfile(repoRoot);
+  return profile.scripts;
 }
 
 async function detectPackageManager(repoRoot: string): Promise<PackageManager> {
@@ -191,6 +221,302 @@ function normalizeProviders(
   }
   const order: TaskProvider[] = ['local', 'github', 'linear'];
   return order.filter((provider) => unique.has(provider));
+}
+
+const initAssistCommandSchema = z
+  .object({
+    name: z.string().min(1),
+    cmd: z.string().min(1),
+  })
+  .strict();
+
+const initAssistSchema = z
+  .object({
+    worktreeDir: z.string().min(1).optional(),
+    enabledProviders: z.array(z.enum(['local', 'github', 'linear'])).optional(),
+    defaultProvider: z.enum(['local', 'github', 'linear']).optional(),
+    verifyCommands: z.array(initAssistCommandSchema).optional(),
+    notes: z.array(z.string()).default([]),
+  })
+  .strict();
+
+type InitAssistOutput = z.infer<typeof initAssistSchema>;
+
+type InitAssistInput = {
+  repoProfile: {
+    rootEntries: string[];
+    packageName?: string;
+    scripts: Record<string, string>;
+  };
+  detection: InitDetection;
+  verifyCommands: VerifyCommand[];
+  existingConfig: {
+    hasWorktreeDir: boolean;
+    hasVerifyCommands: boolean;
+    hasProviders: boolean;
+    hasDefaultProvider: boolean;
+  };
+  providerSignals: {
+    githubRemoteDetected: boolean;
+    githubTokenDetected: boolean;
+    linearTokenDetected: boolean;
+  };
+};
+
+function stableScriptMap(scripts: Record<string, string>): Record<string, string> {
+  const sortedKeys = Object.keys(scripts).sort();
+  const output: Record<string, string> = {};
+  for (const key of sortedKeys) {
+    const value = scripts[key];
+    if (value === undefined) continue;
+    output[key] = value;
+  }
+  return output;
+}
+
+async function summarizeRepoProfile(
+  repoRoot: string,
+): Promise<InitAssistInput['repoProfile']> {
+  let rootEntries: string[] = [];
+  try {
+    const entries = await readdir(repoRoot);
+    rootEntries = entries.sort().slice(0, 80);
+  } catch {
+    rootEntries = [];
+  }
+  const profile = await readPackageProfile(repoRoot);
+  return {
+    rootEntries,
+    ...(profile.name ? { packageName: profile.name } : {}),
+    scripts: stableScriptMap(profile.scripts),
+  };
+}
+
+function isSafeWorktreeDir(dir: string): boolean {
+  if (!dir.trim()) return false;
+  if (isAbsolute(dir)) return false;
+  const segments = dir.split(/[\\/]+/).filter(Boolean);
+  if (segments.length === 0) return false;
+  return !segments.some((segment) => segment === '..');
+}
+
+function extractScriptName(command: string): string | null {
+  const trimmed = command.trim();
+  const runMatch =
+    /^(?:bun|npm|pnpm)\s+run\s+([^\s]+)(?:\s|$)/.exec(trimmed) ??
+    /^yarn\s+([^\s]+)(?:\s|$)/.exec(trimmed);
+  if (runMatch) {
+    return runMatch[1] ?? null;
+  }
+  if (/^(?:bun|npm|pnpm|yarn)\s+test(?:\s|$)/.test(trimmed)) {
+    return 'test';
+  }
+  return null;
+}
+
+function sanitizeVerifyCommands(
+  commands: VerifyCommand[],
+  scripts: Record<string, string>,
+): VerifyCommand[] {
+  const seen = new Set<string>();
+  const sanitized: VerifyCommand[] = [];
+  for (const command of commands) {
+    const name = command.name.trim();
+    const cmd = command.cmd.trim();
+    if (!name || !cmd) continue;
+    if (seen.has(name)) continue;
+    const script = extractScriptName(cmd);
+    if (script && script !== 'test' && !scripts[script]) continue;
+    if (script === 'test' && !scripts['test'] && !/^bun\s+test(?:\s|$)/.test(cmd)) {
+      continue;
+    }
+    sanitized.push({ name, cmd });
+    seen.add(name);
+  }
+  return sanitized;
+}
+
+function sanitizeInitSuggestions(
+  suggestions: InitAssistOutput,
+  scripts: Record<string, string>,
+): { suggestions: Partial<InitAnswers>; notes: string[] } {
+  const sanitized: Partial<InitAnswers> = {};
+  if (suggestions.worktreeDir && isSafeWorktreeDir(suggestions.worktreeDir)) {
+    sanitized.worktreeDir = suggestions.worktreeDir;
+  }
+  if (suggestions.enabledProviders && suggestions.enabledProviders.length > 0) {
+    sanitized.enabledProviders = normalizeProviders(suggestions.enabledProviders);
+  }
+  if (suggestions.defaultProvider) {
+    sanitized.defaultProvider = suggestions.defaultProvider;
+  }
+  if (suggestions.verifyCommands && suggestions.verifyCommands.length > 0) {
+    sanitized.verifyCommands = sanitizeVerifyCommands(
+      suggestions.verifyCommands,
+      scripts,
+    );
+  }
+  return {
+    suggestions: sanitized,
+    notes: suggestions.notes ?? [],
+  };
+}
+
+export function hasInitSuggestions(suggestions?: Partial<InitAnswers> | null): boolean {
+  if (!suggestions) return false;
+  return Boolean(
+    suggestions.worktreeDir ||
+    suggestions.defaultProvider ||
+    (suggestions.enabledProviders && suggestions.enabledProviders.length > 0) ||
+    (suggestions.verifyCommands && suggestions.verifyCommands.length > 0),
+  );
+}
+
+function mergeVerifyCommands(
+  base: VerifyCommand[],
+  incoming: VerifyCommand[],
+): VerifyCommand[] {
+  const seen = new Set(base.map((command) => command.name));
+  const merged = [...base];
+  for (const command of incoming) {
+    if (seen.has(command.name)) continue;
+    merged.push(command);
+    seen.add(command.name);
+  }
+  return merged;
+}
+
+export function applyInitSuggestions(
+  defaults: InitAnswers,
+  suggestions: Partial<InitAnswers>,
+): InitAnswers {
+  let enabledProviders = suggestions.enabledProviders?.length
+    ? normalizeProviders([...defaults.enabledProviders, ...suggestions.enabledProviders])
+    : normalizeProviders(defaults.enabledProviders);
+  if (
+    suggestions.defaultProvider &&
+    !enabledProviders.includes(suggestions.defaultProvider)
+  ) {
+    enabledProviders = normalizeProviders([
+      ...enabledProviders,
+      suggestions.defaultProvider,
+    ]);
+  }
+  const verifyCommands = suggestions.verifyCommands?.length
+    ? mergeVerifyCommands(defaults.verifyCommands, suggestions.verifyCommands)
+    : defaults.verifyCommands;
+  const worktreeDir = suggestions.worktreeDir ?? defaults.worktreeDir;
+  let defaultProvider = suggestions.defaultProvider ?? defaults.defaultProvider;
+  if (!enabledProviders.includes(defaultProvider)) {
+    defaultProvider = enabledProviders[0] ?? 'local';
+  }
+
+  return {
+    worktreeDir,
+    enabledProviders,
+    defaultProvider,
+    verifyCommands,
+  };
+}
+
+export async function suggestInitDefaults(options: {
+  context: InitContext;
+  config: Config;
+  cacheDir?: string;
+  client?: {
+    chat: (options: {
+      messages: unknown;
+      schema: ZodSchema<InitAssistOutput>;
+    }) => Promise<{ content: InitAssistOutput }>;
+  };
+}): Promise<InitAssistResult | null> {
+  const repoProfile = await summarizeRepoProfile(options.context.repoRoot);
+  const existingConfig = options.context.existingConfig;
+  const input: InitAssistInput = {
+    repoProfile,
+    detection: options.context.detection,
+    verifyCommands: options.context.detection.verifyCommands,
+    existingConfig: {
+      hasWorktreeDir: Boolean(existingConfig?.naming?.worktreeDir),
+      hasVerifyCommands: Boolean(existingConfig?.verify?.commands?.length),
+      hasProviders: Boolean(existingConfig?.task?.providers?.enabled?.length),
+      hasDefaultProvider: Boolean(existingConfig?.task?.providers?.default),
+    },
+    providerSignals: {
+      githubRemoteDetected: Boolean(options.context.detection.github),
+      githubTokenDetected: Boolean(
+        readEnvValue('GITHUB_TOKEN') || readEnvValue('GH_TOKEN'),
+      ),
+      linearTokenDetected: Boolean(readEnvValue('LINEAR_API_KEY')),
+    },
+  };
+
+  const inputsDigest = hashInputs(input);
+  const systemWriter = new ProseWriter();
+  systemWriter.write('You are a configuration assistant for Silvan init.');
+  systemWriter.write(
+    'Return JSON only, matching the schema. Only suggest defaults when confident.',
+  );
+  systemWriter.write('Do not include secrets. Use only the provided scripts.');
+  systemWriter.write(
+    'If there is nothing to add, return an empty object with notes as needed.',
+  );
+
+  const userWriter = new ProseWriter();
+  userWriter.write(JSON.stringify(input));
+
+  const conversation = createConversation({
+    title: 'silvan:init-defaults',
+    metadata: { kind: 'init' },
+  });
+  const withMessages = appendMessages(
+    conversation,
+    {
+      role: 'system',
+      content: systemWriter.toString().trimEnd(),
+      metadata: { kind: 'learning' },
+    },
+    {
+      role: 'user',
+      content: userWriter.toString().trimEnd(),
+      metadata: { kind: 'learning' },
+    },
+  );
+  const snapshot = {
+    conversation: withMessages,
+    digest: hashString(JSON.stringify(withMessages)),
+    updatedAt: new Date().toISOString(),
+    path: 'memory',
+  };
+
+  const cacheDir =
+    options.cacheDir ??
+    resolveStatePaths({
+      repoRoot: options.context.repoRoot,
+      mode: options.config.state.mode,
+      ...(options.config.state.root ? { stateRoot: options.config.state.root } : {}),
+    }).cacheDir;
+
+  const response = await invokeCognition({
+    snapshot,
+    task: 'initDefaults',
+    schema: initAssistSchema,
+    config: options.config,
+    inputsDigest,
+    cacheDir,
+    ...(options.client ? { client: options.client } : {}),
+    temperature: 0.2,
+  });
+
+  const sanitized = sanitizeInitSuggestions(response, repoProfile.scripts);
+  if (!hasInitSuggestions(sanitized.suggestions) && sanitized.notes.length === 0) {
+    return null;
+  }
+  return {
+    suggestions: sanitized.suggestions,
+    notes: sanitized.notes,
+    inputsDigest,
+  };
 }
 
 export async function collectInitContext(repoRoot: string): Promise<InitContext> {
@@ -314,8 +640,11 @@ async function promptWorktreeDir(
   return trimmed.length > 0 ? trimmed : defaultValue;
 }
 
-export async function promptInitAnswers(context: InitContext): Promise<InitAnswers> {
-  const defaults = getInitDefaults(context);
+export async function promptInitAnswers(
+  context: InitContext,
+  options?: { defaults?: InitAnswers },
+): Promise<InitAnswers> {
+  const defaults = options?.defaults ?? getInitDefaults(context);
   const existing = context.existingConfig;
 
   const answers: InitAnswers = {

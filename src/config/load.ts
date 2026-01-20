@@ -558,6 +558,14 @@ function configFromEnv(): ConfigInput {
     };
   }
 
+  const cognitionDefaults = parseBool(env('SILVAN_COGNITION_DEFAULTS'));
+  if (cognitionDefaults !== undefined) {
+    override.features = {
+      ...(override.features ?? {}),
+      cognitionDefaults,
+    };
+  }
+
   const cognitionProvider = env('SILVAN_COGNITION_PROVIDER');
   if (cognitionProvider) {
     override.ai = {
@@ -573,6 +581,7 @@ function configFromEnv(): ConfigInput {
     [keyof NonNullable<Config['ai']>['cognition']['modelByTask'], string]
   > = [
     ['kickoffPrompt', 'SILVAN_COGNITION_MODEL_KICKOFF'],
+    ['initDefaults', 'SILVAN_COGNITION_MODEL_INIT_DEFAULTS'],
     ['plan', 'SILVAN_COGNITION_MODEL_PLAN'],
     ['reviewKickoff', 'SILVAN_COGNITION_MODEL_REVIEW'],
     ['reviewCluster', 'SILVAN_COGNITION_MODEL_REVIEW'],

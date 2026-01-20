@@ -311,8 +311,13 @@ Example `silvan.config.json` with schema:
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API access
 - `LINEAR_API_KEY`: Linear task access
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`: cognition lane providers
+- `SILVAN_COGNITION_DEFAULTS=1`: enable cognition-assisted defaults in `init`/`quickstart`
+- `SILVAN_COGNITION_MODEL_INIT_DEFAULTS`: override the model used for init defaults
 - `SILVAN_STATE_MODE=global|repo`: override state storage mode
+- `SILVAN_VERIFY_PORT`: preferred port for verification commands (Silvan finds a free port when unset)
+- `SILVAN_VERIFY_BASE_URL`: override base URL for verification commands
 - Silvan auto-loads `.env` from the config directory or repo root and overrides existing env values.
+- Verification commands receive `SILVAN_VERIFY_PORT`, `SILVAN_VERIFY_BASE_URL`, and `PORT` set to the resolved port.
 - API keys are read at runtime from the environment and are never embedded in build output.
 
 See `silvan doctor` for a full diagnostic report of effective configuration.
@@ -331,7 +336,8 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 - `task start [task]` — create worktree + generate plan (`--answer`, `--plan-only`)
 - `quickstart` — guided setup + sample task
-- `init` — scaffold a baseline `silvan.config.ts`
+- `init` — scaffold a baseline `silvan.config.ts` (`--assist` for cognition defaults)
+- `queue run` — process queued task requests (`--concurrency <n>`, `--continue-on-error`)
 - `agent plan` — generate a structured plan
 - `agent clarify` — answer required questions and re‑plan
 - `agent run` — execute plan (`--dry-run`, `--apply`, `--dangerous`)

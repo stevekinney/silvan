@@ -7,9 +7,11 @@ import type { QueueRecord } from '../types';
 export function QueuePanel({
   requests,
   nowMs,
+  hint,
 }: {
   requests: QueueRecord[];
   nowMs: number;
+  hint?: string;
 }): React.ReactElement {
   if (requests.length === 0) {
     return <Text color="gray">Queue empty</Text>;
@@ -37,6 +39,11 @@ export function QueuePanel({
           </Box>
         );
       })}
+      {hint ? (
+        <Box marginTop={1}>
+          <Text color="gray">{hint}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

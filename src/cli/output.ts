@@ -1,5 +1,7 @@
 import chalk from 'chalk';
 
+import { stripAnsi, truncateText } from '../utils/text';
+
 export const DEFAULT_LINE_WIDTH = 60;
 export const DEFAULT_LABEL_WIDTH = 14;
 
@@ -42,25 +44,13 @@ export function divider(
   return char.repeat(width);
 }
 
-const ESC = String.fromCharCode(27);
-const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-9;]*m`, 'g');
-
-export function stripAnsi(value: string): string {
-  return value.replace(ANSI_PATTERN, '');
-}
-
 export function padAnsi(value: string, width: number): string {
   const visibleLength = stripAnsi(value).length;
   if (visibleLength >= width) return value;
   return `${value}${' '.repeat(width - visibleLength)}`;
 }
 
-export function truncateText(value: string, maxLength: number): string {
-  if (maxLength <= 0) return '';
-  if (value.length <= maxLength) return value;
-  if (maxLength <= 3) return '.'.repeat(maxLength);
-  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
-}
+export { truncateText };
 
 export function getTerminalWidth(fallback = 80): number {
   const columns = process.stdout.columns;

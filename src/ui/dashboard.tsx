@@ -432,6 +432,10 @@ export function Dashboard({
   const phaseSummary = formatCountMap(summary.phase);
   const convergenceSummary = formatCountMap(summary.convergence);
   const scopeLabel = effectiveScope === 'all' ? 'All Repos' : 'Current Repo';
+  const queueHint =
+    snapshot.queueRequests.length > 0
+      ? buildQueueHint(snapshot.queueRequests.length)
+      : undefined;
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -572,7 +576,11 @@ export function Dashboard({
             </Box>
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Queue ({snapshot.queueRequests.length} pending)</Text>
-              <QueuePanel requests={snapshot.queueRequests} nowMs={nowMs} />
+              <QueuePanel
+                requests={snapshot.queueRequests}
+                nowMs={nowMs}
+                {...(queueHint ? { hint: queueHint } : {})}
+              />
             </Box>
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Worktrees ({worktreeRows.length})</Text>
@@ -605,6 +613,15 @@ function formatCountMap(counts: Record<string, number>): string {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, count]) => `${key}(${count})`)
     .join(' ');
+}
+
+function buildQueueHint(queueCount: number): string {
+  if (queueCount <= 0) return '';
+  const suggestedConcurrency = Math.min(queueCount, 4);
+  if (suggestedConcurrency <= 1) {
+    return 'Run: silvan queue run';
+  }
+  return `Run: silvan queue run --concurrency ${suggestedConcurrency}`;
 }
 
 function formatSortLabel(sortKey: SortKey): string {

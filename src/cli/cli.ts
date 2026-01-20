@@ -8,6 +8,11 @@ import pkg from '../../package.json';
 import { type ClarificationQuestion, collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
 import {
+  type AssistSuggestion,
+  suggestCliRecovery,
+  suggestConfigRecovery,
+} from '../ai/cognition/assist';
+import {
   exportConversationSnapshot,
   loadConversationSnapshot,
   renderConversationSummary,
@@ -15,9 +20,12 @@ import {
 } from '../ai/conversation';
 import { type EnvLoadSummary, getLoadedEnvSummary } from '../config/env';
 import {
+  applyInitSuggestions,
   collectInitContext,
   getInitDefaults,
+  hasInitSuggestions,
   promptInitAnswers,
+  suggestInitDefaults,
   writeInitConfig,
 } from '../config/init';
 import { loadConfig } from '../config/load';
@@ -56,6 +64,7 @@ import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { findHelpTopic, listHelpTopics } from '../help/topics';
+import { runQueueRequests } from '../queue/runner';
 import {
   deriveConvergenceFromSnapshot,
   loadRunSnapshot,
@@ -88,6 +97,7 @@ import { renderCliError } from './errors';
 import { buildHelpSections } from './help-output';
 import { renderHelpTopic, renderHelpTopicsList } from './help-topics-output';
 import {
+  renderInitAssist,
   renderInitDetection,
   renderInitExistingConfig,
   renderInitHeader,
@@ -136,10 +146,13 @@ cli.version(pkg.version, '--version, -V');
 type CliOptions = {
   json?: boolean;
   yes?: boolean;
+  assist?: boolean;
   force?: boolean;
   all?: boolean;
   interval?: string;
   timeout?: string;
+  concurrency?: string;
+  continueOnError?: boolean;
   noUi?: boolean;
   dryRun?: boolean;
   apply?: boolean;
@@ -278,6 +291,7 @@ cli.option(
 cli
   .command('init', 'Initialize silvan.config.ts with guided prompts')
   .option('--yes', 'Skip prompts and use defaults')
+  .option('--assist', 'Use cognition to suggest defaults')
   .action(async (options: CliOptions) => {
     const configResult = await loadConfig(buildConfigOverrides(options), {
       cwd: process.cwd(),
@@ -286,16 +300,42 @@ cli
     const jsonMode = Boolean(options.json);
     const useDefaults = options.yes ?? jsonMode ?? false;
     const showOutput = !options.quiet && !jsonMode;
+    const assistEnabled =
+      Boolean(options.assist) || configResult.config.features.cognitionDefaults;
 
     const context = await collectInitContext(repo.projectRoot);
+    let assistResult = null;
+    let assistError: string | null = null;
+    let defaults = getInitDefaults(context);
+    let assistApplied = false;
+
+    if (assistEnabled) {
+      try {
+        assistResult = await suggestInitDefaults({
+          context,
+          config: configResult.config,
+        });
+        if (assistResult && hasInitSuggestions(assistResult.suggestions)) {
+          assistApplied = true;
+          defaults = applyInitSuggestions(defaults, assistResult.suggestions);
+        }
+      } catch (error) {
+        assistError = error instanceof Error ? error.message : String(error);
+      }
+    }
     if (showOutput) {
       console.log(renderInitHeader());
       console.log(renderInitDetection(context));
+      if (assistEnabled) {
+        console.log(
+          renderInitAssist(assistResult, { applied: assistApplied, error: assistError }),
+        );
+      }
     }
 
     const answers = useDefaults
-      ? getInitDefaults(context)
-      : await promptInitAnswers(context);
+      ? defaults
+      : await promptInitAnswers(context, { defaults });
 
     let result;
     if (context.existingConfigPath && context.existingConfig) {
@@ -338,6 +378,12 @@ cli
           detection: context.detection,
           existingConfigPath: context.existingConfigPath ?? null,
           result,
+          assistant: {
+            enabled: assistEnabled,
+            applied: assistApplied,
+            notes: assistResult?.notes ?? [],
+            error: assistError,
+          },
         },
         nextSteps,
         repoRoot: repo.projectRoot,
@@ -350,6 +396,7 @@ cli
 cli
   .command('quickstart', 'Guided setup and sample task')
   .option('--yes', 'Skip prompts and use defaults')
+  .option('--assist', 'Use cognition to suggest defaults')
   .action(async (options: CliOptions) => {
     const jsonMode = Boolean(options.json);
     const showOutput = !options.quiet && !jsonMode;
@@ -370,6 +417,8 @@ cli
     const configResult = await loadConfig(buildConfigOverrides(options), {
       cwd: process.cwd(),
     });
+    const assistEnabled =
+      Boolean(options.assist) || configResult.config.features.cognitionDefaults;
     let repo;
     try {
       repo = await detectRepoContext({ cwd: configResult.projectRoot });
@@ -384,6 +433,24 @@ cli
     }
 
     const context = await collectInitContext(repo.projectRoot);
+    let assistResult = null;
+    let assistError: string | null = null;
+    let assistApplied = false;
+    let defaults = getInitDefaults(context);
+    if (assistEnabled) {
+      try {
+        assistResult = await suggestInitDefaults({
+          context,
+          config: configResult.config,
+        });
+        if (assistResult && hasInitSuggestions(assistResult.suggestions)) {
+          assistApplied = true;
+          defaults = applyInitSuggestions(defaults, assistResult.suggestions);
+        }
+      } catch (error) {
+        assistError = error instanceof Error ? error.message : String(error);
+      }
+    }
     const envSummary = getLoadedEnvSummary();
     const checkSummary = buildQuickstartChecks({
       repoRoot: repo.projectRoot,
@@ -408,10 +475,22 @@ cli
         worktreePath?: string;
         worktreeName?: string;
       };
+      assistant?: {
+        enabled: boolean;
+        applied: boolean;
+        notes: string[];
+        error: string | null;
+      };
       nextSteps?: string[];
     } = {
       ok: checkSummary.blockers.length === 0,
       checks: checkSummary.checks,
+    };
+    jsonSummary.assistant = {
+      enabled: assistEnabled,
+      applied: assistApplied,
+      notes: assistResult?.notes ?? [],
+      error: assistError,
     };
 
     if (showOutput) {
@@ -492,11 +571,16 @@ cli
       console.log('');
       console.log(renderQuickstartStep('Step 2: Configuration'));
       console.log(renderInitDetection(context));
+      if (assistEnabled) {
+        console.log(
+          renderInitAssist(assistResult, { applied: assistApplied, error: assistError }),
+        );
+      }
     }
 
     const answers = useDefaults
-      ? getInitDefaults(context)
-      : await promptInitAnswers(context);
+      ? defaults
+      : await promptInitAnswers(context, { defaults });
     let configResultSummary;
     if (context.existingConfigPath && context.existingConfig) {
       const preview = await writeInitConfig(context, answers, {
@@ -629,6 +713,21 @@ function parseListFlag(value: string | undefined): string[] | undefined {
     .map((item) => item.trim().toLowerCase())
     .filter((item) => item.length > 0);
   return items.length > 0 ? items : undefined;
+}
+
+function parseConcurrency(value: string | undefined, fallback = 1): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
+    throw new SilvanError({
+      code: 'queue.invalid_concurrency',
+      message: `Invalid concurrency value: ${value}`,
+      userMessage: 'Queue concurrency must be a whole number of 1 or higher.',
+      kind: 'validation',
+      nextSteps: ['Use --concurrency 1 or higher.'],
+    });
+  }
+  return parsed;
 }
 
 function deriveRunListStatus(
@@ -774,6 +873,28 @@ function buildQuickstartNotes(checks: QuickstartCheck[]): string[] {
   }
 
   return notes;
+}
+
+async function maybeSuggestCliRecovery(options: {
+  error: SilvanError;
+  command?: string;
+}): Promise<AssistSuggestion | null> {
+  if (options.error.kind === 'canceled') return null;
+  try {
+    if (options.error.code?.startsWith('config.')) {
+      return await suggestConfigRecovery({
+        error: options.error,
+        repoRoot: process.cwd(),
+      });
+    }
+    return await suggestCliRecovery({
+      error: options.error,
+      repoRoot: process.cwd(),
+      ...(options.command !== undefined ? { command: options.command } : {}),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function buildConfigOverrides(options: CliOptions): ConfigInput {
@@ -2080,6 +2201,14 @@ cli
       unresolvedReviewCount?: number;
       blockedReason?: string;
     };
+    const verificationAssist = data['verificationAssistSummary'] as
+      | {
+          summary?: string;
+          steps?: string[];
+          context?: string;
+          commands?: string[];
+        }
+      | undefined;
     const localGate = (data['localGateSummary'] as
       | { ok?: boolean; blockers?: number; warnings?: number }
       | undefined) ?? { ok: undefined };
@@ -2099,6 +2228,7 @@ cli
             unresolvedReviewCount: summary.unresolvedReviewCount ?? null,
             blockedReason: summary.blockedReason ?? null,
             localGate,
+            verificationAssist: verificationAssist ?? null,
           },
         },
         repoRoot,
@@ -2145,6 +2275,35 @@ cli
     }
     if (summary.blockedReason) {
       lines.push(`Blocked reason: ${summary.blockedReason}`);
+    }
+    if (verificationAssist?.summary || verificationAssist?.steps?.length) {
+      lines.push('');
+      lines.push(
+        renderSectionHeader('Verification assist', { width: 60, kind: 'minor' }),
+      );
+      const details: Array<[string, string]> = [];
+      if (verificationAssist.context) {
+        details.push(['Context', verificationAssist.context]);
+      }
+      if (verificationAssist.commands?.length) {
+        details.push(['Commands', verificationAssist.commands.join(', ')]);
+      }
+      if (verificationAssist.summary) {
+        details.push(['Summary', verificationAssist.summary]);
+      }
+      if (details.length > 0) {
+        lines.push(...formatKeyValues(details, { labelWidth: 12 }));
+      }
+      if (verificationAssist.steps?.length) {
+        lines.push(
+          ...formatKeyList(
+            'Steps',
+            `${verificationAssist.steps.length} action(s)`,
+            verificationAssist.steps,
+            { labelWidth: 12 },
+          ),
+        );
+      }
     }
     if (localGate.ok === false) {
       lines.push(
@@ -2473,59 +2632,159 @@ cli
     ),
   );
 
-cli.command('queue run', 'Process queued task requests').action((options: CliOptions) =>
-  withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
-    const logger = createCliLogger(ctx);
-    const requests = await listQueueRequests({ state: ctx.state });
-    if (requests.length === 0) {
-      await logger.info('No queued requests.');
-      return;
-    }
-
-    let processed = 0;
-    for (const request of requests) {
-      await withRunContext(
-        {
-          cwd: process.cwd(),
-          mode: options.json ? 'json' : 'headless',
-          lock: true,
-          configOverrides: buildConfigOverrides(options),
-        },
-        async (runCtx) =>
-          withAgentSessions(
-            Boolean(runCtx.config.ai.sessions.persist),
-            async (sessions) => {
-              const localInput: LocalTaskInput = {
-                title: request.title,
-                ...(request.description ? { description: request.description } : {}),
-                ...(request.acceptanceCriteria?.length
-                  ? { acceptanceCriteria: request.acceptanceCriteria }
-                  : {}),
-              };
-              await startTaskFlow({
-                ctx: runCtx,
-                ...(sessions ? { sessions } : {}),
-                taskRef: request.title,
-                localInput,
-                printCd: false,
-              });
+cli
+  .command('queue run', 'Process queued task requests')
+  .option('--concurrency <n>', 'Number of queue requests to process at once')
+  .option('--continue-on-error', 'Keep processing queued requests after a failure')
+  .action((options: CliOptions) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const jsonMode = Boolean(options.json);
+      const logger = createCliLogger(ctx);
+      const concurrency = parseConcurrency(options.concurrency);
+      const continueOnError = Boolean(options.continueOnError);
+      const requests = await listQueueRequests({ state: ctx.state });
+      if (requests.length === 0) {
+        if (jsonMode) {
+          await emitJsonSuccess({
+            command: 'queue run',
+            data: {
+              processed: 0,
+              succeeded: 0,
+              failed: 0,
+              remaining: 0,
+              concurrency,
+              continueOnError,
+              failures: [],
             },
-          ),
+            repoRoot: ctx.repo.repoRoot,
+            runId: ctx.runId,
+          });
+        } else {
+          await logger.info('No queued requests.');
+        }
+        return;
+      }
+
+      const requestLabels = new Map(
+        requests.map((request) => [request.id, request.title]),
       );
+      const result = await runQueueRequests({
+        requests,
+        concurrency,
+        continueOnError,
+        onRequest: async (request) => {
+          await withRunContext(
+            {
+              cwd: process.cwd(),
+              mode: jsonMode ? 'json' : 'headless',
+              lock: false,
+              configOverrides: buildConfigOverrides(options),
+            },
+            async (runCtx) =>
+              withAgentSessions(
+                Boolean(runCtx.config.ai.sessions.persist),
+                async (sessions) => {
+                  const localInput: LocalTaskInput = {
+                    title: request.title,
+                    ...(request.description ? { description: request.description } : {}),
+                    ...(request.acceptanceCriteria?.length
+                      ? { acceptanceCriteria: request.acceptanceCriteria }
+                      : {}),
+                  };
+                  await startTaskFlow({
+                    ctx: runCtx,
+                    ...(sessions ? { sessions } : {}),
+                    taskRef: request.title,
+                    localInput,
+                    printCd: false,
+                  });
+                },
+              ),
+          );
+        },
+        onSuccess: async (request) => {
+          await deleteQueueRequest({ state: ctx.state, requestId: request.id });
+        },
+      });
 
-      await deleteQueueRequest({ state: ctx.state, requestId: request.id });
-      processed += 1;
-    }
+      const remainingRequests = await listQueueRequests({ state: ctx.state });
+      const remaining = remainingRequests.length;
+      const failures = result.failures.map((failure) => ({
+        id: failure.id,
+        title: requestLabels.get(failure.id),
+        message: failure.message,
+      }));
 
-    await logger.info(
-      renderSuccessSummary({
-        title: 'Queue processed',
-        details: [['Processed', `${processed} request(s)`]],
-        nextSteps: ['silvan run list'],
-      }),
-    );
-  }),
-);
+      if (jsonMode) {
+        await emitJsonResult({
+          command: 'queue run',
+          success: result.failed === 0,
+          data: {
+            processed: result.processed,
+            succeeded: result.succeeded,
+            failed: result.failed,
+            remaining,
+            concurrency,
+            continueOnError,
+            failures,
+          },
+          ...(result.failed === 0
+            ? {}
+            : {
+                error: {
+                  code: 'queue.run_failed',
+                  message: 'One or more queued requests failed.',
+                  details: { failures },
+                  suggestions: ['Review failures, then run `silvan queue run` again.'],
+                },
+              }),
+          repoRoot: ctx.repo.repoRoot,
+          runId: ctx.runId,
+        });
+        if (result.failed > 0) {
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      const lines: string[] = [];
+      const title = result.failed > 0 ? 'Queue processed with errors' : 'Queue processed';
+      lines.push(renderSectionHeader(title, { width: 60, kind: 'minor' }));
+      lines.push(
+        ...formatKeyValues(
+          [
+            ['Processed', `${result.processed} request(s)`],
+            ['Succeeded', `${result.succeeded} request(s)`],
+            ['Failed', `${result.failed} request(s)`],
+            ['Remaining', `${remaining} request(s)`],
+            ['Concurrency', `${concurrency}`],
+            ['Continue on error', continueOnError ? 'Yes' : 'No'],
+          ],
+          { labelWidth: 12 },
+        ),
+      );
+      if (failures.length > 0) {
+        const failureLines = failures.map((failure) => {
+          const label = failure.title ?? failure.id;
+          return `${label}: ${failure.message}`;
+        });
+        lines.push(
+          ...formatKeyList('Failures', `${failures.length} request(s)`, failureLines, {
+            labelWidth: 12,
+          }),
+        );
+      }
+      const nextSteps = ['silvan run list'];
+      if (remaining > 0 || result.failed > 0) {
+        nextSteps.push('silvan queue run');
+      }
+      lines.push(renderNextSteps(nextSteps));
+      await logger.info(lines.join('\n'));
+      if (result.failed > 0) {
+        process.exitCode = 1;
+      }
+    }),
+  );
 
 async function buildLocalTaskInput(
   options: CliOptions,
@@ -3479,13 +3738,23 @@ cli
       lines.push(renderNextSteps(['silvan config show', 'silvan doctor']));
       console.log(lines.join('\n'));
     } catch (error) {
+      const normalized = normalizeError(error);
+      const assistant = await maybeSuggestCliRecovery({
+        error: normalized,
+        command: 'config validate',
+      });
       if (options.json) {
-        await emitJsonError({ command: 'config validate', error });
+        await emitJsonError({
+          command: 'config validate',
+          error: normalized,
+          assistant,
+        });
       } else {
-        const rendered = renderCliError(error, {
+        const rendered = renderCliError(normalized, {
           debug: Boolean(options.debug),
           trace: Boolean(options.trace),
           commandNames: getRegisteredCommandNames(),
+          ...(assistant ? { assistant } : {}),
         });
         console.error(rendered.message);
       }
@@ -3768,10 +4037,14 @@ export async function run(argv: string[]): Promise<void> {
     }
   } catch (error) {
     const normalized = normalizeError(error);
+    const assistant = await maybeSuggestCliRecovery({
+      error: normalized,
+      command: cli.matchedCommand?.name ?? 'silvan',
+    });
     const jsonMode = argv.includes('--json');
     if (jsonMode) {
       const commandName = cli.matchedCommand?.name ?? 'silvan';
-      await emitJsonError({ command: commandName, error: normalized });
+      await emitJsonError({ command: commandName, error: normalized, assistant });
     } else {
       const debugEnabled = argv.includes('--debug') || argv.includes('--trace');
       const traceEnabled = argv.includes('--trace');
@@ -3779,6 +4052,7 @@ export async function run(argv: string[]): Promise<void> {
         debug: debugEnabled,
         trace: traceEnabled,
         commandNames: getRegisteredCommandNames(),
+        ...(assistant ? { assistant } : {}),
       });
       console.error(rendered.message);
     }

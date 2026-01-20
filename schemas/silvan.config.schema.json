@@ -276,16 +276,21 @@
     },
     "features": {
       "default": {
-        "autoMode": false
+        "autoMode": false,
+        "cognitionDefaults": false
       },
       "type": "object",
       "properties": {
         "autoMode": {
           "default": false,
           "type": "boolean"
+        },
+        "cognitionDefaults": {
+          "default": false,
+          "type": "boolean"
         }
       },
-      "required": ["autoMode"],
+      "required": ["autoMode", "cognitionDefaults"],
       "additionalProperties": false
     },
     "state": {
@@ -639,6 +644,9 @@
               "type": "object",
               "properties": {
                 "kickoffPrompt": {
+                  "type": "string"
+                },
+                "initDefaults": {
                   "type": "string"
                 },
                 "plan": {

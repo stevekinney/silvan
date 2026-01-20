@@ -14,11 +14,19 @@ export type JsonOutputOptions = {
   bus?: EventBus;
 };
 
+type AssistantSuggestion = {
+  summary?: string;
+  steps?: string[];
+};
+
 export function formatCommandKey(value: string): string {
   return value.trim().replace(/\s+/g, '.');
 }
 
-export function buildJsonError(error: unknown): JsonError {
+export function buildJsonError(
+  error: unknown,
+  options?: { assistant?: AssistantSuggestion | null },
+): JsonError {
   const normalized = normalizeError(error);
   const details: Record<string, unknown> = {
     ...(normalized.details ?? {}),
@@ -30,11 +38,24 @@ export function buildJsonError(error: unknown): JsonError {
     details['auditLogPath'] = normalized.auditLogPath;
   }
 
+  const assistant = options?.assistant;
+  if (assistant?.summary || assistant?.steps?.length) {
+    details['assistant'] = {
+      ...(assistant.summary ? { summary: assistant.summary } : {}),
+      ...(assistant.steps?.length ? { steps: assistant.steps } : {}),
+    };
+  }
+
+  const suggestions = [
+    ...(normalized.nextSteps ?? []),
+    ...(assistant?.steps ?? []),
+  ].filter((step, index, arr) => arr.indexOf(step) === index);
+
   return {
     code: normalized.code,
     message: normalized.userMessage,
     ...(Object.keys(details).length > 0 ? { details } : {}),
-    ...(normalized.nextSteps ? { suggestions: normalized.nextSteps } : {}),
+    ...(suggestions.length > 0 ? { suggestions } : {}),
   };
 }
 
@@ -89,13 +110,16 @@ export async function emitJsonSuccess(options: {
 export async function emitJsonError(options: {
   command: string;
   error: unknown;
+  assistant?: AssistantSuggestion | null;
   runId?: string;
   repoRoot?: string;
   bus?: EventBus;
 }): Promise<void> {
+  const assistantOption =
+    options.assistant !== undefined ? { assistant: options.assistant } : undefined;
   await emitJsonResult({
     command: options.command,
-    error: buildJsonError(options.error),
+    error: buildJsonError(options.error, assistantOption),
     success: false,
     ...(options.runId ? { runId: options.runId } : {}),
     ...(options.repoRoot ? { repoRoot: options.repoRoot } : {}),
