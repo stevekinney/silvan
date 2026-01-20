@@ -6,7 +6,7 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -83,6 +83,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -144,4 +146,6 @@ jobs:
         run: bun run build
 
       - name: Publish to npm
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
         run: npm publish
