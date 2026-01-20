@@ -18,9 +18,10 @@ Use this skill to design or update npm publish workflows that align with the pos
 ## Trusted publishing workflow (OIDC)
 
 - Configure npm trusted publisher for the repo + workflow filename.
+- Ensure the workflow filename matches the trusted publisher setting exactly (e.g., `release.yaml` vs `release.yml`).
 - Ensure workflow uses `permissions: id-token: write` and `contents: read`.
 - Use npm CLI >= 11.5.1 in CI.
-- Remove `NODE_AUTH_TOKEN`/`NPM_TOKEN` from publish steps.
+- Remove `NODE_AUTH_TOKEN`/`NPM_TOKEN` from publish steps so npm uses OIDC.
 - Prefer `npm publish` with `NPM_CONFIG_PROVENANCE=true` or rely on npm defaults.
 - Lock package settings to require 2FA and disallow tokens after OIDC is configured.
 

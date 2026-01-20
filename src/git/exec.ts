@@ -18,6 +18,10 @@ export async function runGit(
   },
 ): Promise<GitResult> {
   const start = performance.now();
+  const env = { ...process.env };
+  delete env['GIT_DIR'];
+  delete env['GIT_WORK_TREE'];
+  delete env['GIT_INDEX_FILE'];
 
   if (options.bus) {
     await options.bus.emit(
@@ -31,7 +35,7 @@ export async function runGit(
     );
   }
 
-  const proc = Bun.spawn(['git', ...args], { cwd: options.cwd });
+  const proc = Bun.spawn(['git', ...args], { cwd: options.cwd, env });
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();
   const exitCode = await proc.exited;

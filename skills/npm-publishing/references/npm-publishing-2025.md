@@ -27,6 +27,7 @@
 - Ensure npm CLI >= 11.5.1 (upgrade npm if needed).
 - Remove `NODE_AUTH_TOKEN` and `NPM_TOKEN` from publish.
 - Use `npm publish` and set `NPM_CONFIG_PROVENANCE=true` when desired.
+- Confirm the workflow filename matches the trusted publisher config exactly and exists in `.github/workflows/`.
 
 Example publish job skeleton:
 
@@ -78,3 +79,8 @@ Safe .npmrc pattern (no secret committed):
 
 - Never bake tokens into build artifacts or dist outputs.
 - Prefer OIDC over any long-lived credential.
+
+## Operational gotchas
+
+- Trusted publishing is strict about the workflow filename; a mismatch (e.g., `release.yml` vs `release.yaml`) causes `npm publish` to fail with `ENEEDAUTH`.
+- If a publish job inherits `NODE_AUTH_TOKEN`/`NPM_TOKEN`, npm may attempt token auth instead of OIDC and fail when tokens are empty or expired.
