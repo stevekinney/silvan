@@ -107,6 +107,13 @@ jobs:
             exit 1
           fi
 
+      - name: Generate checksums
+        shell: bash
+        run: |
+          find artifacts -type f -name "silvan-*" ! -name "*.sha256" -print0 | while IFS= read -r -d '' file; do
+            sha256sum "$file" > "${file}.sha256"
+          done
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -156,7 +163,5 @@ jobs:
 
       - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ''
-          NPM_TOKEN: ''
           NPM_CONFIG_PROVENANCE: 'true'
         run: npm publish

@@ -1,6 +1,6 @@
 import { $ } from 'bun';
 
-const entrypoints = ['./src/index.ts', './src/config/index.ts'];
+const entrypoints = ['./src/index.ts', './src/config/index.ts', './src/node-stub.ts'];
 
 const secretKeys = [
   'ANTHROPIC_API_KEY',

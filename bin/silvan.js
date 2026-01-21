@@ -4,6 +4,7 @@ import path from 'node:path';
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 import envPaths from 'env-paths';
 
@@ -84,6 +85,62 @@ function download(url, destination) {
   });
 }
 
+function downloadText(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, (response) => {
+      if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
+        const redirect = response.headers.location;
+        if (redirect) {
+          response.resume();
+          downloadText(redirect).then(resolve).catch(reject);
+          return;
+        }
+      }
+
+      if (response.statusCode !== 200) {
+        reject(
+          new Error(`Failed to download ${url} (status ${response.statusCode ?? 'unknown'})`),
+        );
+        response.resume();
+        return;
+      }
+
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        resolve(body);
+      });
+    });
+
+    request.on('error', reject);
+  });
+}
+
+function sha256File(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function parseChecksum(content, assetName) {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^([a-fA-F0-9]{64})(?:\s+\*?(.+))?$/);
+    if (!match) continue;
+    const [, digest, name] = match;
+    if (!name || name.endsWith(assetName)) {
+      return digest.toLowerCase();
+    }
+  }
+  throw new Error(`Checksum for ${assetName} not found in checksum file.`);
+}
+
 function hasBun() {
   const result = spawnSync('bun', ['--version'], { stdio: 'ignore' });
   return !result.error && result.status === 0;
@@ -114,7 +171,8 @@ function resolveBinaryInfo() {
   const ext = target.target.startsWith('windows') ? '.exe' : '';
   const assetName = `silvan-${target.target}${ext}`;
   const url = `${RELEASE_BASE}/v${pkgVersion}/${assetName}`;
-  return { target: target.target, assetName, url };
+  const checksumUrl = `${url}.sha256`;
+  return { target: target.target, assetName, url, checksumUrl };
 }
 
 async function ensureBinary() {
@@ -133,6 +191,23 @@ async function ensureBinary() {
   const binaryPath = path.join(binDir, info.assetName);
   if (!fs.existsSync(binaryPath)) {
     await download(info.url, binaryPath);
+    try {
+      const checksumText = await downloadText(info.checksumUrl);
+      const expected = parseChecksum(checksumText, info.assetName);
+      const actual = sha256File(binaryPath);
+      if (expected !== actual) {
+        throw new Error(
+          `Checksum verification failed for ${info.assetName}. Expected ${expected}, got ${actual}.`,
+        );
+      }
+    } catch (error) {
+      try {
+        fs.unlinkSync(binaryPath);
+      } catch {
+        // ignore
+      }
+      throw error;
+    }
     if (process.platform !== 'win32') {
       fs.chmodSync(binaryPath, 0o755);
     }

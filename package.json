@@ -27,11 +27,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "bun": "./dist/index.js",
+      "node": "./dist/node-stub.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./config": {
       "types": "./dist/config/index.d.ts",
+      "node": "./dist/config/index.js",
       "default": "./dist/config/index.js"
     }
   },
