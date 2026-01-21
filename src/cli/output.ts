@@ -21,6 +21,11 @@ const statusColors: Record<string, SemanticColor> = {
   failed: 'error',
   canceled: 'warning',
   aborted: 'warning',
+  clean: 'success',
+  dirty: 'warning',
+  locked: 'warning',
+  bare: 'info',
+  detached: 'warning',
   unknown: 'dim',
 };
 

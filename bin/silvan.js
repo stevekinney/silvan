@@ -127,7 +127,7 @@ async function ensureBinary() {
   }
 
   const cacheRoot = envPaths('silvan').cache;
-  const binDir = path.join(cacheRoot, 'bin');
+  const binDir = path.join(cacheRoot, 'bin', `v${pkgVersion}`);
   ensureDir(binDir);
 
   const binaryPath = path.join(binDir, info.assetName);

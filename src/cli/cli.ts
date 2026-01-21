@@ -137,6 +137,7 @@ import {
   renderTaskHeader,
   summarizePlan,
 } from './task-start-output';
+import { deriveWorktreeStatus, renderWorktreeListTable } from './worktree-list-output';
 
 const cli = cac('silvan');
 
@@ -1180,14 +1181,47 @@ cli
 cli.command('tree list', 'List all git worktrees').action(async (options: CliOptions) => {
   const mode: EventMode = options.json ? 'json' : 'headless';
   await withCliContext(options, mode, async (ctx) => {
-    await runStep(ctx, 'git.worktree.list', 'List worktrees', async () =>
-      listWorktrees({
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        includeStatus: true,
-      }),
+    const logger = createCliLogger(ctx);
+    const worktrees = await runStep(
+      ctx,
+      'git.worktree.list',
+      'List worktrees',
+      async () =>
+        listWorktrees({
+          repoRoot: ctx.repo.repoRoot,
+          bus: ctx.events.bus,
+          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
+          includeStatus: true,
+        }),
     );
+
+    const nextSteps = ['silvan tree add <name>', 'silvan tree remove <name>'];
+
+    if (options.json) {
+      await emitJsonSuccess({
+        command: 'tree list',
+        data: {
+          total: worktrees.length,
+          worktrees: worktrees.map((worktree) => ({
+            ...worktree,
+            status: deriveWorktreeStatus(worktree),
+          })),
+        },
+        nextSteps,
+        runId: ctx.runId,
+        repoRoot: ctx.repo.repoRoot,
+      });
+      return;
+    }
+
+    if (options.quiet) {
+      return;
+    }
+
+    const lines: string[] = [];
+    lines.push(renderWorktreeListTable(worktrees, { total: worktrees.length }));
+    lines.push(renderNextSteps(nextSteps));
+    await logger.info(lines.join('\n'));
   });
 });
 
