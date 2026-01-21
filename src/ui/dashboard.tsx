@@ -44,6 +44,7 @@ import type { DashboardState, RunRecord, WorktreeRecord } from './types';
 
 const EVENT_FLUSH_MS = 120;
 const AUTO_REFRESH_MS = 10_000;
+const RELATIVE_TIME_TICK_MS = 30_000;
 
 const FILTER_PROMPTS: Record<FilterKey, { label: string; hint: string }> = {
   status: {
@@ -147,12 +148,6 @@ export function Dashboard({
       }),
     [layout.bottomHeight, layout.headerHeight, layout.minMainHeight, rows],
   );
-  const bottomItems = useMemo(
-    () => Math.max(0, layout.bottomHeight - 1),
-    [layout.bottomHeight],
-  );
-  const worktreeLimit = bottomItems;
-  const isNarrow = layout.isNarrow;
   const { exit } = useApp();
   const loaderCache = useRef(createRunSnapshotCache());
   const loadedCountRef = useRef(0);
@@ -245,7 +240,7 @@ export function Dashboard({
   }, [pageSize, refreshDashboard]);
 
   useEffect(() => {
-    const interval = setInterval(() => setNowMs(Date.now()), 1000);
+    const interval = setInterval(() => setNowMs(Date.now()), RELATIVE_TIME_TICK_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -478,6 +473,22 @@ export function Dashboard({
     ],
   );
   const mainHeight = Math.max(1, layout.availableHeight - attentionLayout.height);
+  const isNarrow = layout.isNarrow;
+  const showPanelFrames = !isNarrow;
+  const panelBorder = showPanelFrames ? 2 : 0;
+  const panelHeaderRows = showPanelFrames ? 1 : 0;
+  const leftPanelWidth = Math.max(1, layout.leftWidth - panelBorder);
+  const rightPanelWidth = Math.max(1, layout.rightWidth - panelBorder);
+  const panelInnerHeight = Math.max(1, mainHeight - panelBorder);
+  const panelContentRows = Math.max(1, panelInnerHeight - panelHeaderRows);
+  const bottomPanelBorder = showPanelFrames ? 2 : 0;
+  const bottomInnerHeight = Math.max(1, layout.bottomHeight - bottomPanelBorder);
+  const bottomHeaderRows = showPanelFrames ? 1 : 0;
+  const bottomContentRows = Math.max(1, bottomInnerHeight - bottomHeaderRows);
+  const bottomItems = Math.max(0, bottomContentRows);
+  const worktreeLimit = bottomItems;
+  const bottomInnerWidth = Math.max(1, layout.columns - bottomPanelBorder);
+  const bottomColumnWidth = Math.max(1, Math.floor((bottomInnerWidth - 2) / 3));
   const sortLabel = formatSortLabel(sortKey);
   const scopeLabel = effectiveScope === 'all' ? 'All Repos' : 'Current Repo';
   const filterLine = filtersActive
@@ -544,6 +555,15 @@ export function Dashboard({
     ) : null;
 
   const runListSelectionProps = selectedRunId ? { selectedRunId } : {};
+  const runPanelTitle = truncateText(
+    `Runs (${orderedRuns.length})`,
+    showPanelFrames ? leftPanelWidth : layout.leftWidth,
+  );
+  const detailPanelTitle = truncateText(
+    selectedRun ? `Details ${selectedRun.runId.slice(0, 8)}` : 'Details',
+    showPanelFrames ? rightPanelWidth : layout.rightWidth,
+  );
+  const separatorChar = showPanelFrames ? ' ' : '|';
   const mainContent =
     modal ??
     (isNarrow ? (
@@ -568,26 +588,40 @@ export function Dashboard({
       )
     ) : (
       <Box flexDirection="row" height={mainHeight}>
-        <Box width={layout.leftWidth} flexDirection="column">
+        <Box
+          width={layout.leftWidth}
+          height={mainHeight}
+          flexDirection="column"
+          borderStyle={showPanelFrames ? 'round' : undefined}
+          borderColor={showPanelFrames ? 'gray' : undefined}
+        >
+          {showPanelFrames ? <Text color="gray">{runPanelTitle}</Text> : null}
           <RunListCompact
             runs={orderedRuns}
             nowMs={nowMs}
-            width={layout.leftWidth}
-            maxRows={mainHeight}
+            width={showPanelFrames ? leftPanelWidth : layout.leftWidth}
+            maxRows={showPanelFrames ? panelContentRows : mainHeight}
             groupByRepo={groupByRepo}
             {...runListSelectionProps}
           />
         </Box>
         <Box width={1} flexDirection="column">
-          <Text color="gray">|</Text>
+          <Text color="gray">{separatorChar}</Text>
         </Box>
-        <Box width={layout.rightWidth} flexDirection="column">
+        <Box
+          width={layout.rightWidth}
+          height={mainHeight}
+          flexDirection="column"
+          borderStyle={showPanelFrames ? 'round' : undefined}
+          borderColor={showPanelFrames ? 'gray' : undefined}
+        >
+          {showPanelFrames ? <Text color="gray">{detailPanelTitle}</Text> : null}
           {selectedRun ? (
             <RunDetailsCompact
               run={selectedRun}
               nowMs={nowMs}
-              width={layout.rightWidth}
-              maxRows={mainHeight}
+              width={showPanelFrames ? rightPanelWidth : layout.rightWidth}
+              maxRows={showPanelFrames ? panelContentRows : mainHeight}
             />
           ) : (
             <Text color="gray">Select a run to view details.</Text>
@@ -619,45 +653,50 @@ export function Dashboard({
       </Box>
 
       {!modal && layout.showBottom ? (
-        <Box flexDirection="column" height={layout.bottomHeight}>
+        <Box
+          flexDirection="column"
+          height={layout.bottomHeight}
+          borderStyle={showPanelFrames ? 'round' : undefined}
+          borderColor={showPanelFrames ? 'gray' : undefined}
+        >
           <Text color="gray">
             {truncateText(
               `PRs | Queue (${snapshot.queueRequests.length}) | Worktrees (${worktreeRows.length})`,
-              layout.columns,
+              showPanelFrames ? bottomInnerWidth : layout.columns,
             )}
           </Text>
           <Box flexDirection="row">
-            <Box width={layout.columnWidth} flexDirection="column">
+            <Box width={bottomColumnWidth} flexDirection="column">
               <OpenPrsPanel
                 prs={snapshot.openPrs}
                 compact
                 maxItems={bottomItems}
-                maxWidth={layout.columnWidth}
+                maxWidth={bottomColumnWidth}
               />
             </Box>
             <Box width={1} flexDirection="column">
               <Text color="gray">|</Text>
             </Box>
-            <Box width={layout.columnWidth} flexDirection="column">
+            <Box width={bottomColumnWidth} flexDirection="column">
               <QueuePanel
                 requests={snapshot.queueRequests}
                 nowMs={nowMs}
                 compact
                 maxItems={bottomItems}
-                maxWidth={layout.columnWidth}
+                maxWidth={bottomColumnWidth}
               />
             </Box>
             <Box width={1} flexDirection="column">
               <Text color="gray">|</Text>
             </Box>
-            <Box width={layout.columnWidth} flexDirection="column">
+            <Box width={bottomColumnWidth} flexDirection="column">
               <WorktreePanel
                 worktrees={worktreeRows}
                 nowMs={nowMs}
                 maxItems={worktreeLimit}
                 totalCount={worktreeRows.length}
                 compact
-                maxWidth={layout.columnWidth}
+                maxWidth={bottomColumnWidth}
               />
             </Box>
           </Box>
