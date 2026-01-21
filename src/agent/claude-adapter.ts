@@ -1,5 +1,5 @@
 import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, ContentBlock } from '@modelcontextprotocol/sdk/types';
 import {
   type Armorer,
   type ArmorerTool,
@@ -57,6 +57,7 @@ export type ClaudeToolGateOptions = {
 };
 
 export type ClaudeToolGateDecision = { behavior: 'allow' | 'deny'; message?: string };
+type ToolContent = ContentBlock[];
 
 export function toClaudeAgentSdkTools(
   input: Armorer | ArmorerTool | ArmorerTool[],
@@ -75,9 +76,8 @@ export function toClaudeAgentSdkTools(
 
     return sdkTool(name, description, schema, async (args): Promise<CallToolResult> => {
       const result = await tool.executeWith({ params: args ?? {} });
-      return options.formatResult
-        ? options.formatResult(result)
-        : toSdkToolResult(result);
+      const formatted: CallToolResult | undefined = options.formatResult?.(result);
+      return formatted ?? toSdkToolResult(result);
     });
   });
 }
@@ -106,9 +106,8 @@ export function createClaudeAgentSdkServer(
 
     return sdkTool(name, description, schema, async (args): Promise<CallToolResult> => {
       const result = await tool.executeWith({ params: args ?? {} });
-      return options.formatResult
-        ? options.formatResult(result)
-        : toSdkToolResult(result);
+      const formatted: CallToolResult | undefined = options.formatResult?.(result);
+      return formatted ?? toSdkToolResult(result);
     });
   });
 
@@ -249,21 +248,18 @@ function toSdkToolResult(result: ToolResult): CallToolResult {
   if (result.outcome === 'error') {
     const message = result.error ?? stringifyResult(result.content);
     const messageText = typeof message === 'string' ? message : stringifyResult(message);
-    return {
-      content: toTextContent(messageText),
-      isError: true,
-    };
+    const content: ToolContent = toTextContent(messageText);
+    const payload: CallToolResult = { content, isError: true };
+    return payload;
   }
 
   const text = stringifyResult(result.result);
-  const content = toTextContent(text);
+  const content: ToolContent = toTextContent(text);
   const structured = toStructuredContent(result.result);
 
   if (structured) {
-    return {
-      content,
-      structuredContent: structured,
-    };
+    const payload: CallToolResult = { content, structuredContent: structured };
+    return payload;
   }
 
   return { content };
@@ -289,7 +285,7 @@ function toStructuredContent(value: unknown): Record<string, unknown> | undefine
   return value as Record<string, unknown>;
 }
 
-function toTextContent(text: string): CallToolResult['content'] {
+function toTextContent(text: string): ToolContent {
   if (!text.length) return [];
   return [{ type: 'text' as const, text }];
 }

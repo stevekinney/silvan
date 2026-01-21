@@ -16,7 +16,8 @@ export type LinearTicket = {
   assignee?: string | null;
 };
 
-function getLinearClient(apiKey?: string): LinearClient {
+function getLinearClient(apiKey?: string, client?: LinearClient): LinearClient {
+  if (client) return client;
   const resolved = apiKey ?? readEnvValue('LINEAR_API_KEY');
   if (!resolved) {
     throw new SilvanError({
@@ -36,9 +37,10 @@ function getLinearClient(apiKey?: string): LinearClient {
 export async function fetchLinearTicket(
   idOrKey: string,
   token?: string,
+  client?: LinearClient,
 ): Promise<LinearTicket> {
-  const client = getLinearClient(token);
-  const issue = await client.issue(idOrKey);
+  const resolvedClient = getLinearClient(token, client);
+  const issue = await resolvedClient.issue(idOrKey);
   if (!issue) {
     throw new SilvanError({
       code: 'linear.ticket.not_found',
@@ -72,9 +74,10 @@ export async function moveLinearTicket(
   idOrKey: string,
   stateName: string,
   token?: string,
+  client?: LinearClient,
 ): Promise<void> {
-  const client = getLinearClient(token);
-  const issue = await client.issue(idOrKey);
+  const resolvedClient = getLinearClient(token, client);
+  const issue = await resolvedClient.issue(idOrKey);
   if (!issue) {
     throw new SilvanError({
       code: 'linear.ticket.not_found',

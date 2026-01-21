@@ -11,6 +11,7 @@ describe('quickstart output helpers', () => {
     const output = renderFirstRunWelcome();
     expect(output).toContain('Welcome to Silvan');
     expect(output).toContain('silvan quickstart');
+    expect(output).toContain('Guided setup + sample plan');
   });
 
   it('renders quickstart checks', () => {

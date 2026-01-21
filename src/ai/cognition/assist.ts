@@ -22,6 +22,7 @@ const assistSchema = z
   .strict();
 
 type AssistOutput = z.infer<typeof assistSchema>;
+type AssistClient = Parameters<typeof invokeCognition<AssistOutput>>[0]['client'];
 
 export type AssistSuggestion = {
   summary?: string;
@@ -155,6 +156,8 @@ async function runAssist(options: {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: AssistClient;
 }): Promise<AssistSuggestion | null> {
   const config = options.config ?? buildFallbackConfig();
   if (!canUseCognition(config)) return null;
@@ -198,13 +201,15 @@ async function runAssist(options: {
       ...(config.state.root ? { stateRoot: config.state.root } : {}),
     }).cacheDir;
 
-  const response = await invokeCognition({
+  const invoke = options.invoke ?? invokeCognition;
+  const response = await invoke<AssistOutput>({
     snapshot,
     task: options.task,
     schema: assistSchema,
     config,
     inputsDigest,
     cacheDir,
+    ...(options.client ? { client: options.client } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     ...(options.context ? { context: options.context } : {}),
     temperature: 0.2,
@@ -219,6 +224,8 @@ export async function suggestCliRecovery(options: {
   repoRoot?: string;
   config?: Config;
   cacheDir?: string;
+  invoke?: typeof invokeCognition;
+  client?: AssistClient;
 }): Promise<AssistSuggestion | null> {
   const safeDetails = sanitizeDetails(options.error.details);
   const input = {
@@ -244,6 +251,8 @@ export async function suggestCliRecovery(options: {
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.repoRoot !== undefined ? { repoRoot: options.repoRoot } : {}),
     ...(options.cacheDir !== undefined ? { cacheDir: options.cacheDir } : {}),
+    ...(options.invoke ? { invoke: options.invoke } : {}),
+    ...(options.client ? { client: options.client } : {}),
   });
 }
 
@@ -252,6 +261,8 @@ export async function suggestConfigRecovery(options: {
   repoRoot?: string;
   config?: Config;
   cacheDir?: string;
+  invoke?: typeof invokeCognition;
+  client?: AssistClient;
 }): Promise<AssistSuggestion | null> {
   const safeDetails = sanitizeDetails(options.error.details);
   const input = {
@@ -275,6 +286,8 @@ export async function suggestConfigRecovery(options: {
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.repoRoot !== undefined ? { repoRoot: options.repoRoot } : {}),
     ...(options.cacheDir !== undefined ? { cacheDir: options.cacheDir } : {}),
+    ...(options.invoke ? { invoke: options.invoke } : {}),
+    ...(options.client ? { client: options.client } : {}),
   });
 }
 
@@ -285,6 +298,8 @@ export async function suggestVerificationRecovery(options: {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: AssistClient;
 }): Promise<AssistSuggestion | null> {
   const commandLookup = new Map(
     options.config.verify.commands.map((command) => [command.name, command.cmd]),
@@ -325,5 +340,7 @@ export async function suggestVerificationRecovery(options: {
     ...(options.cacheDir !== undefined ? { cacheDir: options.cacheDir } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     ...(options.context ? { context: options.context } : {}),
+    ...(options.invoke ? { invoke: options.invoke } : {}),
+    ...(options.client ? { client: options.client } : {}),
   });
 }

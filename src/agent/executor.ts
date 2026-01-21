@@ -33,10 +33,21 @@ export type ExecutorInput = {
     resultDigest?: string;
     ok: boolean;
   }>;
+  deps?: {
+    createRegistry?: typeof createToolRegistry;
+    createToolGate?: typeof createClaudeToolGate;
+    createToolHooks?: typeof createToolHooks;
+    invokeAgent?: typeof invokeAgent;
+  };
 };
 
 export async function executePlan(input: ExecutorInput): Promise<string> {
-  const registry = createToolRegistry({
+  const registryFactory = input.deps?.createRegistry ?? createToolRegistry;
+  const toolGateFactory = input.deps?.createToolGate ?? createClaudeToolGate;
+  const toolHooksFactory = input.deps?.createToolHooks ?? createToolHooks;
+  const agentInvoker = input.deps?.invokeAgent ?? invokeAgent;
+
+  const registry = registryFactory({
     repoRoot: input.repoRoot,
     config: input.config,
     dryRun: input.dryRun,
@@ -87,7 +98,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
 
   let result;
   try {
-    const toolHooks = createToolHooks({
+    const toolHooks = toolHooksFactory({
       ...(input.bus ? { bus: input.bus } : {}),
       context: input.context,
       ...(input.heartbeat ? { onHeartbeat: input.heartbeat } : {}),
@@ -103,7 +114,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     const permissionMode: ClaudeSessionOptions['permissionMode'] = input.dryRun
       ? 'plan'
       : 'dontAsk';
-    const toolGate = createClaudeToolGate({
+    const toolGate = toolGateFactory({
       registry: registry.armorer,
       readOnly: input.dryRun,
       allowMutation: input.allowDestructive,
@@ -147,7 +158,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     const runOptions = session
       ? { snapshot: input.snapshot, model: input.model, session }
       : { snapshot: input.snapshot, ...sessionOptions };
-    result = await invokeAgent({
+    result = await agentInvoker({
       ...runOptions,
       ...(input.bus ? { bus: input.bus } : {}),
       ...(input.context ? { context: input.context } : {}),

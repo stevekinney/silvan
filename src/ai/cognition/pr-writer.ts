@@ -22,6 +22,8 @@ export async function draftPullRequest(input: {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 }): Promise<PrDraft> {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are the PR writer for Silvan.');
@@ -53,13 +55,15 @@ export async function draftPullRequest(input: {
     taskUrl: input.taskUrl ?? null,
   });
 
-  const draft = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const draft = await invoke({
     snapshot,
     task: 'prDraft',
     schema: prDraftSchema,
     config: input.config,
     inputsDigest,
     ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

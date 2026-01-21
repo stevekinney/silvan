@@ -41,6 +41,8 @@ export async function runAiReviewer(options: {
   config: Config;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 }): Promise<AiReviewReport> {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are a code review assistant.');
@@ -77,11 +79,13 @@ export async function runAiReviewer(options: {
     },
   ]);
 
-  const report = await invokeCognition({
+  const invoke = options.invoke ?? invokeCognition;
+  const report = await invoke({
     snapshot,
     task: 'localReview',
     schema: aiReviewerSchema,
     config: options.config,
+    ...(options.client ? { client: options.client } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     ...(options.context ? { context: options.context } : {}),
   });

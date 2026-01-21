@@ -1,3 +1,5 @@
+import type { Octokit } from 'octokit';
+
 import type { EventBus } from '../events/bus';
 import type { EmitContext } from '../events/emit';
 import { createEnvelope } from '../events/emit';
@@ -14,10 +16,11 @@ async function findPrForBranch(options: {
   repo: string;
   headBranch: string;
   token?: string;
+  octokit?: Octokit;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<PrWithHead> {
-  const octokit = createOctokit(options.token);
+  const octokit = options.octokit ?? createOctokit(options.token);
   let response;
   try {
     response = await octokit.rest.pulls.list({
@@ -82,10 +85,11 @@ export async function getCiStatus(options: {
   headSha: string;
   pr: PrIdent;
   token?: string;
+  octokit?: Octokit;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<CiResult> {
-  const octokit = createOctokit(options.token);
+  const octokit = options.octokit ?? createOctokit(options.token);
   let checks;
   try {
     checks = await octokit.rest.checks.listForRef({
@@ -136,16 +140,22 @@ export async function waitForCi(options: {
   repo: string;
   headBranch: string;
   token?: string;
+  octokit?: Octokit;
   pollIntervalMs: number;
   timeoutMs: number;
   onHeartbeat?: () => Promise<void>;
+  sleep?: (durationMs: number) => Promise<void>;
   bus?: EventBus;
   context: EmitContext;
 }): Promise<CiResult> {
   const start = Date.now();
   const warnAtMs = Math.floor(options.timeoutMs * 0.8);
   let warned = false;
-  let { pr, headSha } = await findPrForBranch(options);
+  const octokit = options.octokit ?? createOctokit(options.token);
+  let { pr, headSha } = await findPrForBranch({
+    ...options,
+    octokit,
+  });
 
   if (options.bus) {
     await options.bus.emit(
@@ -160,7 +170,10 @@ export async function waitForCi(options: {
   }
 
   while (Date.now() - start < options.timeoutMs) {
-    const latest = await findPrForBranch(options);
+    const latest = await findPrForBranch({
+      ...options,
+      octokit,
+    });
     if (latest.headSha !== headSha) {
       headSha = latest.headSha;
       pr = latest.pr;
@@ -171,6 +184,7 @@ export async function waitForCi(options: {
       headSha,
       pr,
       ...(options.token ? { token: options.token } : {}),
+      octokit,
       ...(options.bus ? { bus: options.bus } : {}),
       context: options.context,
     });
@@ -230,7 +244,8 @@ export async function waitForCi(options: {
         console.warn(message);
       }
     }
-    await Bun.sleep(options.pollIntervalMs);
+    const sleep = options.sleep ?? Bun.sleep;
+    await sleep(options.pollIntervalMs);
   }
 
   const timeoutError = new Error('Timed out waiting for CI');

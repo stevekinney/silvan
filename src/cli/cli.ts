@@ -394,7 +394,7 @@ cli
   });
 
 cli
-  .command('quickstart', 'Guided setup and sample task')
+  .command('quickstart', 'Guided setup and sample plan')
   .option('--yes', 'Skip prompts and use defaults')
   .option('--assist', 'Use cognition to suggest defaults')
   .action(async (options: CliOptions) => {
@@ -625,7 +625,7 @@ cli
       !jsonMode &&
       (useDefaults
         ? true
-        : await confirmAction('Run sample task?', { defaultValue: true }));
+        : await confirmAction('Generate sample plan?', { defaultValue: true }));
 
     if (!shouldRunSample) {
       jsonSummary.sample = {
@@ -634,14 +634,14 @@ cli
       };
       if (showOutput) {
         console.log('');
-        console.log(renderQuickstartStep('Step 4: Sample task'));
-        console.log('Skipping sample task.');
+        console.log(renderQuickstartStep('Step 4: Sample plan'));
+        console.log('Skipping sample plan.');
       }
     } else {
       if (showOutput) {
         console.log('');
-        console.log(renderQuickstartStep('Step 4: Sample task'));
-        console.log('Creating a sample task to demonstrate the workflow...');
+        console.log(renderQuickstartStep('Step 4: Sample plan'));
+        console.log('Generating a sample plan (no files will be changed)...');
       }
       await withCliContext(options, 'headless', async (ctx) =>
         withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
@@ -662,7 +662,7 @@ cli
           if (showOutput) {
             console.log(
               renderReadySection({
-                title: 'Sample task created',
+                title: 'Sample plan generated',
                 runId: sampleResult.runId,
                 ...(sampleResult.worktreePath
                   ? { worktreePath: sampleResult.worktreePath }
@@ -3084,6 +3084,7 @@ function openShellInWorktree(worktreePath: string): void {
 }
 
 type QuickstartSampleInfo = {
+  runId?: string;
   worktreePath?: string;
   worktreeName?: string;
   skipped?: boolean;
@@ -3098,11 +3099,13 @@ type QuickstartSampleResult = {
 
 function buildSampleTaskInput(): LocalTaskInput {
   return {
-    title: 'Add a hello world function',
-    description: 'Add a small hello world helper and a basic test.',
+    title: 'Review the repository and propose improvements',
+    description:
+      'Review the repository structure and outline a brief plan without changing files.',
     acceptanceCriteria: [
-      'Introduce a hello world function in the codebase.',
-      'Add a unit test that verifies the output.',
+      'Summarize the repository layout and key entry points.',
+      'List up to three improvement ideas.',
+      'Confirm no files were changed.',
     ],
   };
 }
@@ -3114,7 +3117,7 @@ async function runQuickstartSample(options: {
 }): Promise<QuickstartSampleResult> {
   const ctx = options.ctx;
   const mode = ctx.events.mode;
-  let logger = createCliLogger(ctx);
+  const logger = createCliLogger(ctx);
 
   const resolved = await runStep(ctx, 'task.resolve', 'Resolving task', () =>
     resolveTask(options.input.title, {
@@ -3130,48 +3133,9 @@ async function runQuickstartSample(options: {
 
   await logger.info(renderTaskHeader(resolved.task));
 
-  const worktreeName = buildWorktreeName(resolved.task);
-  const worktree = await runStep(
-    ctx,
-    'git.worktree.create',
-    'Creating worktree',
-    async () =>
-      createWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        name: worktreeName,
-        config: ctx.config,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-  );
-
-  const worktreePath = worktree.path;
-  ctx.repo.worktreePath = worktreePath;
-  if (worktree.branch) {
-    ctx.repo.branch = worktree.branch;
-  }
-  ctx.repo.isWorktree = true;
-  logger = createCliLogger(ctx);
-
-  await normalizeClaudeSettings({ worktreePath });
-
-  const installResult = await runStep(
-    ctx,
-    'deps.install',
-    'Installing dependencies',
-    () => installDependencies({ worktreePath }),
-  );
-  if (!installResult.ok) {
-    await logger.warn(`Warning: bun install failed in ${worktreePath}`, {
-      stderr: installResult.stderr,
-      stdout: installResult.stdout,
-    });
-  }
-
   const plan = await runPlanner(ctx, {
     taskRef: resolved.ref.raw,
     task: resolved.task,
-    worktreeName,
     allowMissingClarifications: true,
     ...(options.sessions ? { sessions: options.sessions } : {}),
   });
@@ -3181,13 +3145,14 @@ async function runQuickstartSample(options: {
 
   return {
     runId: ctx.runId,
-    worktreePath,
-    worktreeName,
   };
 }
 
 function buildQuickstartNextSteps(options: { sample?: QuickstartSampleInfo }): string[] {
   const steps: string[] = [];
+  if (options.sample?.runId) {
+    steps.push(`silvan run inspect ${options.sample.runId}`);
+  }
   if (options.sample?.worktreePath) {
     steps.push(`cd ${options.sample.worktreePath}`);
     steps.push('silvan agent run --apply');
@@ -3205,6 +3170,12 @@ function buildQuickstartNextStepsText(options: {
   sample?: QuickstartSampleInfo;
 }): string {
   const lines: string[] = [];
+
+  if (options.sample?.runId) {
+    lines.push('Review the sample plan:');
+    lines.push(`  silvan run inspect ${options.sample.runId}`);
+    lines.push('');
+  }
 
   if (options.sample?.worktreePath) {
     lines.push('Execute the plan:');

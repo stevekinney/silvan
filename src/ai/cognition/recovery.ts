@@ -19,6 +19,8 @@ export async function generateRecoveryPlan(input: {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 }): Promise<RecoveryPlan> {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are the recovery agent for Silvan.');
@@ -43,13 +45,15 @@ export async function generateRecoveryPlan(input: {
 
   const inputsDigest = hashInputs({ runState: input.runState });
 
-  const plan = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const plan = await invoke({
     snapshot,
     task: 'recovery',
     schema: recoveryPlanSchema,
     config: input.config,
     inputsDigest,
     ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

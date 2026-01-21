@@ -20,6 +20,11 @@ import type { Task } from '../../task/types';
 import type { ConversationStore } from '../conversation/types';
 import { invokeCognition } from '../router';
 
+type ReviewRemediationBodyInput = Record<string, unknown> | null;
+type ReviewRemediationClient = Parameters<
+  typeof invokeCognition<ReviewRemediationBodyInput>
+>[0]['client'];
+
 const reviewRemediationBodyLooseSchema = z.object({}).passthrough();
 
 export async function generateReviewRemediationKickoffPrompt(input: {
@@ -50,6 +55,8 @@ export async function generateReviewRemediationKickoffPrompt(input: {
   config: Config;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: ReviewRemediationClient;
 }): Promise<ReviewRemediationPrompt> {
   const fallbackBody = buildReviewRemediationFallback({
     task: input.task,
@@ -110,11 +117,13 @@ export async function generateReviewRemediationKickoffPrompt(input: {
     },
   ]);
 
-  const body = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const body = await invoke<ReviewRemediationBodyInput>({
     snapshot,
     task: 'reviewKickoff',
     schema: reviewRemediationBodyLooseSchema,
     config: input.config,
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   }).catch(() => null);
@@ -142,8 +151,6 @@ export async function generateReviewRemediationKickoffPrompt(input: {
 
   return validated as ReviewRemediationPrompt;
 }
-
-type ReviewRemediationBodyInput = Record<string, unknown> | null;
 
 type ReviewRemediationFallbackInput = {
   task: Task;

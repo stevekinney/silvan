@@ -790,3 +790,27 @@ function formatBytes(bytes: number): string {
 function buildRunStatePath(stateStore: StateStore, runId: string): string {
   return `${stateStore.runsDir}/${runId}.json`;
 }
+
+export const __test = {
+  formatTextPreview,
+  formatJsonPreview,
+  formatPlanPreview,
+  formatVerifyReportPreview,
+  formatLocalGatePreview,
+  formatPrDraftPreview,
+  formatReviewClassificationPreview,
+  formatReviewFixPlanPreview,
+  formatAiReviewPreview,
+  formatCiFixPlanPreview,
+  formatRawJsonPreview,
+  groupArtifacts,
+  derivePhase,
+  phaseLabel,
+  phaseOrder,
+  artifactTitle,
+  truncateOutput,
+  limitLines,
+  safeSize,
+  formatBytes,
+  buildRunStatePath,
+};

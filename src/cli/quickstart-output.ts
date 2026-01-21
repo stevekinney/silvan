@@ -30,7 +30,7 @@ export function renderFirstRunWelcome(): string {
   lines.push('');
   lines.push('Get started:');
   lines.push('  silvan init          Configure for this repository');
-  lines.push('  silvan quickstart    Guided setup + sample task');
+  lines.push('  silvan quickstart    Guided setup + sample plan');
   lines.push('  silvan doctor        Check your environment');
   lines.push('');
   lines.push('Learn more:');

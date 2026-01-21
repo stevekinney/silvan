@@ -28,6 +28,8 @@ export async function decideVerification(input: {
   config: Config;
   bus?: EventBus;
   context: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 }): Promise<VerificationDecision> {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are the verification agent for Silvan.');
@@ -54,11 +56,13 @@ export async function decideVerification(input: {
     },
   ]);
 
-  const decision = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const decision = await invoke({
     snapshot,
     task: 'verificationSummary',
     schema: verificationDecisionSchema,
     config: input.config,
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     context: input.context,
   });

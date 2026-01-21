@@ -18,6 +18,7 @@ export const learningNotesSchema = z
   .strict();
 
 export type LearningNotes = z.infer<typeof learningNotesSchema>;
+type LearningNotesClient = Parameters<typeof invokeCognition<LearningNotes>>[0]['client'];
 
 export type LearningInput = {
   task?: { key?: string; title?: string; provider?: string };
@@ -39,6 +40,8 @@ export async function generateLearningNotes(options: {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: LearningNotesClient;
 }): Promise<LearningNotes> {
   if (!options.config.learning.ai.enabled) {
     return buildDeterministicLearningNotes(options.input);
@@ -67,12 +70,14 @@ export async function generateLearningNotes(options: {
     },
   ]);
 
-  const notes = await invokeCognition({
+  const invoke = options.invoke ?? invokeCognition;
+  const notes = await invoke<LearningNotes>({
     snapshot,
     task: 'learningNotes',
     schema: learningNotesSchema,
     config: options.config,
     ...(options.cacheDir ? { cacheDir: options.cacheDir } : {}),
+    ...(options.client ? { client: options.client } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     ...(options.context ? { context: options.context } : {}),
   });

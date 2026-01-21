@@ -50,7 +50,9 @@
     "baseUrl": ".",
     "rootDir": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@modelcontextprotocol/sdk/types": ["./types/modelcontextprotocol-sdk.d.ts"],
+      "@modelcontextprotocol/sdk/types.js": ["./types/modelcontextprotocol-sdk.d.ts"]
     },
 
     // DX improvements

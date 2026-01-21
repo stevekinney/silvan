@@ -6,8 +6,12 @@ import {
   normalizeCriteria,
 } from '../utils';
 
-export async function fetchLinearTask(id: string, token?: string): Promise<Task> {
-  const ticket = await fetchLinearTicket(id, token);
+export async function fetchLinearTask(
+  id: string,
+  token?: string,
+  client?: Parameters<typeof fetchLinearTicket>[2],
+): Promise<Task> {
+  const ticket = await fetchLinearTicket(id, token, client);
   return linearTicketToTask(ticket);
 }
 

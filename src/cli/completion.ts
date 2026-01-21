@@ -127,7 +127,7 @@ _silvan() {
     local -a commands
     commands=(
         'init:Initialize silvan.config.ts'
-        'quickstart:Guided setup and sample task'
+        'quickstart:Guided setup and sample plan'
         'help:View help topics and concepts'
         'tree:Manage git worktrees (alias: t, wt)'
         'run:Manage agent runs (alias: r)'
@@ -226,7 +226,7 @@ complete -c silvan -f
 
 # Main commands
 complete -c silvan -n "__fish_use_subcommand" -a "init" -d "Initialize silvan.config.ts"
-complete -c silvan -n "__fish_use_subcommand" -a "quickstart" -d "Guided setup and sample task"
+complete -c silvan -n "__fish_use_subcommand" -a "quickstart" -d "Guided setup and sample plan"
 complete -c silvan -n "__fish_use_subcommand" -a "help" -d "View help topics and concepts"
 complete -c silvan -n "__fish_use_subcommand" -a "tree t wt" -d "Manage git worktrees"
 complete -c silvan -n "__fish_use_subcommand" -a "run r" -d "Manage agent runs"

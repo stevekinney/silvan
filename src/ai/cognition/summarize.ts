@@ -9,18 +9,24 @@ import { invokeCognition } from '../router';
 const summarySchema = z.object({
   summary: z.string().min(1),
 });
+type SummaryResult = z.infer<typeof summarySchema>;
+type SummaryClient = Parameters<typeof invokeCognition<SummaryResult>>[0]['client'];
 
 export async function summarizeConversation(options: {
   snapshot: ConversationSnapshot;
   config: Config;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: SummaryClient;
 }): Promise<string> {
-  const result = await invokeCognition({
+  const invoke = options.invoke ?? invokeCognition;
+  const result = await invoke<SummaryResult>({
     snapshot: options.snapshot,
     task: 'conversationSummary',
     schema: summarySchema,
     config: options.config,
+    ...(options.client ? { client: options.client } : {}),
     ...(options.bus ? { bus: options.bus } : {}),
     ...(options.context ? { context: options.context } : {}),
   });

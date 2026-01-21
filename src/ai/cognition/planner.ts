@@ -26,6 +26,8 @@ export type PlannerInput = {
   cacheDir?: string;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 };
 
 type RepoSummary = {
@@ -104,13 +106,15 @@ export async function generatePlan(input: PlannerInput): Promise<Plan> {
     worktreeName: input.worktreeName ?? null,
   });
 
-  const plan = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const plan = await invoke({
     snapshot,
     task: 'plan',
     schema: planSchema,
     config: input.config,
     inputsDigest,
     ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}),
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   });

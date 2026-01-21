@@ -28,6 +28,11 @@ type RepoProfile = {
   packageName?: string;
 };
 
+type ExecutionKickoffBodyInput = Record<string, unknown> | null;
+type ExecutionKickoffClient = Parameters<
+  typeof invokeCognition<ExecutionKickoffBodyInput>
+>[0]['client'];
+
 const executionKickoffBodyLooseSchema = z.object({}).passthrough();
 
 async function summarizeRepo(repoRoot: string): Promise<RepoProfile> {
@@ -55,6 +60,8 @@ export async function generateExecutionKickoffPrompt(input: {
   config: Config;
   bus?: EventBus;
   context?: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: ExecutionKickoffClient;
 }): Promise<ExecutionKickoffPrompt> {
   const repoProfile = await summarizeRepo(input.repoRoot);
   const fallbackBody = buildExecutionKickoffFallback({
@@ -101,11 +108,13 @@ export async function generateExecutionKickoffPrompt(input: {
     },
   ]);
 
-  const body = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const body = await invoke<ExecutionKickoffBodyInput>({
     snapshot,
     task: 'kickoffPrompt',
     schema: executionKickoffBodyLooseSchema,
     config: input.config,
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     ...(input.context ? { context: input.context } : {}),
   }).catch(() => null);
@@ -134,8 +143,6 @@ export async function generateExecutionKickoffPrompt(input: {
 
   return validated as ExecutionKickoffPrompt;
 }
-
-type ExecutionKickoffBodyInput = Record<string, unknown> | null;
 
 type ExecutionKickoffFallbackInput = {
   task: Task;

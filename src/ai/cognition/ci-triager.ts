@@ -21,6 +21,8 @@ export async function generateCiFixPlan(input: {
   config: Config;
   bus?: EventBus;
   context: EmitContext;
+  invoke?: typeof invokeCognition;
+  client?: Parameters<typeof invokeCognition>[0]['client'];
 }): Promise<Plan> {
   const systemWriter = new ProseWriter();
   systemWriter.write('You are the CI triage agent for Silvan.');
@@ -45,11 +47,13 @@ export async function generateCiFixPlan(input: {
     },
   ]);
 
-  const plan = await invokeCognition({
+  const invoke = input.invoke ?? invokeCognition;
+  const plan = await invoke({
     snapshot,
     task: 'ciTriage',
     schema: planSchema,
     config: input.config,
+    ...(input.client ? { client: input.client } : {}),
     ...(input.bus ? { bus: input.bus } : {}),
     context: input.context,
   });

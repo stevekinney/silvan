@@ -1,3 +1,6 @@
+import type { LinearClient } from '@linear/sdk';
+import type { Octokit } from 'octokit';
+
 import type { Config } from '../config/schema';
 import { requireGitHubConfig } from '../config/validate';
 import { SilvanError } from '../core/errors';
@@ -22,6 +25,8 @@ export async function resolveTask(
     runId?: string;
     state: StateStore;
     localInput?: LocalTaskInput;
+    octokit?: Octokit;
+    linearClient?: LinearClient;
     bus?: EventBus;
     context?: EmitContext;
   },
@@ -37,7 +42,11 @@ export async function resolveTask(
         nextSteps: ['Enable Linear in silvan.config.ts task.providers.enabled.'],
       });
     }
-    const task = await fetchLinearTask(ref.id, options.config.linear.token);
+    const task = await fetchLinearTask(
+      ref.id,
+      options.config.linear.token,
+      options.linearClient,
+    );
     return { task, ref };
   }
 
@@ -116,6 +125,7 @@ export async function resolveTask(
   const task = await fetchGitHubTask(
     { owner, repo, number },
     options.config.github.token,
+    options.octokit,
   );
   return { task, ref };
 }
