@@ -1,6 +1,7 @@
 import { Box, Text } from 'ink';
 import React from 'react';
 
+import { truncateText } from '../../utils/text';
 import { attentionReason } from '../attention';
 import { formatRelativeTime } from '../time';
 import type { RunRecord } from '../types';
@@ -8,18 +9,39 @@ import type { RunRecord } from '../types';
 export function AttentionQueue({
   runs,
   nowMs,
+  compact = false,
+  maxItems,
+  maxWidth,
 }: {
   runs: RunRecord[];
   nowMs: number;
+  compact?: boolean;
+  maxItems?: number;
+  maxWidth?: number;
 }): React.ReactElement | null {
   if (runs.length === 0) return null;
+  const limit = typeof maxItems === 'number' ? Math.max(0, maxItems) : runs.length;
+  const visible = runs.slice(0, limit);
+  const hiddenCount = Math.max(0, runs.length - visible.length);
+  const width = maxWidth ?? 100;
+
   return (
     <Box flexDirection="column">
-      <Text color="yellow">Needs Attention ({runs.length})</Text>
-      {runs.map((run) => {
+      <Text color="yellow">
+        {truncateText(`Needs Attention (${runs.length})`, width)}
+      </Text>
+      {visible.map((run) => {
         const statusLabel = buildAttentionStatus(run);
         const updated = formatRelativeTime(run.latestEventAt ?? run.updatedAt, nowMs);
         const title = run.taskTitle ?? run.taskKey ?? 'Untitled';
+        if (compact) {
+          const line = `${run.runId.slice(0, 8)} ${statusLabel.label} ${run.phase} ${title} ${updated} ago`;
+          return (
+            <Text key={run.runId} color={statusLabel.color}>
+              {truncateText(line, width)}
+            </Text>
+          );
+        }
         const reason = attentionReason(run, nowMs);
         return (
           <Box key={run.runId} flexDirection="column" marginBottom={1}>
@@ -38,6 +60,9 @@ export function AttentionQueue({
           </Box>
         );
       })}
+      {hiddenCount > 0 ? (
+        <Text color="gray">{truncateText(`... ${hiddenCount} more`, width)}</Text>
+      ) : null}
     </Box>
   );
 }

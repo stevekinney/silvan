@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { render } from 'ink-testing-library';
 
 import type { Event } from '../../events/schema';
-import type { QueueRecord, RunRecord, WorktreeRecord } from '../types';
+import type { DashboardState, QueueRecord, RunRecord, WorktreeRecord } from '../types';
 import { ActivityFeed } from './activity-feed';
 import { AttentionQueue } from './attention-queue';
 import { FilterBar } from './filter-bar';
@@ -12,6 +12,8 @@ import { OpenPrsPanel } from './open-prs-panel';
 import { PrCiReviewPanel } from './pr-ci-review-panel';
 import { QueuePanel } from './queue-panel';
 import { RequestForm } from './request-form';
+import { RunDetailsCompact } from './run-details-compact';
+import { RunListCompact } from './run-list-compact';
 import { StepTimeline } from './step-timeline';
 import { WorktreePanel } from './worktree-panel';
 
@@ -72,6 +74,29 @@ describe('ui components', () => {
     expect(feedFrame()).toContain('run.step');
   });
 
+  it('renders a compact attention queue with overflow', () => {
+    const runs: RunRecord[] = [
+      {
+        runId: 'run-1',
+        status: 'failed',
+        phase: 'verify',
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        runId: 'run-2',
+        status: 'failed',
+        phase: 'verify',
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    const { lastFrame } = render(
+      <AttentionQueue runs={runs} nowMs={Date.now()} compact maxItems={1} />,
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Needs Attention');
+    expect(frame).toContain('... 1 more');
+  });
+
   it('renders open PRs and queue panels', () => {
     const { lastFrame } = render(
       <OpenPrsPanel
@@ -96,6 +121,37 @@ describe('ui components', () => {
       <QueuePanel requests={requests} nowMs={Date.now()} hint="hint" />,
     );
     expect(queueFrame()).toContain('Task');
+  });
+
+  it('renders compact PR and queue panels', () => {
+    const prs: DashboardState['openPrs'] = [
+      {
+        id: 'acme/repo#1',
+        title: 'PR',
+        headBranch: 'feat',
+        baseBranch: 'main',
+        ci: 'passing',
+        unresolvedReviewCount: 0,
+      },
+    ];
+    const { lastFrame: prFrame } = render(
+      <OpenPrsPanel prs={prs} compact maxItems={1} maxWidth={40} />,
+    );
+    expect(prFrame()).toContain('repo#1');
+
+    const requests: QueueRecord[] = [
+      { id: 'req-1', title: 'Task', createdAt: new Date().toISOString() },
+    ];
+    const { lastFrame: queueFrame } = render(
+      <QueuePanel
+        requests={requests}
+        nowMs={Date.now()}
+        compact
+        maxItems={1}
+        maxWidth={40}
+      />,
+    );
+    expect(queueFrame()).toContain('req-1');
   });
 
   it('renders request form and step timeline', () => {
@@ -231,5 +287,34 @@ describe('ui components', () => {
       <PrCiReviewPanel run={run} events={events} nowMs={Date.now()} />,
     );
     expect(lastFrame()).toContain('PR / CI / Reviews');
+  });
+
+  it('renders compact run list and details', () => {
+    const runs: RunRecord[] = [
+      {
+        runId: 'run-1234567890',
+        status: 'running',
+        phase: 'plan',
+        updatedAt: new Date().toISOString(),
+        taskTitle: 'Compact list',
+      },
+    ];
+    const { lastFrame: listFrame } = render(
+      <RunListCompact
+        runs={runs}
+        selectedRunId="run-1234567890"
+        nowMs={Date.now()}
+        width={60}
+        maxRows={5}
+        groupByRepo={false}
+      />,
+    );
+    expect(listFrame()).toContain('RUN');
+
+    const run = runs[0]!;
+    const { lastFrame: detailsFrame } = render(
+      <RunDetailsCompact run={run} nowMs={Date.now()} width={60} maxRows={8} />,
+    );
+    expect(detailsFrame()).toContain('Run run-1234');
   });
 });

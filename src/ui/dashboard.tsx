@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Config } from '../config/schema';
 import type { EventBus } from '../events/bus';
 import type { StateStore } from '../state/store';
+import { truncateText } from '../utils/text';
 import { needsAttention } from './attention';
 import { AttentionQueue } from './components/attention-queue';
 import { FilterBar } from './components/filter-bar';
@@ -15,7 +16,8 @@ import { OpenPrsPanel } from './components/open-prs-panel';
 import { QueuePanel } from './components/queue-panel';
 import { RequestForm } from './components/request-form';
 import { RunDetails } from './components/run-details';
-import { RunList } from './components/run-list';
+import { RunDetailsCompact } from './components/run-details-compact';
+import { RunListCompact } from './components/run-list-compact';
 import { WorktreePanel } from './components/worktree-panel';
 import {
   type FilterKey,
@@ -116,13 +118,41 @@ export function Dashboard({
   const [requestDescription, setRequestDescription] = useState('');
   const [nextCursor, setNextCursor] = useState<RunSnapshotCursor | null>(null);
   const { stdout } = useStdout();
-  const pageSize = useMemo(() => calculatePageSize(stdout?.rows ?? 24), [stdout?.rows]);
-  const worktreeLimit = useMemo(() => {
-    const computed = calculateWorktreeLimit(stdout?.rows ?? 24);
-    return Math.min(computed, 6);
-  }, [stdout?.rows]);
-  const isNarrow = (stdout?.columns ?? 100) < 100;
-  const worktreePanelWidth = isNarrow ? (stdout?.columns ?? 80) : 40;
+  const [dimensions, setDimensions] = useState(() => ({
+    rows: stdout?.rows ?? 24,
+    columns: stdout?.columns ?? 100,
+  }));
+  useEffect(() => {
+    if (!stdout || typeof stdout.on !== 'function') return;
+    const update = () =>
+      setDimensions({
+        rows: stdout.rows ?? 24,
+        columns: stdout.columns ?? 100,
+      });
+    update();
+    stdout.on('resize', update);
+    return () => {
+      stdout.removeListener('resize', update);
+    };
+  }, [stdout]);
+  const rows = dimensions.rows;
+  const columns = dimensions.columns;
+  const layout = useMemo(() => buildLayout(rows, columns), [rows, columns]);
+  const pageSize = useMemo(
+    () =>
+      calculatePageSize(rows, {
+        headerHeight: layout.headerHeight,
+        footerHeight: layout.bottomHeight,
+        min: layout.minMainHeight,
+      }),
+    [layout.bottomHeight, layout.headerHeight, layout.minMainHeight, rows],
+  );
+  const bottomItems = useMemo(
+    () => Math.max(0, layout.bottomHeight - 1),
+    [layout.bottomHeight],
+  );
+  const worktreeLimit = bottomItems;
+  const isNarrow = layout.isNarrow;
   const { exit } = useApp();
   const loaderCache = useRef(createRunSnapshotCache());
   const loadedCountRef = useRef(0);
@@ -245,7 +275,7 @@ export function Dashboard({
     [allRuns, nowMs, snapshot.worktrees, staleAfterMs],
   );
   const visibleRuns = attentionOnly ? attentionRuns : filteredRuns;
-  const { runs: orderedRuns, repoCounts } = useMemo(() => {
+  const { runs: orderedRuns } = useMemo(() => {
     if (groupByRepo) {
       return groupRunsByRepo(visibleRuns, sortKey, nowMs);
     }
@@ -433,215 +463,308 @@ export function Dashboard({
   const refreshAge =
     lastRefreshAt !== null ? `${formatElapsed(nowMs - lastRefreshAt)} ago` : '...';
   const attentionQueueRuns = filtersActive ? attentionRuns : attentionRunsAll;
+  const attentionLayout = useMemo(
+    () =>
+      buildAttentionLayout(attentionQueueRuns.length, {
+        availableHeight: layout.availableHeight,
+        minMainHeight: layout.minMainHeight,
+        attentionOnly,
+      }),
+    [
+      attentionOnly,
+      attentionQueueRuns.length,
+      layout.availableHeight,
+      layout.minMainHeight,
+    ],
+  );
+  const mainHeight = Math.max(1, layout.availableHeight - attentionLayout.height);
   const sortLabel = formatSortLabel(sortKey);
-  const phaseSummary = formatCountMap(summary.phase);
-  const convergenceSummary = formatCountMap(summary.convergence);
   const scopeLabel = effectiveScope === 'all' ? 'All Repos' : 'Current Repo';
-  const queueHint =
-    snapshot.queueRequests.length > 0
-      ? buildQueueHint(snapshot.queueRequests.length)
-      : undefined;
+  const filterLine = filtersActive
+    ? `Filters: ${formatFilterSummary(snapshot.filter)}`
+    : 'Filters: none';
+  const summaryLine =
+    allRuns.length > 0
+      ? `${summary.status.running} run • ${summary.status.blocked} blocked • ${summary.status.failed} failed • ${summary.status.success} success • ${summary.total} total`
+      : 'No runs yet. Press n to queue a task.';
+  const headerLine = buildHeaderLine(
+    layout.columns,
+    'Silvan Mission Control',
+    `Scope: ${scopeLabel}${isGlobalState ? ' • g scope' : ''} • Refreshed ${refreshAge} • / filter • ? help`,
+  );
+  const summaryText = truncateText(summaryLine, layout.columns);
+  const filterText = truncateText(
+    `${filterLine} • Sort: ${sortLabel} • Group: ${groupByRepo ? 'On' : 'Off'}`,
+    layout.columns,
+  );
+
+  const modal =
+    filterActive || filterPrompt || requestActive ? (
+      <Box flexDirection="column">
+        {filterActive ? (
+          <FilterBar
+            query={filterValue}
+            onChange={setFilterValue}
+            onSubmit={() => {
+              setSnapshot((prev) => ({
+                ...prev,
+                filter: { ...prev.filter, query: filterValue },
+              }));
+              setFilterActive(false);
+            }}
+          />
+        ) : null}
+        {filterPrompt ? (
+          <FilterPrompt
+            label={FILTER_PROMPTS[filterPrompt].label}
+            hint={FILTER_PROMPTS[filterPrompt].hint}
+            value={filterPromptValue}
+            onChange={setFilterPromptValue}
+            onSubmit={applyFilterPrompt}
+          />
+        ) : null}
+        {requestActive ? (
+          <RequestForm
+            step={requestStep}
+            title={requestTitle}
+            description={requestDescription}
+            onTitleChange={setRequestTitle}
+            onDescriptionChange={setRequestDescription}
+            onSubmit={() => {
+              if (requestStep === 'title') {
+                if (!requestTitle.trim()) return;
+                setRequestStep('description');
+                return;
+              }
+              void enqueueTaskRequest();
+            }}
+          />
+        ) : null}
+      </Box>
+    ) : null;
+
+  const runListSelectionProps = selectedRunId ? { selectedRunId } : {};
+  const mainContent =
+    modal ??
+    (isNarrow ? (
+      detailsView && selectedRun ? (
+        <RunDetails
+          run={selectedRun}
+          stateStore={stateStore}
+          nowMs={nowMs}
+          stepsExpanded={stepsExpanded}
+          artifactView={artifactView}
+          onCloseArtifacts={() => setArtifactView(false)}
+        />
+      ) : (
+        <RunListCompact
+          runs={orderedRuns}
+          nowMs={nowMs}
+          width={layout.columns}
+          maxRows={mainHeight}
+          groupByRepo={groupByRepo}
+          {...runListSelectionProps}
+        />
+      )
+    ) : (
+      <Box flexDirection="row" height={mainHeight}>
+        <Box width={layout.leftWidth} flexDirection="column">
+          <RunListCompact
+            runs={orderedRuns}
+            nowMs={nowMs}
+            width={layout.leftWidth}
+            maxRows={mainHeight}
+            groupByRepo={groupByRepo}
+            {...runListSelectionProps}
+          />
+        </Box>
+        <Box width={1} flexDirection="column">
+          <Text color="gray">|</Text>
+        </Box>
+        <Box width={layout.rightWidth} flexDirection="column">
+          {selectedRun ? (
+            <RunDetailsCompact
+              run={selectedRun}
+              nowMs={nowMs}
+              width={layout.rightWidth}
+              maxRows={mainHeight}
+            />
+          ) : (
+            <Text color="gray">Select a run to view details.</Text>
+          )}
+        </Box>
+      </Box>
+    ));
 
   return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text>Silvan Mission Control</Text>
-        <Text color="gray">
-          Scope: {scopeLabel}
-          {isGlobalState ? ' • g scope' : ''}
-          {` • Refreshed ${refreshAge} • / search • ? help`}
-          {nextCursor ? ' • l load more' : ''}
-        </Text>
+    <Box flexDirection="column" height={layout.rows}>
+      <Text>{headerLine}</Text>
+      {layout.showSummaryLine ? <Text color="gray">{summaryText}</Text> : null}
+      {layout.showFilterLine ? (
+        <Text color={filtersActive ? 'yellow' : 'gray'}>{filterText}</Text>
+      ) : null}
+
+      {attentionLayout.show ? (
+        <AttentionQueue
+          runs={attentionQueueRuns}
+          nowMs={nowMs}
+          compact
+          maxItems={attentionLayout.maxItems}
+          maxWidth={layout.columns}
+        />
+      ) : null}
+
+      <Box flexDirection="column" height={mainHeight}>
+        {mainContent}
       </Box>
 
-      {filtersActive ? (
-        <Text color="yellow">
-          Filters: {formatFilterSummary(snapshot.filter)} • c clear
-        </Text>
-      ) : null}
-
-      {filterActive ? (
-        <FilterBar
-          query={filterValue}
-          onChange={setFilterValue}
-          onSubmit={() => {
-            setSnapshot((prev) => ({
-              ...prev,
-              filter: { ...prev.filter, query: filterValue },
-            }));
-            setFilterActive(false);
-          }}
-        />
-      ) : null}
-
-      {filterPrompt ? (
-        <FilterPrompt
-          label={FILTER_PROMPTS[filterPrompt].label}
-          hint={FILTER_PROMPTS[filterPrompt].hint}
-          value={filterPromptValue}
-          onChange={setFilterPromptValue}
-          onSubmit={applyFilterPrompt}
-        />
-      ) : null}
-
-      {requestActive ? (
-        <RequestForm
-          step={requestStep}
-          title={requestTitle}
-          description={requestDescription}
-          onTitleChange={setRequestTitle}
-          onDescriptionChange={setRequestDescription}
-          onSubmit={() => {
-            if (requestStep === 'title') {
-              if (!requestTitle.trim()) return;
-              setRequestStep('description');
-              return;
-            }
-            void enqueueTaskRequest();
-          }}
-        />
-      ) : null}
-
-      {allRuns.length > 0 ? (
-        <Box flexDirection="column">
-          <Text color="gray">Summary</Text>
-          <Box flexDirection="row" gap={2}>
-            <Text color="cyan">{summary.status.running} Running</Text>
-            <Text color="yellow">{summary.status.blocked} Blocked</Text>
-            <Text color="red">{summary.status.failed} Failed</Text>
-            <Text color="green">{summary.status.success} Success</Text>
-            <Text color="gray">{summary.total} Total</Text>
-          </Box>
-          {phaseSummary ? <Text color="gray">Phases: {phaseSummary}</Text> : null}
-          {convergenceSummary ? (
-            <Text color="gray">Convergence: {convergenceSummary}</Text>
-          ) : null}
-        </Box>
-      ) : null}
-
-      {attentionQueueRuns.length > 0 && !attentionOnly && allRuns.length > 0 ? (
-        <AttentionQueue runs={attentionQueueRuns} nowMs={nowMs} />
-      ) : null}
-
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text>
-          {attentionOnly ? 'Attention' : 'Runs'} ({visibleRuns.length}
-          {filtersActive && !attentionOnly ? ` of ${summary.total}` : ''})
-        </Text>
-        <Text color="gray">
-          Sort: {sortLabel} • Group: {groupByRepo ? 'On' : 'Off'} (p) • a{' '}
-          {attentionOnly ? 'all' : 'attention'}
-        </Text>
-      </Box>
-
-      {filtersActive ? (
-        <Text color="gray">
-          Showing {visibleRuns.length} of {summary.total} runs
-        </Text>
-      ) : null}
-
-      {visibleRuns.length === 0 ? (
-        <Text color="gray">
-          {allRuns.length === 0
-            ? 'No runs yet. Press n to queue a task, then run `silvan queue run`.'
-            : 'No runs match the current filters.'}
-        </Text>
-      ) : isNarrow ? (
-        detailsView && selectedRun ? (
-          <RunDetails
-            run={selectedRun}
-            stateStore={stateStore}
-            nowMs={nowMs}
-            stepsExpanded={stepsExpanded}
-            artifactView={artifactView}
-            onCloseArtifacts={() => setArtifactView(false)}
-          />
-        ) : (
-          <RunList
-            runs={orderedRuns}
-            {...(selectedRunId ? { selectedRunId } : {})}
-            groupByRepo={groupByRepo}
-            repoCounts={repoCounts}
-            nowMs={nowMs}
-          />
-        )
-      ) : (
-        <Box flexDirection="row" gap={4}>
-          <Box width={40} flexDirection="column">
-            <RunList
-              runs={orderedRuns}
-              {...(selectedRunId ? { selectedRunId } : {})}
-              groupByRepo={groupByRepo}
-              repoCounts={repoCounts}
-              nowMs={nowMs}
-            />
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="gray">Open PRs</Text>
-              <OpenPrsPanel prs={snapshot.openPrs} />
+      {!modal && layout.showBottom ? (
+        <Box flexDirection="column" height={layout.bottomHeight}>
+          <Text color="gray">
+            {truncateText(
+              `PRs | Queue (${snapshot.queueRequests.length}) | Worktrees (${worktreeRows.length})`,
+              layout.columns,
+            )}
+          </Text>
+          <Box flexDirection="row">
+            <Box width={layout.columnWidth} flexDirection="column">
+              <OpenPrsPanel
+                prs={snapshot.openPrs}
+                compact
+                maxItems={bottomItems}
+                maxWidth={layout.columnWidth}
+              />
             </Box>
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="gray">Queue ({snapshot.queueRequests.length} pending)</Text>
+            <Box width={1} flexDirection="column">
+              <Text color="gray">|</Text>
+            </Box>
+            <Box width={layout.columnWidth} flexDirection="column">
               <QueuePanel
                 requests={snapshot.queueRequests}
                 nowMs={nowMs}
-                {...(queueHint ? { hint: queueHint } : {})}
+                compact
+                maxItems={bottomItems}
+                maxWidth={layout.columnWidth}
               />
             </Box>
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="gray">Worktrees ({worktreeRows.length})</Text>
+            <Box width={1} flexDirection="column">
+              <Text color="gray">|</Text>
+            </Box>
+            <Box width={layout.columnWidth} flexDirection="column">
               <WorktreePanel
                 worktrees={worktreeRows}
                 nowMs={nowMs}
                 maxItems={worktreeLimit}
                 totalCount={worktreeRows.length}
                 compact
-                maxWidth={worktreePanelWidth}
+                maxWidth={layout.columnWidth}
               />
             </Box>
           </Box>
-          <Box flexGrow={1} flexDirection="column">
-            {selectedRun ? (
-              <RunDetails
-                run={selectedRun}
-                stateStore={stateStore}
-                nowMs={nowMs}
-                stepsExpanded={stepsExpanded}
-                artifactView={artifactView}
-                onCloseArtifacts={() => setArtifactView(false)}
-              />
-            ) : null}
-          </Box>
         </Box>
-      )}
+      ) : null}
 
       {snapshot.helpVisible ? <HelpOverlay /> : null}
     </Box>
   );
 }
 
-function calculateWorktreeLimit(terminalRows: number): number {
-  const perWorktreeRows = 2;
-  const overheadRows = 18;
-  const available = Math.max(0, terminalRows - overheadRows);
-  const limit = Math.floor(available / perWorktreeRows);
-  return Math.max(2, limit);
-}
-
-function formatCountMap(counts: Record<string, number>): string {
-  return Object.entries(counts)
-    .filter(([, count]) => count > 0)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, count]) => `${key}(${count})`)
-    .join(' ');
-}
-
-function buildQueueHint(queueCount: number): string {
-  if (queueCount <= 0) return '';
-  const suggestedConcurrency = Math.min(queueCount, 4);
-  if (suggestedConcurrency <= 1) {
-    return 'Run: silvan queue run';
+function buildLayout(
+  rows: number,
+  columns: number,
+): {
+  rows: number;
+  columns: number;
+  headerHeight: number;
+  footerHeight: number;
+  bottomHeight: number;
+  availableHeight: number;
+  minMainHeight: number;
+  leftWidth: number;
+  rightWidth: number;
+  columnWidth: number;
+  isNarrow: boolean;
+  showSummaryLine: boolean;
+  showFilterLine: boolean;
+  showBottom: boolean;
+} {
+  const safeRows = Math.max(1, rows);
+  const safeColumns = Math.max(1, columns);
+  const showSummaryLine = safeRows >= 10;
+  const showFilterLine = safeRows >= 16;
+  const headerHeight = 1 + (showSummaryLine ? 1 : 0) + (showFilterLine ? 1 : 0);
+  const footerHeight = 0;
+  const minMainHeight = 6;
+  const wantsBottom = safeRows >= 22;
+  const preferredBottom = safeRows >= 30 ? 6 : 4;
+  const maxBottom = Math.max(0, safeRows - headerHeight - footerHeight - minMainHeight);
+  let bottomHeight = wantsBottom ? Math.min(preferredBottom, maxBottom) : 0;
+  const showBottom = bottomHeight >= 2 && safeColumns >= 60;
+  if (!showBottom) bottomHeight = 0;
+  const availableHeight = Math.max(
+    1,
+    safeRows - headerHeight - footerHeight - bottomHeight,
+  );
+  const minSplitWidth = 28 + 30 + 1;
+  const isNarrow = safeColumns < 100 || safeRows < 24 || safeColumns < minSplitWidth;
+  let leftWidth = safeColumns;
+  let rightWidth = safeColumns;
+  if (!isNarrow) {
+    const availableWidth = Math.max(1, safeColumns - 1);
+    const desiredLeft = Math.floor(safeColumns * 0.45);
+    leftWidth = clamp(desiredLeft, 28, Math.max(28, availableWidth - 30));
+    rightWidth = Math.max(30, availableWidth - leftWidth);
   }
-  return `Run: silvan queue run --concurrency ${suggestedConcurrency}`;
+  const columnWidth = Math.max(1, Math.floor((safeColumns - 2) / 3));
+  return {
+    rows: safeRows,
+    columns: safeColumns,
+    headerHeight,
+    footerHeight,
+    bottomHeight,
+    availableHeight,
+    minMainHeight,
+    leftWidth,
+    rightWidth,
+    columnWidth,
+    isNarrow,
+    showSummaryLine,
+    showFilterLine,
+    showBottom,
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
+function buildAttentionLayout(
+  attentionCount: number,
+  options: {
+    availableHeight: number;
+    minMainHeight: number;
+    attentionOnly: boolean;
+  },
+): { show: boolean; maxItems: number; height: number } {
+  if (attentionCount <= 0 || options.attentionOnly) {
+    return { show: false, maxItems: 0, height: 0 };
+  }
+  const budget = Math.max(0, options.availableHeight - options.minMainHeight);
+  if (budget < 2) {
+    return { show: false, maxItems: 0, height: 0 };
+  }
+  const maxItems = Math.max(1, Math.min(attentionCount, budget - 1));
+  return { show: maxItems > 0, maxItems, height: maxItems + 1 };
+}
+
+function buildHeaderLine(columns: number, left: string, right: string): string {
+  const safeColumns = Math.max(1, columns);
+  const gap = safeColumns - left.length - right.length;
+  if (gap <= 1) {
+    return truncateText(`${left} ${right}`, safeColumns);
+  }
+  return `${left}${' '.repeat(gap)}${right}`;
 }
 
 function formatSortLabel(sortKey: SortKey): string {

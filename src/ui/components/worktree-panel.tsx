@@ -45,11 +45,13 @@ export function WorktreePanel({
     <Box flexDirection="column" gap={0}>
       {visible.map((worktree) => {
         const repoLabel = worktree.repoLabel ?? worktree.repoId ?? 'current';
-        const showRepo = repoLabel !== currentRepo;
+        const showRepo = !compact && repoLabel !== currentRepo;
         if (showRepo) {
           currentRepo = repoLabel;
         }
         const name = worktree.branch ?? basename(worktree.path);
+        const displayName =
+          compact && repoLabel !== 'current' ? `${repoLabel}:${name}` : name;
         const statusLabel = buildStatusLabel(worktree, nowMs);
         const runLabel = buildRunLabel(worktree.run);
         const headerColor =
@@ -63,22 +65,25 @@ export function WorktreePanel({
           <Box
             key={`${repoLabel}-${worktree.id}`}
             flexDirection="column"
-            marginBottom={1}
+            marginBottom={compact ? 0 : 1}
           >
             {showRepo ? <Text color="gray">{repoLabel}</Text> : null}
             {compact ? (
-              <Box flexDirection="row">
-                {headerColor ? (
-                  <Text color={headerColor}>
-                    {truncateText(name, getNameWidth(rowWidth))}
-                  </Text>
-                ) : (
-                  <Text>{truncateText(name, getNameWidth(rowWidth))}</Text>
-                )}
-                <Text color="gray">
-                  {formatCompactDetails(worktree, nowMs, rowWidth)}
+              headerColor ? (
+                <Text color={headerColor}>
+                  {truncateText(
+                    `${displayName}${formatCompactDetails(worktree, nowMs, rowWidth)}`,
+                    rowWidth,
+                  )}
                 </Text>
-              </Box>
+              ) : (
+                <Text>
+                  {truncateText(
+                    `${displayName}${formatCompactDetails(worktree, nowMs, rowWidth)}`,
+                    rowWidth,
+                  )}
+                </Text>
+              )
             ) : (
               <>
                 {headerColor ? (
@@ -156,13 +161,6 @@ function buildCompactStatusParts(worktree: WorktreeRow): string[] {
   if (worktree.isOrphaned) parts.push('orphaned');
   if (!worktree.branch) parts.push('detached');
   return parts;
-}
-
-function getNameWidth(rowWidth: number): number {
-  if (rowWidth >= 80) return 26;
-  if (rowWidth >= 60) return 22;
-  if (rowWidth >= 40) return 18;
-  return 14;
 }
 
 function getStatusWidth(rowWidth: number): number {
