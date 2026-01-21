@@ -147,6 +147,35 @@ describe('ui components', () => {
     expect(lastFrame()).toContain('repo');
   });
 
+  it('shows a summary when worktrees are truncated', () => {
+    const worktrees: Array<
+      WorktreeRecord & { repoLabel: string; isStale: boolean; isOrphaned: boolean }
+    > = [
+      {
+        id: 'wt-1',
+        path: '/tmp/worktree-1',
+        branch: 'feat-1',
+        repoLabel: 'repo',
+        lastActivityAt: new Date().toISOString(),
+        isStale: false,
+        isOrphaned: false,
+      },
+      {
+        id: 'wt-2',
+        path: '/tmp/worktree-2',
+        branch: 'feat-2',
+        repoLabel: 'repo',
+        lastActivityAt: new Date().toISOString(),
+        isStale: false,
+        isOrphaned: false,
+      },
+    ];
+    const { lastFrame } = render(
+      <WorktreePanel worktrees={worktrees} nowMs={Date.now()} maxItems={1} />,
+    );
+    expect(lastFrame()).toContain('Showing 1 of 2 worktrees');
+  });
+
   it('renders PR/CI/review summary', () => {
     const run: RunRecord = {
       runId: 'run-2',

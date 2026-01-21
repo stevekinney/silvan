@@ -117,6 +117,10 @@ export function Dashboard({
   const [nextCursor, setNextCursor] = useState<RunSnapshotCursor | null>(null);
   const { stdout } = useStdout();
   const pageSize = useMemo(() => calculatePageSize(stdout?.rows ?? 24), [stdout?.rows]);
+  const worktreeLimit = useMemo(
+    () => calculateWorktreeLimit(stdout?.rows ?? 24),
+    [stdout?.rows],
+  );
   const isNarrow = (stdout?.columns ?? 100) < 100;
   const { exit } = useApp();
   const loaderCache = useRef(createRunSnapshotCache());
@@ -584,7 +588,12 @@ export function Dashboard({
             </Box>
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Worktrees ({worktreeRows.length})</Text>
-              <WorktreePanel worktrees={worktreeRows} nowMs={nowMs} />
+              <WorktreePanel
+                worktrees={worktreeRows}
+                nowMs={nowMs}
+                maxItems={worktreeLimit}
+                totalCount={worktreeRows.length}
+              />
             </Box>
           </Box>
           <Box flexGrow={1} flexDirection="column">
@@ -605,6 +614,14 @@ export function Dashboard({
       {snapshot.helpVisible ? <HelpOverlay /> : null}
     </Box>
   );
+}
+
+function calculateWorktreeLimit(terminalRows: number): number {
+  const perWorktreeRows = 6;
+  const overheadRows = 14;
+  const available = Math.max(0, terminalRows - overheadRows);
+  const limit = Math.floor(available / perWorktreeRows);
+  return Math.max(2, limit);
 }
 
 function formatCountMap(counts: Record<string, number>): string {

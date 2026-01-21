@@ -16,11 +16,20 @@ type WorktreeRow = WorktreeRecord & {
 export function WorktreePanel({
   worktrees,
   nowMs,
+  maxItems,
+  totalCount,
 }: {
   worktrees: WorktreeRow[];
   nowMs: number;
+  maxItems?: number;
+  totalCount?: number;
 }): React.ReactElement {
-  if (worktrees.length === 0) {
+  const limit = typeof maxItems === 'number' ? Math.max(0, maxItems) : worktrees.length;
+  const visible = worktrees.slice(0, limit);
+  const total = totalCount ?? worktrees.length;
+  const hiddenCount = Math.max(0, total - visible.length);
+
+  if (visible.length === 0) {
     return <Text color="gray">No worktrees</Text>;
   }
 
@@ -28,7 +37,7 @@ export function WorktreePanel({
 
   return (
     <Box flexDirection="column" gap={0}>
-      {worktrees.map((worktree) => {
+      {visible.map((worktree) => {
         const repoLabel = worktree.repoLabel ?? worktree.repoId ?? 'current';
         const showRepo = repoLabel !== currentRepo;
         if (showRepo) {
@@ -60,6 +69,12 @@ export function WorktreePanel({
           </Box>
         );
       })}
+      {hiddenCount > 0 ? (
+        <Text color="gray">
+          Showing {visible.length} of {total} worktrees. Run `silvan tree list` for full
+          list.
+        </Text>
+      ) : null}
     </Box>
   );
 }
