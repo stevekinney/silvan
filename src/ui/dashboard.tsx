@@ -117,11 +117,12 @@ export function Dashboard({
   const [nextCursor, setNextCursor] = useState<RunSnapshotCursor | null>(null);
   const { stdout } = useStdout();
   const pageSize = useMemo(() => calculatePageSize(stdout?.rows ?? 24), [stdout?.rows]);
-  const worktreeLimit = useMemo(
-    () => calculateWorktreeLimit(stdout?.rows ?? 24),
-    [stdout?.rows],
-  );
+  const worktreeLimit = useMemo(() => {
+    const computed = calculateWorktreeLimit(stdout?.rows ?? 24);
+    return Math.min(computed, 6);
+  }, [stdout?.rows]);
   const isNarrow = (stdout?.columns ?? 100) < 100;
+  const worktreePanelWidth = isNarrow ? (stdout?.columns ?? 80) : 40;
   const { exit } = useApp();
   const loaderCache = useRef(createRunSnapshotCache());
   const loadedCountRef = useRef(0);
@@ -593,6 +594,8 @@ export function Dashboard({
                 nowMs={nowMs}
                 maxItems={worktreeLimit}
                 totalCount={worktreeRows.length}
+                compact
+                maxWidth={worktreePanelWidth}
               />
             </Box>
           </Box>
@@ -617,8 +620,8 @@ export function Dashboard({
 }
 
 function calculateWorktreeLimit(terminalRows: number): number {
-  const perWorktreeRows = 6;
-  const overheadRows = 14;
+  const perWorktreeRows = 2;
+  const overheadRows = 18;
   const available = Math.max(0, terminalRows - overheadRows);
   const limit = Math.floor(available / perWorktreeRows);
   return Math.max(2, limit);

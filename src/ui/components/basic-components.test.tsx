@@ -176,6 +176,28 @@ describe('ui components', () => {
     expect(lastFrame()).toContain('Showing 1 of 2 worktrees');
   });
 
+  it('renders a compact worktree row without multi-line details', () => {
+    const worktrees: Array<
+      WorktreeRecord & { repoLabel: string; isStale: boolean; isOrphaned: boolean }
+    > = [
+      {
+        id: 'wt-1',
+        path: '/tmp/worktree-1',
+        branch: 'feat-1',
+        repoLabel: 'repo',
+        lastActivityAt: new Date().toISOString(),
+        isStale: false,
+        isOrphaned: false,
+      },
+    ];
+    const { lastFrame } = render(
+      <WorktreePanel worktrees={worktrees} nowMs={Date.now()} compact maxWidth={60} />,
+    );
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('feat-1');
+    expect(frame).not.toContain('Branch:');
+  });
+
   it('renders PR/CI/review summary', () => {
     const run: RunRecord = {
       runId: 'run-2',
