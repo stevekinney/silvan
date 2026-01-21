@@ -1,6 +1,6 @@
 {
   "name": "silvan",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": false,
   "description": "Operator-grade CLI for orchestrating resumable AI workflows around git repositories.",
   "keywords": [
