@@ -2,6 +2,7 @@ import { AuditLogger } from '../events/audit';
 import { EventBus } from '../events/bus';
 import { HeadlessRenderer } from '../events/renderers/headless';
 import { JsonRenderer } from '../events/renderers/json';
+import { SilentRenderer } from '../events/renderers/silent';
 import type { EventMode } from '../events/schema';
 import type { StateStore } from '../state/store';
 
@@ -13,7 +14,12 @@ export type EventSystem = {
 export function initEvents(state: StateStore, mode: EventMode): EventSystem {
   const bus = new EventBus();
   const audit = new AuditLogger(state.auditDir);
-  const renderer = mode === 'json' ? new JsonRenderer() : new HeadlessRenderer();
+  const renderer =
+    mode === 'json'
+      ? new JsonRenderer()
+      : mode === 'ui'
+        ? new SilentRenderer()
+        : new HeadlessRenderer();
 
   bus.subscribe(async (event) => {
     renderer.render(event);
