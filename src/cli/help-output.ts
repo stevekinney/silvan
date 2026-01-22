@@ -56,6 +56,25 @@ const COMMAND_META: Record<string, HelpMeta> = {
     examples: ['silvan run list', 'silvan run list --status blocked'],
     seeAlso: ['silvan run inspect <runId>', 'silvan run status <runId>'],
   },
+  analytics: {
+    examples: [
+      'silvan analytics',
+      'silvan analytics --since 7d --provider github',
+      'silvan analytics --repo depict --json',
+    ],
+    seeAlso: ['silvan run list', 'silvan run status <runId>'],
+  },
+  'models recommend': {
+    examples: ['silvan models recommend', 'silvan models recommend --min-samples 20'],
+    seeAlso: ['silvan models benchmark', 'silvan config show'],
+  },
+  'models benchmark': {
+    examples: [
+      'silvan models benchmark --models model-a,model-b',
+      'silvan models benchmark --models claude-sonnet-4-20250514,claude-opus-4-20250514',
+    ],
+    seeAlso: ['silvan models recommend', 'silvan config show'],
+  },
   'run inspect': {
     examples: ['silvan run inspect <runId>', 'silvan run inspect <runId> --json'],
     seeAlso: ['silvan run list', 'silvan run status <runId>'],
@@ -174,6 +193,10 @@ const COMMAND_META: Record<string, HelpMeta> = {
   'convo export': {
     examples: ['silvan convo export <runId>', 'silvan convo export <runId> --format md'],
     seeAlso: ['silvan convo show <runId>', 'silvan logs <runId>'],
+  },
+  'convo optimize': {
+    examples: ['silvan convo optimize <runId>', 'silvan convo optimize <runId> --force'],
+    seeAlso: ['silvan convo show <runId>', 'silvan convo export <runId>'],
   },
   'learning show': {
     examples: ['silvan learning show <runId>', 'silvan learning show <runId> --json'],

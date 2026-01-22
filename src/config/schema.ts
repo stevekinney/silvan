@@ -86,8 +86,18 @@ export const configSchema = z.object({
       commands: z.array(verificationCommandSchema).default([]),
       failFast: z.boolean().default(true),
       shell: z.string().optional(),
+      autoFix: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxAttempts: z.number().int().positive().default(2),
+        })
+        .default({ enabled: true, maxAttempts: 2 }),
     })
-    .default({ commands: [], failFast: true }),
+    .default({
+      commands: [],
+      failFast: true,
+      autoFix: { enabled: true, maxAttempts: 2 },
+    }),
   naming: z
     .object({
       branchPrefix: z.string().default('feature/'),
@@ -211,6 +221,23 @@ export const configSchema = z.object({
           fallbackProviders: z
             .array(z.enum(['anthropic', 'openai', 'gemini']))
             .default([]),
+          routing: z
+            .object({
+              enabled: z.boolean().default(true),
+              autoApply: z.boolean().default(true),
+              minSamples: z.number().int().positive().default(10),
+              maxLatencyDelta: z.number().positive().default(0.2),
+              lookbackDays: z.number().int().positive().default(30),
+              respectOverrides: z.boolean().default(true),
+            })
+            .default({
+              enabled: true,
+              autoApply: true,
+              minSamples: 10,
+              maxLatencyDelta: 0.2,
+              lookbackDays: 30,
+              respectOverrides: true,
+            }),
           modelByTask: z
             .object({
               kickoffPrompt: z.string().optional(),
@@ -222,6 +249,7 @@ export const configSchema = z.object({
               localReview: z.string().optional(),
               ciTriage: z.string().optional(),
               verificationSummary: z.string().optional(),
+              verificationFix: z.string().optional(),
               recovery: z.string().optional(),
               prDraft: z.string().optional(),
               learningNotes: z.string().optional(),
@@ -232,6 +260,14 @@ export const configSchema = z.object({
         .default({
           provider: 'anthropic',
           fallbackProviders: [],
+          routing: {
+            enabled: true,
+            autoApply: true,
+            minSamples: 10,
+            maxLatencyDelta: 0.2,
+            lookbackDays: 30,
+            respectOverrides: true,
+          },
           modelByTask: {},
         }),
       conversation: z
@@ -249,6 +285,42 @@ export const configSchema = z.object({
               summarizeAfterTurns: 30,
               keepLastTurns: 20,
             }),
+          optimization: z
+            .object({
+              enabled: z.boolean().default(true),
+              retention: z
+                .object({
+                  system: z.number().int().positive().default(6),
+                  user: z.number().int().positive().default(12),
+                  assistant: z.number().int().positive().default(8),
+                  tool: z.number().int().positive().default(12),
+                  error: z.number().int().positive().default(6),
+                  correction: z.number().int().positive().default(6),
+                })
+                .default({
+                  system: 6,
+                  user: 12,
+                  assistant: 8,
+                  tool: 12,
+                  error: 6,
+                  correction: 6,
+                }),
+              correctionPatterns: z
+                .array(z.string())
+                .default(['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b']),
+            })
+            .default({
+              enabled: true,
+              retention: {
+                system: 6,
+                user: 12,
+                assistant: 8,
+                tool: 12,
+                error: 6,
+                correction: 6,
+              },
+              correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
+            }),
         })
         .default({
           pruning: {
@@ -256,6 +328,18 @@ export const configSchema = z.object({
             maxBytes: 200_000,
             summarizeAfterTurns: 30,
             keepLastTurns: 20,
+          },
+          optimization: {
+            enabled: true,
+            retention: {
+              system: 6,
+              user: 12,
+              assistant: 8,
+              tool: 12,
+              error: 6,
+              correction: 6,
+            },
+            correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
           },
         }),
     })
@@ -273,13 +357,37 @@ export const configSchema = z.object({
       toolLimits: {},
       cache: { enabled: true },
       sessions: { persist: false },
-      cognition: { provider: 'anthropic', fallbackProviders: [], modelByTask: {} },
+      cognition: {
+        provider: 'anthropic',
+        fallbackProviders: [],
+        routing: {
+          enabled: true,
+          autoApply: true,
+          minSamples: 10,
+          maxLatencyDelta: 0.2,
+          lookbackDays: 30,
+          respectOverrides: true,
+        },
+        modelByTask: {},
+      },
       conversation: {
         pruning: {
           maxTurns: 80,
           maxBytes: 200_000,
           summarizeAfterTurns: 30,
           keepLastTurns: 20,
+        },
+        optimization: {
+          enabled: true,
+          retention: {
+            system: 6,
+            user: 12,
+            assistant: 8,
+            tool: 12,
+            error: 6,
+            correction: 6,
+          },
+          correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
         },
       },
     }),

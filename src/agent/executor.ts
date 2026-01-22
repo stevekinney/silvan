@@ -83,6 +83,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
         context: input.context,
         payload: {
           model: { provider: 'anthropic', model: input.model },
+          task: 'execute',
           allowedTools: allowedToolCount,
           ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
           ...(typeof input.maxBudgetUsd === 'number'
@@ -174,6 +175,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
           context: input.context,
           payload: {
             model: { provider: 'anthropic', model: input.model },
+            task: 'execute',
             ok: result?.type === 'result' && result?.subtype === 'success',
             durationMs,
             ...(typeof input.toolCallLog?.length === 'number'

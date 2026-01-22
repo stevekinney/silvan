@@ -222,6 +222,13 @@ Inspect conversation context:
 
 - `convo show <runId>` — last N turns (default 20)
 - `convo export <runId> --format json|md` — full snapshot
+- `convo optimize <runId> [--force]` — compress context and report savings
+
+### Model routing
+
+Silvan tracks cognition session outcomes and suggests model routing changes based on
+success rate and latency. Auto-apply is enabled by default and can be tuned under
+`ai.cognition.routing`.
 
 ## Configuration
 
@@ -269,11 +276,34 @@ export default defineConfig({
       { name: 'lint', cmd: 'bun run lint' },
       { name: 'test', cmd: 'bun test' },
     ],
+    autoFix: { enabled: true, maxAttempts: 2 },
   },
   ai: {
     cache: { enabled: true },
     cognition: {
       provider: 'anthropic',
+      routing: {
+        enabled: true,
+        autoApply: true,
+        minSamples: 10,
+        maxLatencyDelta: 0.2,
+        lookbackDays: 30,
+        respectOverrides: true,
+      },
+    },
+    conversation: {
+      optimization: {
+        enabled: true,
+        retention: {
+          system: 6,
+          user: 12,
+          assistant: 8,
+          tool: 12,
+          error: 6,
+          correction: 6,
+        },
+        correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
+      },
     },
   },
   review: {
@@ -347,6 +377,13 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 - `run list` / `run inspect <runId>` / `run resume <runId>`
 - `run status <runId>` / `run explain <runId>` / `run override <runId> <reason...>` / `run abort <runId>`
+- `analytics` — success rates, phase averages, failure reasons (`--since`, `--provider`, `--repo`, `--json`)
+
+### Models + context
+
+- `models recommend` — recommend cognition model routing
+- `models benchmark --models <a,b>` — compare models on a sample plan
+- `convo optimize <runId>` — compress conversation context
 
 ### Diagnostics
 

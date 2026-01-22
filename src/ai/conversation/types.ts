@@ -19,6 +19,40 @@ export type ConversationPruningPolicy = {
   maxBytes: number;
   summarizeAfterTurns: number;
   keepLastTurns: number;
+  optimization: ConversationOptimizationPolicy;
+};
+
+export type ConversationOptimizationRetention = {
+  system: number;
+  user: number;
+  assistant: number;
+  tool: number;
+  error: number;
+  correction: number;
+};
+
+export type ConversationOptimizationPolicy = {
+  enabled: boolean;
+  retention: ConversationOptimizationRetention;
+  correctionPatterns: string[];
+};
+
+export type ConversationOptimizationMetrics = {
+  beforeMessages: number;
+  afterMessages: number;
+  beforeTokens: number;
+  afterTokens: number;
+  tokensSaved: number;
+  compressionRatio: number;
+  summaryAdded: boolean;
+  changed: boolean;
+};
+
+export type ConversationOptimizationResult = {
+  conversation: Conversation;
+  snapshot?: ConversationSnapshot;
+  metrics: ConversationOptimizationMetrics;
+  backupPath?: string;
 };
 
 export type ConversationMessageKind =
@@ -32,6 +66,7 @@ export type ConversationMessageKind =
   | 'pr'
   | 'learning'
   | 'error'
+  | 'tool_result'
   | 'summary';
 
 export type ConversationMessageMetadata = {
@@ -50,4 +85,5 @@ export type ConversationStore = {
     options?: { prune?: boolean },
   ) => Promise<ConversationSnapshot>;
   snapshot: (conversation?: Conversation) => Promise<ConversationSnapshot>;
+  optimize: (options?: { force?: boolean }) => Promise<ConversationOptimizationResult>;
 };

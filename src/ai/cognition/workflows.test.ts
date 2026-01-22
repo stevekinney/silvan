@@ -13,6 +13,7 @@ import { generateRecoveryPlan } from './recovery';
 import { classifyReviewThreads } from './review-classifier';
 import { generateReviewFixPlan } from './reviewer';
 import { summarizeConversation } from './summarize';
+import { generateVerificationFixPlan } from './verification-fix';
 import { decideVerification } from './verifier';
 
 function createMemoryStore(): ConversationStore {
@@ -22,6 +23,16 @@ function createMemoryStore(): ConversationStore {
     digest: 'digest',
     updatedAt: new Date().toISOString(),
     path: 'memory',
+  });
+  const metrics = () => ({
+    beforeMessages: conversation.ids.length,
+    afterMessages: conversation.ids.length,
+    beforeTokens: 0,
+    afterTokens: 0,
+    tokensSaved: 0,
+    compressionRatio: 1,
+    summaryAdded: false,
+    changed: false,
   });
   return {
     load: async () => conversation,
@@ -35,6 +46,10 @@ function createMemoryStore(): ConversationStore {
       return snapshot(conversation);
     },
     snapshot,
+    optimize: async () => {
+      const snap = await snapshot();
+      return { conversation: snap.conversation, snapshot: snap, metrics: metrics() };
+    },
   };
 }
 
@@ -152,6 +167,24 @@ describe('cognition workflows', () => {
       context: { runId: 'run-2', repoRoot: '/tmp' },
     });
     expect(decision.commands).toEqual(['bun test']);
+  });
+
+  it('builds verification fix plans', async () => {
+    const config = configSchema.parse({});
+    const plan = await generateVerificationFixPlan({
+      failures: [
+        { name: 'lint', exitCode: 1, stderr: 'lint failed', command: 'bun run lint' },
+      ],
+      store: createMemoryStore(),
+      config,
+      invoke: (async () => ({
+        summary: 'Fix lint',
+        steps: [{ id: '1', title: 'Fix lint', description: 'Update lint errors' }],
+        verification: ['bun run lint'],
+      })) as unknown as typeof import('../router').invokeCognition,
+      context: { runId: 'run-3', repoRoot: '/tmp' },
+    });
+    expect(plan.summary).toBe('Fix lint');
   });
 
   it('classifies review threads', async () => {

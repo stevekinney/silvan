@@ -24,6 +24,7 @@ export type CognitionTask =
   | 'reviewKickoff'
   | 'ciTriage'
   | 'verificationSummary'
+  | 'verificationFix'
   | 'recovery'
   | 'prDraft'
   | 'conversationSummary'
@@ -152,12 +153,14 @@ export async function invokeCognition<T>(options: CognitionOptions<T>): Promise<
         message: `snapshot:${options.snapshot.digest}`,
         payload: {
           model: { provider: provider.provider, model },
+          task: options.task,
         },
       }),
     );
   }
 
-  let response;
+  let response: { content: T } | undefined;
+  let ok = false;
   try {
     response = await client.chat({
       messages,
@@ -166,6 +169,10 @@ export async function invokeCognition<T>(options: CognitionOptions<T>): Promise<
         ? { temperature: options.temperature }
         : {}),
     });
+    ok = true;
+  } catch (error) {
+    ok = false;
+    throw error;
   } finally {
     if (options.bus && options.context) {
       const durationMs = Math.round(performance.now() - start);
@@ -178,12 +185,17 @@ export async function invokeCognition<T>(options: CognitionOptions<T>): Promise<
           message: `snapshot:${options.snapshot.digest}`,
           payload: {
             model: { provider: provider.provider, model },
-            ok: true,
+            task: options.task,
+            ok,
             durationMs,
           },
         }),
       );
     }
+  }
+
+  if (!response) {
+    throw new Error('Cognition response missing');
   }
 
   if (cacheEnabled && options.inputsDigest && options.cacheDir) {

@@ -215,7 +215,11 @@
     "verify": {
       "default": {
         "commands": [],
-        "failFast": true
+        "failFast": true,
+        "autoFix": {
+          "enabled": true,
+          "maxAttempts": 2
+        }
       },
       "type": "object",
       "properties": {
@@ -250,9 +254,30 @@
         },
         "shell": {
           "type": "string"
+        },
+        "autoFix": {
+          "default": {
+            "enabled": true,
+            "maxAttempts": 2
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "maxAttempts": {
+              "default": 2,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["enabled", "maxAttempts"],
+          "additionalProperties": false
         }
       },
-      "required": ["commands", "failFast"],
+      "required": ["commands", "failFast", "autoFix"],
       "additionalProperties": false
     },
     "naming": {
@@ -361,6 +386,14 @@
         "cognition": {
           "provider": "anthropic",
           "fallbackProviders": [],
+          "routing": {
+            "enabled": true,
+            "autoApply": true,
+            "minSamples": 10,
+            "maxLatencyDelta": 0.2,
+            "lookbackDays": 30,
+            "respectOverrides": true
+          },
           "modelByTask": {}
         },
         "conversation": {
@@ -369,6 +402,18 @@
             "maxBytes": 200000,
             "summarizeAfterTurns": 30,
             "keepLastTurns": 20
+          },
+          "optimization": {
+            "enabled": true,
+            "retention": {
+              "system": 6,
+              "user": 12,
+              "assistant": 8,
+              "tool": 12,
+              "error": 6,
+              "correction": 6
+            },
+            "correctionPatterns": ["\\bactually\\b", "\\bcorrection\\b", "\\bupdate\\b"]
           }
         }
       },
@@ -622,6 +667,14 @@
           "default": {
             "provider": "anthropic",
             "fallbackProviders": [],
+            "routing": {
+              "enabled": true,
+              "autoApply": true,
+              "minSamples": 10,
+              "maxLatencyDelta": 0.2,
+              "lookbackDays": 30,
+              "respectOverrides": true
+            },
             "modelByTask": {}
           },
           "type": "object",
@@ -638,6 +691,57 @@
                 "type": "string",
                 "enum": ["anthropic", "openai", "gemini"]
               }
+            },
+            "routing": {
+              "default": {
+                "enabled": true,
+                "autoApply": true,
+                "minSamples": 10,
+                "maxLatencyDelta": 0.2,
+                "lookbackDays": 30,
+                "respectOverrides": true
+              },
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "autoApply": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "minSamples": {
+                  "default": 10,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxLatencyDelta": {
+                  "default": 0.2,
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "lookbackDays": {
+                  "default": 30,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "respectOverrides": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "enabled",
+                "autoApply",
+                "minSamples",
+                "maxLatencyDelta",
+                "lookbackDays",
+                "respectOverrides"
+              ],
+              "additionalProperties": false
             },
             "modelByTask": {
               "default": {},
@@ -670,6 +774,9 @@
                 "verificationSummary": {
                   "type": "string"
                 },
+                "verificationFix": {
+                  "type": "string"
+                },
                 "recovery": {
                   "type": "string"
                 },
@@ -686,7 +793,7 @@
               "additionalProperties": false
             }
           },
-          "required": ["provider", "fallbackProviders", "modelByTask"],
+          "required": ["provider", "fallbackProviders", "routing", "modelByTask"],
           "additionalProperties": false
         },
         "conversation": {
@@ -696,6 +803,18 @@
               "maxBytes": 200000,
               "summarizeAfterTurns": 30,
               "keepLastTurns": 20
+            },
+            "optimization": {
+              "enabled": true,
+              "retention": {
+                "system": 6,
+                "user": 12,
+                "assistant": 8,
+                "tool": 12,
+                "error": 6,
+                "correction": 6
+              },
+              "correctionPatterns": ["\\bactually\\b", "\\bcorrection\\b", "\\bupdate\\b"]
             }
           },
           "type": "object",
@@ -741,9 +860,101 @@
                 "keepLastTurns"
               ],
               "additionalProperties": false
+            },
+            "optimization": {
+              "default": {
+                "enabled": true,
+                "retention": {
+                  "system": 6,
+                  "user": 12,
+                  "assistant": 8,
+                  "tool": 12,
+                  "error": 6,
+                  "correction": 6
+                },
+                "correctionPatterns": [
+                  "\\bactually\\b",
+                  "\\bcorrection\\b",
+                  "\\bupdate\\b"
+                ]
+              },
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "retention": {
+                  "default": {
+                    "system": 6,
+                    "user": 12,
+                    "assistant": 8,
+                    "tool": 12,
+                    "error": 6,
+                    "correction": 6
+                  },
+                  "type": "object",
+                  "properties": {
+                    "system": {
+                      "default": 6,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "user": {
+                      "default": 12,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "assistant": {
+                      "default": 8,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "tool": {
+                      "default": 12,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "error": {
+                      "default": 6,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "correction": {
+                      "default": 6,
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "system",
+                    "user",
+                    "assistant",
+                    "tool",
+                    "error",
+                    "correction"
+                  ],
+                  "additionalProperties": false
+                },
+                "correctionPatterns": {
+                  "default": ["\\bactually\\b", "\\bcorrection\\b", "\\bupdate\\b"],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["enabled", "retention", "correctionPatterns"],
+              "additionalProperties": false
             }
           },
-          "required": ["pruning"],
+          "required": ["pruning", "optimization"],
           "additionalProperties": false
         }
       },

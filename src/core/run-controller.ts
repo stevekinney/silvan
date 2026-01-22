@@ -13,6 +13,7 @@ import { generateRecoveryPlan } from '../ai/cognition/recovery';
 import { classifyReviewThreads } from '../ai/cognition/review-classifier';
 import { generateReviewRemediationKickoffPrompt } from '../ai/cognition/review-kickoff';
 import { generateReviewFixPlan } from '../ai/cognition/reviewer';
+import { generateVerificationFixPlan } from '../ai/cognition/verification-fix';
 import { decideVerification } from '../ai/cognition/verifier';
 import { createConversationStore } from '../ai/conversation';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
@@ -49,10 +50,12 @@ import {
 import { resolveTask } from '../task/resolve';
 import type { Task } from '../task/types';
 import { hashString } from '../utils/hash';
+import { shouldAttemptVerificationAutoFix } from '../verify/auto-fix';
 import { runVerifyCommands, type VerifyResult } from '../verify/run';
 import { triageVerificationFailures } from '../verify/triage';
 import type { RunContext } from './context';
 import { SilvanError } from './errors';
+import { createLogger } from './logger';
 
 type RunControllerOptions = {
   taskRef?: string;
@@ -130,6 +133,21 @@ type VerificationAssistSummary = {
   steps?: string[];
   context: 'verify' | 'review' | 'ci_fix' | 'recovery';
   commands: string[];
+};
+
+type VerificationAutoFixSummary = {
+  context: VerificationAssistSummary['context'];
+  attempts: number;
+  maxAttempts: number;
+  status: 'skipped' | 'planned' | 'applied' | 'succeeded' | 'failed';
+  reason?: string;
+  fixSummary?: string;
+  planSummary?: string;
+  planSteps?: number;
+  diffBefore?: string;
+  diffAfter?: string;
+  verificationOk?: boolean;
+  lastAttemptAt?: string;
 };
 
 function formatVerificationBlockedReason(
@@ -211,6 +229,265 @@ async function recordVerificationAssist(options: {
       },
     };
   });
+}
+
+function getVerificationAutoFixAttempts(data: Record<string, unknown>): number {
+  const summary =
+    typeof data['verificationAutoFixSummary'] === 'object' &&
+    data['verificationAutoFixSummary']
+      ? (data['verificationAutoFixSummary'] as VerificationAutoFixSummary)
+      : undefined;
+  return typeof summary?.attempts === 'number' ? summary.attempts : 0;
+}
+
+async function recordVerificationAutoFixSummary(
+  ctx: RunContext,
+  update: VerificationAutoFixSummary,
+): Promise<void> {
+  await updateState(ctx, (data) => ({
+    ...data,
+    verificationAutoFixSummary: update,
+  }));
+}
+
+async function attemptVerificationAutoFix(options: {
+  ctx: RunContext;
+  emitContext: EmitContext;
+  conversationStore: ReturnType<typeof createConversationStore>;
+  worktreeRoot: string;
+  failures: Array<{ name: string; exitCode: number; stderr: string }>;
+  triageClassified: boolean;
+  controllerOptions: RunControllerOptions;
+  context: VerificationAssistSummary['context'];
+}): Promise<{ resolved: boolean; report?: VerifyResult }> {
+  const state = await options.ctx.state.readRunState(options.ctx.runId);
+  const data = getRunState((state?.data as Record<string, unknown>) ?? {});
+  const autoFixConfig = options.ctx.config.verify.autoFix;
+  const attempts = getVerificationAutoFixAttempts(data);
+  const decision = shouldAttemptVerificationAutoFix({
+    enabled: autoFixConfig.enabled,
+    maxAttempts: autoFixConfig.maxAttempts,
+    attempts,
+    classified: options.triageClassified,
+    apply: Boolean(options.controllerOptions.apply),
+    dryRun: Boolean(options.controllerOptions.dryRun),
+  });
+
+  if (!decision.attempt || options.failures.length === 0) {
+    await recordVerificationAutoFixSummary(options.ctx, {
+      context: options.context,
+      attempts,
+      maxAttempts: autoFixConfig.maxAttempts,
+      status: 'skipped',
+      ...(options.failures.length === 0
+        ? { reason: 'no_failures' }
+        : decision.reason
+          ? { reason: decision.reason }
+          : {}),
+      lastAttemptAt: new Date().toISOString(),
+    });
+    return { resolved: false };
+  }
+
+  const commandLookup = new Map(
+    options.ctx.config.verify.commands.map((command) => [command.name, command.cmd]),
+  );
+  const failures = options.failures.map((failure) => {
+    const command = commandLookup.get(failure.name);
+    return command ? { ...failure, command } : { ...failure };
+  });
+
+  const nextAttempt = attempts + 1;
+  let fixPlan: Plan | undefined;
+  try {
+    fixPlan = await runStep(
+      options.ctx,
+      'verify.autofix.plan',
+      'Plan verification fixes',
+      () =>
+        generateVerificationFixPlan({
+          failures,
+          store: options.conversationStore,
+          config: options.ctx.config,
+          ...(options.ctx.events.bus ? { bus: options.ctx.events.bus } : {}),
+          context: options.emitContext,
+        }),
+      {
+        inputs: { failures: failures.map((failure) => failure.name) },
+        artifacts: (result) => ({ plan: result }),
+      },
+    );
+  } catch {
+    await recordVerificationAutoFixSummary(options.ctx, {
+      context: options.context,
+      attempts: nextAttempt,
+      maxAttempts: autoFixConfig.maxAttempts,
+      status: 'failed',
+      reason: 'plan_failed',
+      lastAttemptAt: new Date().toISOString(),
+    });
+    return { resolved: false };
+  }
+  if (!fixPlan) {
+    return { resolved: false };
+  }
+
+  await recordVerificationAutoFixSummary(options.ctx, {
+    context: options.context,
+    attempts: nextAttempt,
+    maxAttempts: autoFixConfig.maxAttempts,
+    status: 'planned',
+    planSummary: fixPlan.summary,
+    planSteps: fixPlan.steps.length,
+    lastAttemptAt: new Date().toISOString(),
+  });
+
+  const diffBefore = await runGit(['diff', '--stat'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.ctx.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+
+  const execModel = getModelForPhase(options.ctx.config, 'verify');
+  const execBudgets = getBudgetsForPhase(options.ctx.config, 'verify');
+  const planDigest = hashString(JSON.stringify(fixPlan));
+  const logger = createLogger({
+    bus: options.ctx.events.bus,
+    context: options.emitContext,
+    source: 'engine',
+  });
+
+  let fixSummary: string | undefined;
+  try {
+    fixSummary = await runStep(
+      options.ctx,
+      'verify.autofix.apply',
+      'Apply verification fixes',
+      async () => {
+        const execPrompt = new ProseWriter();
+        execPrompt.write('You are the implementation agent for Silvan.');
+        execPrompt.write('Follow the plan step-by-step, using tools when needed.');
+        execPrompt.write('Do not invent file contents; use fs.read before edits.');
+        execPrompt.write('Keep changes minimal and aligned to the plan.');
+        execPrompt.write('Use silvan.plan.read to fetch the full plan before edits.');
+        execPrompt.write('Return a brief summary of changes.');
+        execPrompt.write(`Plan digest: ${planDigest}`);
+
+        const execSnapshot = await options.conversationStore.append({
+          role: 'system',
+          content: execPrompt.toString().trimEnd(),
+          metadata: { kind: 'verification' },
+        });
+
+        const result = await executePlan({
+          snapshot: execSnapshot,
+          model: execModel,
+          repoRoot: options.worktreeRoot,
+          config: options.ctx.config,
+          dryRun: Boolean(options.controllerOptions.dryRun),
+          allowDestructive: Boolean(options.controllerOptions.apply),
+          allowDangerous: Boolean(options.controllerOptions.dangerous),
+          ...execBudgets,
+          ...getToolBudget(options.ctx.config),
+          ...(options.controllerOptions.sessions
+            ? { sessionPool: options.controllerOptions.sessions }
+            : {}),
+          bus: options.ctx.events.bus,
+          context: options.emitContext,
+          state: options.ctx.state,
+          heartbeat: () => heartbeatStep(options.ctx, 'verify.autofix.apply'),
+        });
+
+        const execConversation = appendMessages(execSnapshot.conversation, {
+          role: 'assistant',
+          content: `Verification fix summary: ${result}`,
+          metadata: { kind: 'verification', protected: true },
+        });
+        await options.conversationStore.save(execConversation);
+        return result;
+      },
+      {
+        inputs: { planDigest },
+        artifacts: (result) => ({ summary: result }),
+      },
+    );
+  } catch {
+    await recordVerificationAutoFixSummary(options.ctx, {
+      context: options.context,
+      attempts: nextAttempt,
+      maxAttempts: autoFixConfig.maxAttempts,
+      status: 'failed',
+      reason: 'apply_failed',
+      lastAttemptAt: new Date().toISOString(),
+    });
+    await logger.warn('Verification auto-fix failed to apply.');
+    return { resolved: false };
+  }
+
+  const diffAfter = await runGit(['diff', '--stat'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.ctx.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+  const diffBeforeText = diffBefore.stdout.trim();
+  const diffAfterText = diffAfter.stdout.trim();
+  const beforeText = diffBeforeText.length > 0 ? diffBeforeText : 'No changes detected.';
+  const afterText = diffAfterText.length > 0 ? diffAfterText : 'No changes detected.';
+  await logger.info(
+    `Verification auto-fix diff preview (before):\n${beforeText}\nAfter:\n${afterText}`,
+  );
+
+  await recordVerificationAutoFixSummary(options.ctx, {
+    context: options.context,
+    attempts: nextAttempt,
+    maxAttempts: autoFixConfig.maxAttempts,
+    status: 'applied',
+    planSummary: fixPlan.summary,
+    planSteps: fixPlan.steps.length,
+    ...(fixSummary ? { fixSummary } : {}),
+    ...(diffBeforeText ? { diffBefore: diffBeforeText } : {}),
+    ...(diffAfterText ? { diffAfter: diffAfterText } : {}),
+    lastAttemptAt: new Date().toISOString(),
+  });
+
+  const verifyReport = await runStep(
+    options.ctx,
+    'verify.autofix.verify',
+    'Re-run verification',
+    () => runVerifyCommands(options.ctx.config, { cwd: options.worktreeRoot }),
+    { artifacts: (report) => ({ report }) },
+  );
+
+  await updateState(options.ctx, (prev) => {
+    const summary =
+      typeof prev['summary'] === 'object' && prev['summary']
+        ? { ...(prev['summary'] as Record<string, unknown>) }
+        : {};
+    if (verifyReport.ok) {
+      delete summary['blockedReason'];
+    }
+    return {
+      ...prev,
+      summary,
+      verifySummary: {
+        ok: verifyReport.ok,
+        lastRunAt: new Date().toISOString(),
+      },
+      verificationAutoFixSummary: {
+        context: options.context,
+        attempts: nextAttempt,
+        maxAttempts: autoFixConfig.maxAttempts,
+        status: verifyReport.ok ? 'succeeded' : 'failed',
+        planSummary: fixPlan.summary,
+        planSteps: fixPlan.steps.length,
+        ...(fixSummary ? { fixSummary } : {}),
+        ...(diffBeforeText ? { diffBefore: diffBeforeText } : {}),
+        ...(diffAfterText ? { diffAfter: diffAfterText } : {}),
+        verificationOk: verifyReport.ok,
+        lastAttemptAt: new Date().toISOString(),
+      },
+    };
+  });
+
+  return { resolved: verifyReport.ok, report: verifyReport };
 }
 
 function getToolBudget(config: RunContext['config']): {
@@ -894,7 +1171,7 @@ export async function runImplementation(
   await changePhase(ctx, 'verify');
   const verifyStep = getStepRecord(data, 'verify.run');
   const existingVerify = data['verifySummary'];
-  const verifyReport =
+  let verifyReport =
     verifyStep?.status === 'done' &&
     typeof existingVerify === 'object' &&
     existingVerify &&
@@ -936,43 +1213,82 @@ export async function runImplementation(
       stderr: result.stderr,
     }));
 
-    const triage = triageVerificationFailures(results);
-    const decision = await runStep(
+    let failedResults = results.filter((result) => result.exitCode !== 0);
+    let triage = triageVerificationFailures(failedResults);
+    const autoFixOutcome = await attemptVerificationAutoFix({
       ctx,
-      'verify.decide',
-      'Decide verification next steps',
-      async () => {
-        if (options.apply && !triage.classified) {
-          return decideVerification({
-            report: {
-              ok: verifyReport.ok,
-              results,
-            },
-            store: conversationStore,
-            config: ctx.config,
-            ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-            context: emitContext,
-          });
-        }
-        return triage.decision;
-      },
-      {
-        inputs: {
-          classified: triage.classified,
-          commandCount: results.length,
+      emitContext,
+      conversationStore,
+      worktreeRoot,
+      failures: failedResults,
+      triageClassified: triage.classified,
+      controllerOptions: options,
+      context: 'verify',
+    });
+    if (autoFixOutcome.report) {
+      verifyReport = autoFixOutcome.report;
+      if (!verifyReport.ok) {
+        const retryResults = (
+          verifyReport.results as Array<{
+            name: string;
+            exitCode: number;
+            stderr: string;
+          }>
+        )
+          .filter((result) => result.exitCode !== 0)
+          .map((result) => ({
+            name: result.name,
+            exitCode: result.exitCode,
+            stderr: result.stderr,
+          }));
+        failedResults = retryResults;
+        triage = triageVerificationFailures(failedResults);
+        await recordVerificationAssist({
+          ctx,
+          report: verifyReport,
+          context: 'verify',
+          emitContext,
+        });
+      }
+    }
+    if (!autoFixOutcome.resolved) {
+      const decision = await runStep(
+        ctx,
+        'verify.decide',
+        'Decide verification next steps',
+        async () => {
+          if (options.apply && !triage.classified) {
+            return decideVerification({
+              report: {
+                ok: verifyReport.ok,
+                results: failedResults,
+              },
+              store: conversationStore,
+              config: ctx.config,
+              ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+              context: emitContext,
+            });
+          }
+          return triage.decision;
         },
-        artifacts: (result) => ({ decision: result }),
-      },
-    );
+        {
+          inputs: {
+            classified: triage.classified,
+            commandCount: failedResults.length,
+          },
+          artifacts: (result) => ({ decision: result }),
+        },
+      );
 
-    await updateState(ctx, (data) => ({
-      ...data,
-      verificationDecisionSummary: {
-        commands: decision.commands,
-        askUser: decision.askUser ?? false,
-      },
-    }));
-    throw new Error('Verification failed');
+      await updateState(ctx, (data) => ({
+        ...data,
+        verificationDecisionSummary: {
+          commands: decision.commands,
+          askUser: decision.askUser ?? false,
+        },
+      }));
+      throw new Error('Verification failed');
+    }
   }
 
   const localGateConfig = ctx.config.review.localGate;

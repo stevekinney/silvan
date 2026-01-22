@@ -13,11 +13,15 @@ import {
   suggestConfigRecovery,
 } from '../ai/cognition/assist';
 import {
+  createConversationStore,
   exportConversationSnapshot,
   loadConversationSnapshot,
   renderConversationSummary,
   summarizeConversationSnapshot,
 } from '../ai/conversation';
+import { benchmarkCognitionModels } from '../ai/model-benchmark';
+import { applyCognitionModelRouting, buildModelRoutingReport } from '../ai/model-routing';
+import { buildAnalyticsReport } from '../analytics/analytics';
 import { type EnvLoadSummary, getLoadedEnvSummary } from '../config/env';
 import {
   applyInitSuggestions,
@@ -87,7 +91,9 @@ import { mountDashboard, startPrSnapshotPoller } from '../ui';
 import { confirmAction } from '../utils/confirm';
 import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
+import { parseTimeInput } from '../utils/time';
 import { buildWorktreeName } from '../utils/worktree-name';
+import { buildAnalyticsNextSteps, renderAnalyticsReport } from './analytics-output';
 import {
   generateBashCompletion,
   generateFishCompletion,
@@ -104,6 +110,10 @@ import {
   renderInitResult,
 } from './init-output';
 import { emitJsonError, emitJsonResult, emitJsonSuccess } from './json-output';
+import {
+  renderModelBenchmarkReport,
+  renderModelRoutingReport,
+} from './model-routing-output';
 import {
   colors,
   formatKeyList,
@@ -167,6 +177,10 @@ type CliOptions = {
   debug?: boolean;
   trace?: boolean;
   task?: string;
+  since?: string;
+  until?: string;
+  provider?: string;
+  repo?: string;
   answer?: string | string[];
   planOnly?: boolean;
   githubToken?: string;
@@ -716,6 +730,32 @@ function parseListFlag(value: string | undefined): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+function parseModelList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+function collectBenchmarkModels(config: Config): string[] {
+  const models = new Set<string>();
+  if (config.ai.cognition.modelByTask.plan) {
+    models.add(config.ai.cognition.modelByTask.plan);
+  }
+  if (config.ai.models.plan) {
+    models.add(config.ai.models.plan);
+  }
+  if (config.ai.models.default) {
+    models.add(config.ai.models.default);
+  }
+  for (const model of Object.values(config.ai.cognition.modelByTask)) {
+    if (model) models.add(model);
+  }
+  return Array.from(models);
+}
+
 function parseConcurrency(value: string | undefined, fallback = 1): number {
   if (!value) return fallback;
   const parsed = Number(value);
@@ -966,6 +1006,7 @@ function buildConfigOverrides(options: CliOptions): ConfigInput {
     ['reviewCluster', options.cognitionModelReview],
     ['ciTriage', options.cognitionModelCi],
     ['verificationSummary', options.cognitionModelVerify],
+    ['verificationFix', options.cognitionModelVerify],
     ['recovery', options.cognitionModelRecovery],
     ['prDraft', options.cognitionModelPr],
     ['conversationSummary', options.cognitionModelConversationSummary],
@@ -1096,12 +1137,24 @@ async function withCliContext<T>(
   options: CliOptions | undefined,
   mode: EventMode,
   fn: (ctx: RunContext) => Promise<T>,
-  extra?: { lock?: boolean; runId?: string },
+  extra?: { lock?: boolean; runId?: string; modelRouting?: boolean },
 ): Promise<T> {
   const configOverrides = buildConfigOverrides(options ?? {});
   return withRunContext(
     { cwd: process.cwd(), mode, configOverrides, ...(extra ?? {}) },
-    fn,
+    async (ctx) => {
+      if (extra?.modelRouting !== false) {
+        const routingDecision = await applyCognitionModelRouting({
+          state: ctx.state,
+          config: ctx.config,
+          runId: ctx.runId,
+          bus: ctx.events.bus,
+          context: buildEmitContext(ctx),
+        });
+        ctx.config = routingDecision.config;
+      }
+      return fn(ctx);
+    },
   );
 }
 
@@ -2012,6 +2065,216 @@ cli
       console.log(output);
     },
   );
+
+cli
+  .command('analytics', 'Run analytics and success reporting')
+  .option('--since <time>', 'Filter runs starting after this time (e.g., 7d)')
+  .option('--until <time>', 'Filter runs starting before this time (e.g., 2025-01-31)')
+  .option('--provider <provider>', 'Filter by task provider (comma-separated)')
+  .option('--repo <repo>', 'Filter by repository (comma-separated)')
+  .action(
+    async (
+      options: CliOptions & {
+        since?: string;
+        until?: string;
+        provider?: string;
+        repo?: string;
+      },
+    ) => {
+      const configResult = await loadConfig(buildConfigOverrides(options), {
+        cwd: process.cwd(),
+      });
+      const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+      const state = await initStateStore(repo.projectRoot, {
+        lock: false,
+        mode: configResult.config.state.mode,
+        ...(configResult.config.state.root
+          ? { root: configResult.config.state.root }
+          : {}),
+        metadataRepoRoot: repo.gitRoot,
+      });
+
+      const sinceInput = options.since?.trim();
+      const untilInput = options.until?.trim();
+      const since = sinceInput ? parseTimeInput(sinceInput) : undefined;
+      if (sinceInput && !since) {
+        throw new SilvanError({
+          code: 'analytics.invalid_since',
+          message: `Invalid --since value: ${sinceInput}`,
+          userMessage: `Invalid --since value: ${sinceInput}`,
+          kind: 'validation',
+          nextSteps: ['Use a duration like 7d or an ISO timestamp.'],
+        });
+      }
+      const until = untilInput ? parseTimeInput(untilInput) : undefined;
+      if (untilInput && !until) {
+        throw new SilvanError({
+          code: 'analytics.invalid_until',
+          message: `Invalid --until value: ${untilInput}`,
+          userMessage: `Invalid --until value: ${untilInput}`,
+          kind: 'validation',
+          nextSteps: ['Use a duration like 7d or an ISO timestamp.'],
+        });
+      }
+      if (since && until && since > until) {
+        throw new SilvanError({
+          code: 'analytics.invalid_range',
+          message: `Invalid time range: ${since} is after ${until}`,
+          userMessage: 'Invalid time range: --since must be before --until.',
+          kind: 'validation',
+          nextSteps: ['Swap the range or remove --until.'],
+        });
+      }
+
+      const providerFilter = parseListFlag(options.provider);
+      const repoFilter = parseListFlag(options.repo);
+      const report = await buildAnalyticsReport({
+        state,
+        filters: {
+          ...(since ? { since } : {}),
+          ...(until ? { until } : {}),
+          ...(providerFilter ? { providers: providerFilter } : {}),
+          ...(repoFilter ? { repos: repoFilter } : {}),
+        },
+      });
+      const nextSteps = buildAnalyticsNextSteps(report);
+
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'analytics',
+          data: report,
+          nextSteps,
+          repoRoot: repo.projectRoot,
+        });
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+
+      console.log(renderAnalyticsReport(report));
+    },
+  );
+
+cli
+  .command('models recommend', 'Recommend cognition models based on recent runs')
+  .option('--min-samples <n>', 'Minimum samples per model before recommending')
+  .option('--lookback-days <n>', 'Lookback window in days')
+  .action(
+    async (options: CliOptions & { minSamples?: string; lookbackDays?: string }) => {
+      const configResult = await loadConfig(buildConfigOverrides(options), {
+        cwd: process.cwd(),
+      });
+      const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+      const state = await initStateStore(repo.projectRoot, {
+        lock: false,
+        mode: configResult.config.state.mode,
+        ...(configResult.config.state.root
+          ? { root: configResult.config.state.root }
+          : {}),
+        metadataRepoRoot: repo.gitRoot,
+      });
+
+      const minSamples = parseNumberFlag(options.minSamples);
+      const lookbackDays = parseNumberFlag(options.lookbackDays);
+      const config: Config = {
+        ...configResult.config,
+        ai: {
+          ...configResult.config.ai,
+          cognition: {
+            ...configResult.config.ai.cognition,
+            routing: {
+              ...configResult.config.ai.cognition.routing,
+              ...(minSamples ? { minSamples } : {}),
+              ...(lookbackDays ? { lookbackDays } : {}),
+            },
+          },
+        },
+      };
+
+      const report = await buildModelRoutingReport({ state, config });
+      const nextSteps = ['silvan models benchmark --models <model-a,model-b>'];
+
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'models recommend',
+          data: report,
+          nextSteps,
+          repoRoot: repo.projectRoot,
+        });
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+
+      console.log(
+        renderModelRoutingReport({
+          report,
+          autoApply: config.ai.cognition.routing.autoApply,
+          minSamples: config.ai.cognition.routing.minSamples,
+        }),
+      );
+    },
+  );
+
+cli
+  .command('models benchmark', 'Benchmark cognition models with a sample plan')
+  .option('--models <models>', 'Comma-separated list of models to compare')
+  .action(async (options: CliOptions & { models?: string }) => {
+    const configResult = await loadConfig(buildConfigOverrides(options), {
+      cwd: process.cwd(),
+    });
+    const repo = await detectRepoContext({ cwd: configResult.projectRoot });
+    const state = await initStateStore(repo.projectRoot, {
+      lock: false,
+      mode: configResult.config.state.mode,
+      ...(configResult.config.state.root ? { root: configResult.config.state.root } : {}),
+      metadataRepoRoot: repo.gitRoot,
+    });
+
+    const explicitModels = parseModelList(options.models);
+    const models = explicitModels ?? collectBenchmarkModels(configResult.config);
+    const uniqueModels = Array.from(new Set(models));
+    if (uniqueModels.length < 2) {
+      throw new SilvanError({
+        code: 'models.benchmark.insufficient_models',
+        message: 'Provide at least two models to benchmark.',
+        userMessage: 'Provide at least two models to benchmark.',
+        kind: 'validation',
+        nextSteps: [
+          'Pass --models model-a,model-b',
+          'Or set ai.models.default and ai.cognition.modelByTask.plan in config',
+        ],
+      });
+    }
+
+    const report = await benchmarkCognitionModels({
+      state,
+      config: configResult.config,
+      repoRoot: repo.projectRoot,
+      models: uniqueModels,
+    });
+    const nextSteps = ['silvan models recommend'];
+
+    if (options.json) {
+      await emitJsonSuccess({
+        command: 'models benchmark',
+        data: report,
+        nextSteps,
+        repoRoot: repo.projectRoot,
+      });
+      return;
+    }
+
+    if (options.quiet) {
+      return;
+    }
+
+    console.log(renderModelBenchmarkReport(report));
+  });
 
 cli
   .command('logs <runId>', 'Show audit log for a run')
@@ -3862,6 +4125,66 @@ cli
         return;
       }
       console.log(content);
+    }),
+  );
+
+cli
+  .command('convo optimize <runId>', 'Optimize conversation context')
+  .option('--force', 'Force optimization even if below thresholds')
+  .action((runId: string, options: CliOptions & { force?: boolean }) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const store = createConversationStore({
+        runId,
+        state: ctx.state,
+        config: ctx.config,
+        bus: ctx.events.bus,
+        context: buildEmitContext(ctx),
+      });
+      const result = await store.optimize(options.force ? { force: true } : undefined);
+
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'convo optimize',
+          data: {
+            runId,
+            metrics: result.metrics,
+            backupPath: result.backupPath ?? null,
+          },
+          bus: ctx.events.bus,
+          runId: ctx.runId,
+          repoRoot: ctx.repo.repoRoot,
+        });
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+
+      const metricRows: Array<[string, string]> = [
+        [
+          'Messages',
+          `${result.metrics.beforeMessages} → ${result.metrics.afterMessages}`,
+        ],
+        ['Tokens', `${result.metrics.beforeTokens} → ${result.metrics.afterTokens}`],
+        ['Saved', String(result.metrics.tokensSaved)],
+        ['Compression', `${Math.round(result.metrics.compressionRatio * 100)}%`],
+        ['Summary', result.metrics.summaryAdded ? 'Added' : 'None'],
+      ];
+      if (result.backupPath) {
+        metricRows.push(['Backup', result.backupPath]);
+      }
+
+      const lines: string[] = [];
+      lines.push(renderSectionHeader('Conversation optimized', { width: 60 }));
+      lines.push(...formatKeyValues(metricRows, { labelWidth: 14 }));
+      lines.push(
+        renderNextSteps([
+          `silvan convo show ${runId}`,
+          `silvan convo export ${runId} --format md`,
+        ]),
+      );
+      console.log(lines.join('\n'));
     }),
   );
 
