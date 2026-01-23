@@ -118,21 +118,6 @@ type VerificationAutoFixSummary = {
   lastAttemptAt?: string;
 };
 
-function formatVerificationBlockedReason(
-  context: VerificationAssistSummary['context'],
-  summary?: string,
-): string {
-  const prefix =
-    context === 'review'
-      ? 'Verification failed during review.'
-      : context === 'ci_fix'
-        ? 'Verification failed during CI fix.'
-        : context === 'recovery'
-          ? 'Verification failed during recovery.'
-          : 'Verification failed.';
-  return summary ? `${prefix} ${summary}` : prefix;
-}
-
 export async function recordVerificationAssist(options: {
   ctx: RunContext;
   report: VerifyResult;
@@ -180,32 +165,27 @@ export async function recordVerificationAssist(options: {
       ...(assist.summary ? { summary: assist.summary } : {}),
       ...(assist.steps.length > 0 ? { steps: assist.steps } : {}),
     };
+    const blockedPrefix =
+      options.context === 'review'
+        ? 'Verification failed during review.'
+        : options.context === 'ci_fix'
+          ? 'Verification failed during CI fix.'
+          : options.context === 'recovery'
+            ? 'Verification failed during recovery.'
+            : 'Verification failed.';
+    const nextBlockedReason = assist.summary
+      ? `${blockedPrefix} ${assist.summary}`
+      : blockedPrefix;
 
     return {
       ...data,
       verificationAssistSummary,
       summary: {
         ...summary,
-        ...(blockedReason
-          ? {}
-          : {
-              blockedReason: formatVerificationBlockedReason(
-                options.context,
-                assist.summary,
-              ),
-            }),
+        ...(blockedReason ? {} : { blockedReason: nextBlockedReason }),
       },
     };
   });
-}
-
-function getVerificationAutoFixAttempts(data: Record<string, unknown>): number {
-  const summary =
-    typeof data['verificationAutoFixSummary'] === 'object' &&
-    data['verificationAutoFixSummary']
-      ? (data['verificationAutoFixSummary'] as VerificationAutoFixSummary)
-      : undefined;
-  return typeof summary?.attempts === 'number' ? summary.attempts : 0;
 }
 
 async function recordVerificationAutoFixSummary(
@@ -231,7 +211,12 @@ export async function attemptVerificationAutoFix(options: {
   const state = await options.ctx.state.readRunState(options.ctx.runId);
   const data = getRunState((state?.data as Record<string, unknown>) ?? {});
   const autoFixConfig = options.ctx.config.verify.autoFix;
-  const attempts = getVerificationAutoFixAttempts(data);
+  const summary =
+    typeof data['verificationAutoFixSummary'] === 'object' &&
+    data['verificationAutoFixSummary']
+      ? (data['verificationAutoFixSummary'] as VerificationAutoFixSummary)
+      : undefined;
+  const attempts = typeof summary?.attempts === 'number' ? summary.attempts : 0;
   const decision = shouldAttemptVerificationAutoFix({
     enabled: autoFixConfig.enabled,
     maxAttempts: autoFixConfig.maxAttempts,
