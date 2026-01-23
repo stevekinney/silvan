@@ -9,6 +9,7 @@ import type { EmitContext } from '../events/emit';
 import type { StateStore } from '../state/store';
 import { sanitizeName } from '../utils/slug';
 import { extractLinearTaskFromBranch } from '../utils/task-ref';
+import { isTaskProviderEnabled, requireTaskProviderEnabled } from './provider';
 import { fetchGitHubTask, parseGitHubIssueUrl } from './providers/github';
 import { fetchLinearTask } from './providers/linear';
 import { createLocalTask, loadLocalTask, type LocalTaskInput } from './providers/local';
@@ -33,15 +34,7 @@ export async function resolveTask(
 ): Promise<{ task: Task; ref: TaskRef }> {
   const ref = parseTaskRef(taskRef, options.config);
   if (ref.provider === 'linear') {
-    if (!options.config.task.providers.enabled.includes('linear')) {
-      throw new SilvanError({
-        code: 'task.provider_disabled',
-        message: 'Linear provider is disabled in config.',
-        userMessage: 'Linear task provider is disabled.',
-        kind: 'expected',
-        nextSteps: ['Enable Linear in silvan.config.ts task.providers.enabled.'],
-      });
-    }
+    requireTaskProviderEnabled(options.config, 'linear');
     const task = await fetchLinearTask(
       ref.id,
       options.config.linear.token,
@@ -51,15 +44,7 @@ export async function resolveTask(
   }
 
   if (ref.provider === 'local') {
-    if (!options.config.task.providers.enabled.includes('local')) {
-      throw new SilvanError({
-        code: 'task.provider_disabled',
-        message: 'Local provider is disabled in config.',
-        userMessage: 'Local task provider is disabled.',
-        kind: 'expected',
-        nextSteps: ['Enable local in silvan.config.ts task.providers.enabled.'],
-      });
-    }
+    requireTaskProviderEnabled(options.config, 'local');
     const title =
       options.localInput?.title && options.localInput.title.trim().length > 0
         ? options.localInput.title
@@ -95,15 +80,7 @@ export async function resolveTask(
     };
   }
 
-  if (!options.config.task.providers.enabled.includes('github')) {
-    throw new SilvanError({
-      code: 'task.provider_disabled',
-      message: 'GitHub provider is disabled in config.',
-      userMessage: 'GitHub task provider is disabled.',
-      kind: 'expected',
-      nextSteps: ['Enable GitHub in silvan.config.ts task.providers.enabled.'],
-    });
-  }
+  requireTaskProviderEnabled(options.config, 'github');
   const github = await requireGitHubConfig({
     config: options.config,
     repoRoot: options.repoRoot,
@@ -175,8 +152,8 @@ export function parseTaskRef(input: string, config: Config): TaskRef {
   }
 
   let defaultProvider = config.task.providers.default;
-  if (!config.task.providers.enabled.includes(defaultProvider)) {
-    if (config.task.providers.enabled.includes('local')) {
+  if (!isTaskProviderEnabled(config, defaultProvider)) {
+    if (isTaskProviderEnabled(config, 'local')) {
       defaultProvider = 'local';
     } else {
       throw new SilvanError({
