@@ -1,11 +1,10 @@
-import { spawnSync } from 'node:child_process';
 import { access, readdir } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
 
 import { cac } from 'cac';
 
 import pkg from '../../package.json';
-import { type ClarificationQuestion, collectClarifications } from '../agent/clarify';
+import { collectClarifications } from '../agent/clarify';
 import { createSessionPool } from '../agent/session';
 import {
   type AssistSuggestion,
@@ -38,7 +37,6 @@ import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import type { RunContext } from '../core/context';
 import { withRunContext } from '../core/context';
 import { normalizeError, SilvanError } from '../core/errors';
-import { createLogger } from '../core/logger';
 import { detectRepoContext } from '../core/repo';
 import { formatRepoLabel } from '../core/repo-label';
 import {
@@ -49,8 +47,7 @@ import {
   runRecovery,
   runReviewLoop,
 } from '../core/run-controller';
-import { collectDoctorReport } from '../diagnostics/doctor';
-import { createEnvelope, type EmitContext } from '../events/emit';
+import { createEnvelope } from '../events/emit';
 import type { Event, EventMode, RunStep } from '../events/schema';
 import { runGit } from '../git/exec';
 import {
@@ -65,9 +62,7 @@ import {
   removeWorktree,
   unlockWorktree,
 } from '../git/worktree';
-import { waitForCi } from '../github/ci';
-import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
-import { fetchUnresolvedReviewComments } from '../github/review';
+import { findMergedPr } from '../github/pr';
 import { findHelpTopic, listHelpTopics } from '../help/topics';
 import { evaluateLearningTargets } from '../learning/auto-apply';
 import { applyLearningNotes } from '../learning/notes';
@@ -91,19 +86,20 @@ import {
   markFirstRunCompleted,
   markQuickstartCompleted,
 } from '../state/onboarding';
-import { writeQueueRequest } from '../state/queue';
 import { initStateStore } from '../state/store';
-import { promptLocalTaskInput } from '../task/prompt-local-task';
-import { type LocalTaskInput, parseLocalTaskFile } from '../task/providers/local';
-import { inferTaskRefFromBranch, resolveTask } from '../task/resolve';
-import { mountDashboard, startPrSnapshotPoller } from '../ui';
+import { type LocalTaskInput } from '../task/providers/local';
+import { resolveTask } from '../task/resolve';
 import { confirmAction } from '../utils/confirm';
-import { hashString } from '../utils/hash';
 import { sanitizeName } from '../utils/slug';
 import { parseTimeInput } from '../utils/time';
-import { buildWorktreeName } from '../utils/worktree-name';
 import { buildAnalyticsNextSteps, renderAnalyticsReport } from './analytics-output';
+import { parseAnswerPairs } from './answers';
+import { registerConfigCommands } from './commands/config';
+import { registerDoctorCommands } from './commands/doctor';
 import { registerQueueCommands } from './commands/queue';
+import { registerReviewCommands } from './commands/review';
+import { registerTaskCommands, startTaskFlow } from './commands/task';
+import { registerUiCommands } from './commands/ui';
 import {
   generateBashCompletion,
   generateFishCompletion,
@@ -120,16 +116,15 @@ import {
   renderInitResult,
 } from './init-output';
 import { emitJsonError, emitJsonResult, emitJsonSuccess } from './json-output';
+import { buildEmitContext, createCliLogger } from './logger';
 import {
   renderModelBenchmarkReport,
   renderModelRoutingReport,
 } from './model-routing-output';
 import {
-  colors,
   formatKeyList,
   formatKeyValues,
   formatStatusLabel,
-  padLabel,
   renderSectionHeader,
   renderSuccessSummary,
 } from './output';
@@ -150,101 +145,19 @@ import {
   type RunListEntry,
 } from './run-list-output';
 import {
-  renderClarifications,
   renderNextSteps,
   renderPlanSummary,
   renderReadySection,
   renderTaskHeader,
   summarizePlan,
 } from './task-start-output';
+import type { CliOptions } from './types';
 import { deriveWorktreeStatus, renderWorktreeListTable } from './worktree-list-output';
 
 const cli = cac('silvan');
 
 cli.help((sections) => buildHelpSections(sections, cli));
 cli.version(pkg.version, '--version, -V');
-
-type CliOptions = {
-  json?: boolean;
-  yes?: boolean;
-  assist?: boolean;
-  force?: boolean;
-  all?: boolean;
-  interval?: string;
-  timeout?: string;
-  concurrency?: string;
-  continueOnError?: boolean;
-  noUi?: boolean;
-  dryRun?: boolean;
-  apply?: boolean;
-  dangerous?: boolean;
-  network?: boolean;
-  printCd?: boolean;
-  openShell?: boolean;
-  exec?: string;
-  quiet?: boolean;
-  verbose?: boolean;
-  debug?: boolean;
-  trace?: boolean;
-  task?: string;
-  since?: string;
-  until?: string;
-  provider?: string;
-  repo?: string;
-  answer?: string | string[];
-  planOnly?: boolean;
-  priority?: string;
-  queue?: boolean;
-  githubToken?: string;
-  linearToken?: string;
-  model?: string;
-  modelPlan?: string;
-  modelExecute?: string;
-  modelReview?: string;
-  modelVerify?: string;
-  modelPr?: string;
-  modelRecovery?: string;
-  cognitionProvider?: string;
-  cognitionModelKickoff?: string;
-  cognitionModelPlan?: string;
-  cognitionModelReview?: string;
-  cognitionModelCi?: string;
-  cognitionModelVerify?: string;
-  cognitionModelRecovery?: string;
-  cognitionModelPr?: string;
-  cognitionModelConversationSummary?: string;
-  maxTurns?: string;
-  maxTurnsPlan?: string;
-  maxTurnsExecute?: string;
-  maxTurnsReview?: string;
-  maxTurnsVerify?: string;
-  maxTurnsPr?: string;
-  maxTurnsRecovery?: string;
-  maxBudgetUsd?: string;
-  maxBudgetUsdPlan?: string;
-  maxBudgetUsdExecute?: string;
-  maxBudgetUsdReview?: string;
-  maxBudgetUsdVerify?: string;
-  maxBudgetUsdPr?: string;
-  maxBudgetUsdRecovery?: string;
-  maxThinkingTokens?: string;
-  maxThinkingTokensPlan?: string;
-  maxThinkingTokensExecute?: string;
-  maxThinkingTokensReview?: string;
-  maxThinkingTokensVerify?: string;
-  maxThinkingTokensPr?: string;
-  maxThinkingTokensRecovery?: string;
-  maxToolCalls?: string;
-  maxToolMs?: string;
-  maxReviewLoops?: string;
-  persistSessions?: boolean;
-  verifyShell?: string;
-  stateMode?: string;
-  title?: string;
-  desc?: string;
-  ac?: string[] | string;
-  fromFile?: string;
-};
 
 // Essential options (shown in default help)
 cli.option('--json', 'Output JSON events (com.silvan.events)');
@@ -1727,191 +1640,11 @@ cli
     });
   });
 
-cli
-  .command('pr open', 'Open or update a pull request')
-  .action(async (options: CliOptions) => {
-    await handlePrOpen(options);
-  });
-
-cli
-  .command('pr sync', 'Sync PR title/body and reviewers')
-  .action(async (options: CliOptions) => {
-    await handlePrOpen(options);
-  });
-
-cli
-  .command('ci wait', 'Wait for CI to complete for current branch')
-  .option('--interval <ms>', 'Polling interval in ms', { default: '15000' })
-  .option('--timeout <ms>', 'Timeout in ms', { default: '900000' })
-  .action(async (options: CliOptions) => {
-    const mode: EventMode = options.json ? 'json' : 'headless';
-    await withCliContext(options, mode, async (ctx) => {
-      const logger = createCliLogger(ctx);
-      const githubToken = requireGitHubAuth(ctx.config);
-      const github = await requireGitHubConfig({
-        config: ctx.config,
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-      const { owner, repo } = github;
-
-      const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-      const headBranch = branchResult.stdout.trim();
-
-      const intervalMs = Number(options.interval ?? '15000');
-      const timeoutMs = Number(options.timeout ?? '900000');
-
-      const ciResult = await runStep(ctx, 'github.ci.wait', 'Wait for CI', async () =>
-        waitForCi({
-          owner,
-          repo,
-          headBranch,
-          token: githubToken,
-          pollIntervalMs: intervalMs,
-          timeoutMs,
-          bus: ctx.events.bus,
-          context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-        }),
-      );
-
-      await persistRunState(ctx, mode, (data) => ({
-        ...data,
-        summary: {
-          ...(typeof data['summary'] === 'object' && data['summary']
-            ? data['summary']
-            : {}),
-          ci: ciResult.state,
-        },
-      }));
-
-      if (github.source === 'origin') {
-        await persistRunState(ctx, mode, (data) => ({
-          ...data,
-          repo: {
-            ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
-            github: { owner, repo, source: github.source },
-          },
-        }));
-      }
-
-      const ciDetails: Array<[string, string]> = [
-        ['Branch', headBranch],
-        ['Status', ciResult.state],
-      ];
-      if (ciResult.summary) {
-        ciDetails.push(['Summary', ciResult.summary]);
-      }
-
-      await logger.info(
-        renderSuccessSummary({
-          title: 'CI checks complete',
-          details: ciDetails,
-          nextSteps: ['silvan review unresolved', 'silvan pr open'],
-        }),
-      );
-    });
-  });
-
-cli
-  .command('review unresolved', 'Fetch unresolved review comments')
-  .action(async (options: CliOptions) => {
-    const mode: EventMode = options.json ? 'json' : 'headless';
-    await withCliContext(options, mode, async (ctx) => {
-      const logger = createCliLogger(ctx);
-      const githubToken = requireGitHubAuth(ctx.config);
-      const github = await requireGitHubConfig({
-        config: ctx.config,
-        repoRoot: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-      const { owner, repo } = github;
-
-      const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
-        cwd: ctx.repo.repoRoot,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      });
-      const headBranch = branchResult.stdout.trim();
-
-      const reviewResult = await runStep(
-        ctx,
-        'github.review.fetch',
-        'Fetch review comments',
-        async () =>
-          fetchUnresolvedReviewComments({
-            owner,
-            repo,
-            headBranch,
-            token: githubToken,
-            bus: ctx.events.bus,
-            context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-          }),
-      );
-
-      const now = new Date().toISOString();
-      const unresolvedThreadIds = Array.from(
-        new Set(reviewResult.comments.map((comment) => comment.threadId)),
-      );
-      const unresolvedCommentIds = reviewResult.comments.map((comment) => comment.id);
-      const unresolvedCommentFingerprints = reviewResult.comments.map((comment) => ({
-        id: comment.id,
-        threadId: comment.threadId,
-        path: comment.path,
-        line: comment.line,
-        isOutdated: comment.isOutdated,
-        bodyHash: hashString(comment.body),
-      }));
-
-      await persistRunState(ctx, mode, (data) => ({
-        ...data,
-        review: {
-          pr: reviewResult.pr,
-          unresolvedThreadIds,
-          unresolvedCommentIds,
-          unresolvedCommentFingerprints,
-          fetchedAt: now,
-        },
-        summary: {
-          ...(typeof data['summary'] === 'object' && data['summary']
-            ? data['summary']
-            : {}),
-          unresolvedReviewCount: reviewResult.comments.length,
-        },
-      }));
-
-      if (github.source === 'origin') {
-        await persistRunState(ctx, mode, (data) => ({
-          ...data,
-          repo: {
-            ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
-            github: { owner, repo, source: github.source },
-          },
-        }));
-      }
-
-      await logger.info(
-        renderSuccessSummary({
-          title: 'Review comments fetched',
-          details: [
-            ['Branch', headBranch],
-            [
-              'PR',
-              `${reviewResult.pr.owner}/${reviewResult.pr.repo}#${reviewResult.pr.number}`,
-            ],
-            ['URL', reviewResult.pr.url ?? 'unknown'],
-            ['Unresolved', `${reviewResult.comments.length} comment(s)`],
-          ],
-          nextSteps: ['silvan run list', 'silvan pr open'],
-        }),
-      );
-    });
-  });
+registerReviewCommands(cli, {
+  withCliContext,
+  runStep,
+  persistRunState,
+});
 
 cli
   .command('run list', 'List all recorded runs')
@@ -3435,177 +3168,15 @@ cli
     );
   });
 
-cli.command('ui', 'Launch the Ink dashboard').action(async (options: CliOptions) => {
-  if (options.json) {
-    await emitJsonError({
-      command: 'ui',
-      error: new SilvanError({
-        code: 'ui.json_unsupported',
-        message: 'JSON output is not supported for the UI command.',
-        userMessage: 'JSON output is not supported for the UI command.',
-        kind: 'validation',
-        nextSteps: ['Run `silvan ui` without --json.'],
-      }),
-    });
-    process.exitCode = 1;
-    return;
-  }
-  if (options.noUi) {
-    throw new Error('The --no-ui flag cannot be used with silvan ui.');
-  }
-  await withCliContext(
-    options,
-    'ui',
-    async (ctx) => {
-      let stopPolling = () => {};
-      try {
-        const githubToken = requireGitHubAuth(ctx.config);
-        const github = await requireGitHubConfig({
-          config: ctx.config,
-          repoRoot: ctx.repo.repoRoot,
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        });
-        stopPolling = startPrSnapshotPoller({
-          owner: github.owner,
-          repo: github.repo,
-          token: githubToken,
-          bus: ctx.events.bus,
-          context: {
-            runId: ctx.runId,
-            repoRoot: ctx.repo.repoRoot,
-            mode: ctx.events.mode,
-          },
-        });
-      } catch {
-        stopPolling = () => {};
-      }
-
-      try {
-        await mountDashboard(ctx.events.bus, ctx.state, ctx.config);
-      } finally {
-        stopPolling();
-      }
-    },
-    { lock: false },
-  );
+registerUiCommands(cli, {
+  withCliContext,
 });
 
-cli
-  .command(
-    'task start [taskRef]',
-    'Start a task (accepts: Linear ID like "ENG-123", GitHub issue like "gh-42" or URL, or local title)',
-  )
-  .option('--title <title>', 'Task title for local tasks')
-  .option('--desc <desc>', 'Task description for local tasks')
-  .option('--ac <criteria>', 'Acceptance criteria (can be used multiple times)')
-  .option('--from-file <path>', 'Load task details from a markdown file')
-  .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
-  .option('--priority <n>', 'Queue priority for this task (1-10)')
-  .option('--queue', 'Add the task to the queue instead of starting immediately')
-  .option('--plan-only', 'Generate plan without creating a worktree')
-  .option('--print-cd', 'Print cd command to worktree (default: true)', {
-    default: true,
-  })
-  .option('--open-shell', 'Open interactive shell in worktree')
-  .option('--exec <cmd>', 'Run command in worktree then exit')
-  .action((taskRef: string | undefined, options: CliOptions) =>
-    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
-      const jsonMode = Boolean(options.json);
-      const logger = createCliLogger(ctx);
-      let localInput = await buildLocalTaskInput(options);
-      let inferred =
-        taskRef ??
-        inferTaskRefFromBranch(ctx.repo.branch ?? '') ??
-        localInput?.title ??
-        '';
-
-      if (!inferred) {
-        if (!process.stdin.isTTY) {
-          throw new SilvanError({
-            code: 'task.missing_reference',
-            message:
-              'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-            userMessage: 'Task reference required.',
-            kind: 'validation',
-            nextSteps: [
-              'Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-              'Run `silvan help task-refs` for examples.',
-            ],
-          });
-        }
-        localInput = await promptLocalTaskInput();
-        inferred = localInput.title;
-      }
-
-      const shouldQueue = Boolean(options.queue || options.priority);
-      if (shouldQueue) {
-        const priority = parseQueuePriority(
-          options.priority,
-          ctx.config.queue.priority.default,
-        );
-        const request = {
-          id: crypto.randomUUID(),
-          type: 'start-task',
-          title: inferred,
-          ...(localInput?.description ? { description: localInput.description } : {}),
-          ...(localInput?.acceptanceCriteria?.length
-            ? { acceptanceCriteria: localInput.acceptanceCriteria }
-            : {}),
-          priority,
-          createdAt: new Date().toISOString(),
-        } satisfies Parameters<typeof writeQueueRequest>[0]['request'];
-        const path = await writeQueueRequest({ state: ctx.state, request });
-        if (jsonMode) {
-          await emitJsonSuccess({
-            command: 'task start',
-            data: { queued: request, path },
-            nextSteps: ['silvan queue run'],
-            repoRoot: ctx.repo.repoRoot,
-            runId: ctx.runId,
-          });
-          return;
-        }
-        if (!options.quiet) {
-          await logger.info(
-            renderSuccessSummary({
-              title: 'Task queued',
-              details: [
-                ['Request ID', request.id],
-                ['Priority', `${priority}`],
-                ['Title', request.title],
-                ['Path', path],
-              ],
-              nextSteps: ['silvan queue run', 'silvan queue status'],
-            }),
-          );
-        }
-        return;
-      }
-
-      await withAgentSessions(
-        Boolean(ctx.config.ai.sessions.persist),
-        async (sessions) => {
-          await startTaskFlow({
-            ctx,
-            ...(sessions ? { sessions } : {}),
-            taskRef: inferred,
-            ...(localInput ? { localInput } : {}),
-            printCd: options.printCd !== false,
-            answers: parseAnswerPairs(options.answer),
-            planOnly: options.planOnly ?? false,
-            skipPrompts: options.yes ?? false,
-            ...(options.exec ? { exec: options.exec } : {}),
-            ...(options.openShell ? { openShell: options.openShell } : {}),
-          });
-        },
-      );
-    }),
-  );
+registerTaskCommands(cli, {
+  withCliContext,
+  withAgentSessions,
+  parseQueuePriority,
+});
 
 registerQueueCommands(cli, {
   withCliContext,
@@ -3616,303 +3187,6 @@ registerQueueCommands(cli, {
   withAgentSessions,
   startTaskFlow,
 });
-
-async function buildLocalTaskInput(
-  options: CliOptions,
-): Promise<LocalTaskInput | undefined> {
-  const acValues = Array.isArray(options.ac)
-    ? options.ac
-    : options.ac
-      ? [options.ac]
-      : [];
-  const fromFile = options.fromFile?.trim();
-  let input: LocalTaskInput | undefined;
-
-  if (fromFile) {
-    const contents = await Bun.file(fromFile).text();
-    input = parseLocalTaskFile(contents);
-  }
-
-  if (!input && !options.title && !options.desc && acValues.length === 0) {
-    return undefined;
-  }
-
-  const merged: LocalTaskInput = {
-    title: options.title ?? input?.title ?? '',
-    ...(options.desc
-      ? { description: options.desc }
-      : input?.description
-        ? { description: input.description }
-        : {}),
-    ...(acValues.length > 0
-      ? { acceptanceCriteria: acValues }
-      : input?.acceptanceCriteria
-        ? { acceptanceCriteria: input.acceptanceCriteria }
-        : {}),
-  };
-
-  return merged;
-}
-
-async function startTaskFlow(options: {
-  ctx: RunContext;
-  sessions?: ReturnType<typeof createSessionPool>;
-  taskRef: string;
-  localInput?: LocalTaskInput;
-  printCd: boolean;
-  answers?: Record<string, string>;
-  planOnly?: boolean;
-  skipPrompts?: boolean;
-  exec?: string;
-  openShell?: boolean;
-}): Promise<void> {
-  const ctx = options.ctx;
-  const mode = ctx.events.mode;
-  let logger = createCliLogger(ctx);
-  if (options.planOnly && (options.exec || options.openShell)) {
-    throw new SilvanError({
-      code: 'task.plan_only_conflict',
-      message: 'Plan-only mode cannot open a worktree shell or run commands.',
-      userMessage:
-        'Plan-only mode does not create a worktree. Remove --plan-only to use --exec or --open-shell.',
-      kind: 'validation',
-      nextSteps: [
-        `Run: silvan task start ${formatShellArg(options.taskRef)}`,
-        'Or drop --plan-only to create a worktree.',
-      ],
-    });
-  }
-
-  const resolved = await runStep(ctx, 'task.resolve', 'Resolving task', () =>
-    resolveTask(options.taskRef, {
-      config: ctx.config,
-      repoRoot: ctx.repo.repoRoot,
-      state: ctx.state,
-      runId: ctx.runId,
-      ...(options.localInput ? { localInput: options.localInput } : {}),
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    }),
-  );
-
-  await logger.info(renderTaskHeader(resolved.task));
-
-  const providedAnswers = options.answers ?? {};
-  const hasProvidedAnswers = Object.keys(providedAnswers).length > 0;
-
-  let safeName: string | undefined;
-  let worktree: Awaited<ReturnType<typeof createWorktree>> | undefined;
-
-  if (!options.planOnly) {
-    safeName = buildWorktreeName(resolved.task);
-    worktree = await runStep(ctx, 'git.worktree.create', 'Creating worktree', async () =>
-      createWorktree({
-        repoRoot: ctx.repo.repoRoot,
-        name: safeName ?? 'task',
-        config: ctx.config,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-    );
-
-    const worktreePath = worktree.path;
-    ctx.repo.worktreePath = worktreePath;
-    if (worktree.branch) {
-      ctx.repo.branch = worktree.branch;
-    }
-    ctx.repo.isWorktree = true;
-    logger = createCliLogger(ctx);
-
-    await normalizeClaudeSettings({ worktreePath });
-
-    const installResult = await runStep(
-      ctx,
-      'deps.install',
-      'Installing dependencies',
-      () => installDependencies({ worktreePath }),
-    );
-    if (!installResult.ok) {
-      await logger.warn(`Warning: bun install failed in ${worktreePath}`, {
-        stderr: installResult.stderr,
-        stdout: installResult.stdout,
-      });
-    }
-  }
-
-  let plan = await runPlanner(ctx, {
-    taskRef: resolved.ref.raw,
-    task: resolved.task,
-    ...(safeName ? { worktreeName: safeName } : {}),
-    ...(hasProvidedAnswers ? { clarifications: providedAnswers } : {}),
-    ...(options.sessions ? { sessions: options.sessions } : {}),
-    allowMissingClarifications: true,
-  });
-
-  await logger.info(renderPlanSummary(summarizePlan(plan)));
-
-  const questions = normalizeClarificationQuestions(plan.questions);
-  if (questions.length > 0) {
-    const promptAllowed =
-      !options.skipPrompts && process.stdin.isTTY && ctx.events.mode !== 'json';
-    if (promptAllowed) {
-      await logger.info(
-        renderClarifications(questions, {
-          intro: 'The plan has questions that would help refine the implementation:',
-        }),
-      );
-      const clarifications = await collectClarifications({
-        questions,
-        answers: providedAnswers,
-      });
-      const missingRequired = questions.filter(
-        (question) =>
-          question.required !== false &&
-          (!clarifications[question.id] || clarifications[question.id]?.trim() === ''),
-      );
-      if (missingRequired.length > 0) {
-        await logger.info(
-          renderClarifications(missingRequired, {
-            title: 'Clarifications Required',
-            intro: 'This plan has required questions that must be answered:',
-          }),
-        );
-        const requiredId = missingRequired[0]?.id ?? 'question-id';
-        const needsInputNextSteps = [
-          `silvan agent clarify --answer ${requiredId}=<value>`,
-          'silvan agent clarify',
-        ];
-        await logger.info(renderNextSteps(needsInputNextSteps));
-        await logger.info('Status: Needs input (exit code 0)');
-        return;
-      }
-
-      const hasNewAnswers = Object.entries(clarifications).some(
-        ([id, value]) => value.trim() && value.trim() !== providedAnswers[id],
-      );
-      if (hasNewAnswers) {
-        plan = await runPlanner(ctx, {
-          taskRef: resolved.ref.raw,
-          task: resolved.task,
-          ...(safeName ? { worktreeName: safeName } : {}),
-          clarifications,
-          ...(options.sessions ? { sessions: options.sessions } : {}),
-          allowMissingClarifications: true,
-        });
-        await logger.info(
-          renderPlanSummary(summarizePlan(plan), { title: 'Updated Plan' }),
-        );
-        const updatedQuestions = normalizeClarificationQuestions(plan.questions);
-        const remainingRequired = updatedQuestions.filter(
-          (question) =>
-            question.required !== false &&
-            (!clarifications[question.id] || clarifications[question.id]?.trim() === ''),
-        );
-        if (remainingRequired && remainingRequired.length > 0) {
-          await logger.info(
-            renderClarifications(remainingRequired, {
-              title: 'Clarifications Required',
-              intro: 'This plan has required questions that must be answered:',
-            }),
-          );
-          const requiredId = remainingRequired[0]?.id ?? 'question-id';
-          const needsInputNextSteps = [
-            `silvan agent clarify --answer ${requiredId}=<value>`,
-            'silvan agent clarify',
-          ];
-          await logger.info(renderNextSteps(needsInputNextSteps));
-          await logger.info('Status: Needs input (exit code 0)');
-          return;
-        }
-      }
-    } else {
-      const missingRequired = questions.filter(
-        (question) =>
-          question.required !== false &&
-          (!providedAnswers[question.id] || providedAnswers[question.id]?.trim() === ''),
-      );
-      if (missingRequired.length > 0) {
-        await logger.info(
-          renderClarifications(questions, {
-            title: 'Clarifications Required',
-            intro: 'This plan has required questions that must be answered:',
-          }),
-        );
-        const requiredId = missingRequired[0]?.id ?? 'question-id';
-        const needsInputNextSteps = [
-          `silvan agent clarify --answer ${requiredId}=<value>`,
-          'silvan agent clarify',
-        ];
-        await logger.info(renderNextSteps(needsInputNextSteps));
-        await logger.info('Status: Needs input (exit code 0)');
-        return;
-      }
-    }
-  }
-
-  const readyTitle = options.planOnly ? 'Plan generated' : 'Ready to implement';
-  await logger.info(
-    renderReadySection({
-      title: readyTitle,
-      runId: ctx.runId,
-      ...(worktree?.path ? { worktreePath: worktree.path } : {}),
-    }),
-  );
-
-  const nextSteps: string[] = [];
-  if (worktree?.path && options.printCd) {
-    nextSteps.push(`cd ${worktree.path}`);
-  }
-  if (!options.planOnly) {
-    nextSteps.push('silvan agent run --apply');
-  } else {
-    nextSteps.push(`silvan task start ${formatShellArg(resolved.ref.raw)}`);
-  }
-
-  const nextStepsBlock = renderNextSteps(nextSteps);
-  if (nextStepsBlock) {
-    await logger.info(nextStepsBlock);
-  }
-
-  if (options.exec && worktree) {
-    runCommandInWorktree(options.exec, worktree.path);
-  }
-  if (options.openShell && worktree) {
-    openShellInWorktree(worktree.path);
-  }
-}
-
-function runCommandInWorktree(command: string, worktreePath: string): void {
-  if (!command.trim()) return;
-  const result = spawnSync(command, {
-    cwd: worktreePath,
-    stdio: 'inherit',
-    shell: true,
-  });
-  if (result.error) {
-    throw result.error;
-  }
-  if (typeof result.status === 'number' && result.status !== 0) {
-    process.exitCode = result.status;
-  }
-}
-
-function openShellInWorktree(worktreePath: string): void {
-  if (!process.stdin.isTTY) {
-    throw new Error('Cannot open a shell without a TTY.');
-  }
-  const shell =
-    process.platform === 'win32'
-      ? (process.env['COMSPEC'] ?? 'powershell.exe')
-      : (process.env['SHELL'] ?? '/bin/sh');
-  const result = spawnSync(shell, {
-    cwd: worktreePath,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-  if (result.error) {
-    throw result.error;
-  }
-}
 
 type QuickstartSampleInfo = {
   runId?: string;
@@ -4365,244 +3639,15 @@ cli
     }
   });
 
-// Config inspection commands
-cli
-  .command('config show', 'Display resolved configuration')
-  .action(async (options: CliOptions) => {
-    const { config, source } = await loadConfig(buildConfigOverrides(options));
-    if (options.json) {
-      await emitJsonSuccess({
-        command: 'config show',
-        data: { source, config },
-      });
-      return;
-    }
-    if (options.quiet) {
-      return;
-    }
-    const lines: string[] = [];
-    lines.push(renderSectionHeader('Configuration', { width: 60, kind: 'minor' }));
-    lines.push(
-      ...formatKeyValues(
-        [['Source', source?.path ?? 'defaults (no config file found)']],
-        { labelWidth: 14 },
-      ),
-    );
+registerConfigCommands(cli, {
+  buildConfigOverrides,
+  maybeSuggestCliRecovery,
+  getRegisteredCommandNames,
+});
 
-    lines.push('');
-    lines.push(renderSectionHeader('Key settings', { width: 60, kind: 'minor' }));
-    lines.push(
-      ...formatKeyValues(
-        [
-          ['Default branch', config.repo.defaultBranch],
-          ['Branch prefix', config.naming.branchPrefix],
-          ['Worktree dir', config.naming.worktreeDir],
-          ['State mode', config.state.mode],
-        ],
-        { labelWidth: 14 },
-      ),
-    );
-
-    lines.push('');
-    lines.push(renderSectionHeader('AI settings', { width: 60, kind: 'minor' }));
-    const aiSettings: Array<[string, string]> = [
-      ['Default model', config.ai.models.default ?? 'auto'],
-      ['Max turns', String(config.ai.budgets.default.maxTurns ?? 'unset')],
-    ];
-    if (typeof config.ai.budgets.default.maxBudgetUsd === 'number') {
-      aiSettings.push(['Max budget', `$${config.ai.budgets.default.maxBudgetUsd}`]);
-    }
-    lines.push(...formatKeyValues(aiSettings, { labelWidth: 14 }));
-
-    lines.push('');
-    lines.push(renderSectionHeader('Task providers', { width: 60, kind: 'minor' }));
-    lines.push(
-      ...formatKeyValues(
-        [['Enabled', config.task.providers.enabled.join(', ') || 'none']],
-        { labelWidth: 14 },
-      ),
-    );
-
-    lines.push('');
-    lines.push(renderSectionHeader('Verify commands', { width: 60, kind: 'minor' }));
-    if (config.verify.commands.length === 0) {
-      lines.push(...formatKeyValues([['Status', 'None configured']], { labelWidth: 14 }));
-    } else {
-      lines.push(
-        ...config.verify.commands.map((cmd) => `${padLabel(cmd.name, 14)} ${cmd.cmd}`),
-      );
-    }
-
-    lines.push(renderNextSteps(['silvan config validate', 'silvan doctor']));
-    console.log(lines.join('\n'));
-  });
-
-cli
-  .command('config validate', 'Validate configuration without running')
-  .action(async (options: CliOptions) => {
-    try {
-      const { config, source } = await loadConfig(buildConfigOverrides(options));
-      const checks: Array<{ name: string; ok: boolean; message: string }> = [];
-
-      // Check config loaded
-      checks.push({
-        name: 'Config file',
-        ok: true,
-        message: source ? `Loaded from ${source.path}` : 'Using defaults',
-      });
-
-      // Check GitHub auth
-      const hasGitHubToken = Boolean(
-        config.github.token || process.env['GITHUB_TOKEN'] || process.env['GH_TOKEN'],
-      );
-      checks.push({
-        name: 'GitHub token',
-        ok: hasGitHubToken,
-        message: hasGitHubToken
-          ? 'Found'
-          : 'Missing (set GITHUB_TOKEN or configure github.token)',
-      });
-
-      // Check Linear auth if enabled
-      if (config.task.providers.enabled.includes('linear')) {
-        const hasLinearToken = Boolean(
-          config.linear.token || process.env['LINEAR_API_KEY'],
-        );
-        checks.push({
-          name: 'Linear token',
-          ok: hasLinearToken,
-          message: hasLinearToken
-            ? 'Found'
-            : 'Missing (set LINEAR_API_KEY or configure linear.token)',
-        });
-      }
-
-      // Check verify commands
-      const hasVerifyCommands = config.verify.commands.length > 0;
-      checks.push({
-        name: 'Verify commands',
-        ok: hasVerifyCommands,
-        message: hasVerifyCommands
-          ? `${config.verify.commands.length} command(s) configured`
-          : 'None configured (runs will skip verification)',
-      });
-
-      if (options.json) {
-        const allOk = checks.every((c) => c.ok);
-        await emitJsonResult({
-          command: 'config validate',
-          success: allOk,
-          data: { ok: allOk, checks },
-          ...(allOk
-            ? {}
-            : {
-                error: {
-                  code: 'config.validation_warnings',
-                  message: 'Configuration checks returned warnings.',
-                  details: {
-                    warnings: checks.filter((check) => !check.ok),
-                  },
-                  suggestions: ['Run `silvan config show` for details.'],
-                },
-              }),
-        });
-        if (!allOk) {
-          process.exitCode = 1;
-        }
-        return;
-      }
-
-      if (options.quiet) {
-        if (!checks.every((c) => c.ok)) {
-          process.exitCode = 1;
-        }
-        return;
-      }
-
-      const lines: string[] = [];
-      lines.push(
-        renderSectionHeader('Configuration checks', { width: 60, kind: 'minor' }),
-      );
-      for (const check of checks) {
-        const prefix = check.ok ? colors.success('ok') : colors.warning('warn');
-        lines.push(`${prefix}  ${check.name}: ${check.message}`);
-      }
-
-      const allOk = checks.every((c) => c.ok);
-      if (!allOk) {
-        lines.push('');
-        lines.push('Some checks have warnings. Fix them for full functionality.');
-        process.exitCode = 1;
-      } else {
-        lines.push('');
-        lines.push('Configuration is valid.');
-      }
-
-      lines.push(renderNextSteps(['silvan config show', 'silvan doctor']));
-      console.log(lines.join('\n'));
-    } catch (error) {
-      const normalized = normalizeError(error);
-      const assistant = await maybeSuggestCliRecovery({
-        error: normalized,
-        command: 'config validate',
-      });
-      if (options.json) {
-        await emitJsonError({
-          command: 'config validate',
-          error: normalized,
-          assistant,
-        });
-      } else {
-        const rendered = renderCliError(normalized, {
-          debug: Boolean(options.debug),
-          trace: Boolean(options.trace),
-          commandNames: getRegisteredCommandNames(),
-          ...(assistant ? { assistant } : {}),
-        });
-        console.error(rendered.message);
-      }
-      process.exitCode = 1;
-    }
-  });
-
-cli
-  .command('doctor', 'Check environment and configuration')
-  .option('--network', 'Check network connectivity to providers')
-  .action(async (options: CliOptions) => {
-    const mode: EventMode = options.json ? 'json' : 'headless';
-    await withCliContext(options, mode, async (ctx) => {
-      const report = await collectDoctorReport(ctx, {
-        network: Boolean(options.network),
-      });
-      if (options.json) {
-        await emitJsonSuccess({
-          command: 'doctor',
-          data: report,
-          bus: ctx.events.bus,
-          runId: ctx.runId,
-          repoRoot: ctx.repo.repoRoot,
-        });
-      } else {
-        if (options.quiet) {
-          if (!report.ok) {
-            process.exitCode = 1;
-          }
-          return;
-        }
-        const lines: string[] = [];
-        lines.push(renderSectionHeader('Doctor report', { width: 60, kind: 'minor' }));
-        for (const check of report.checks) {
-          const prefix = check.ok ? colors.success('ok') : colors.error('fail');
-          lines.push(`${prefix} ${check.name} ${check.detail}`);
-        }
-        lines.push(renderNextSteps(['silvan config validate', 'silvan config show']));
-        console.log(lines.join('\n'));
-      }
-      if (!report.ok) {
-        process.exitCode = 1;
-      }
-    });
-  });
+registerDoctorCommands(cli, {
+  withCliContext,
+});
 
 cli
   .command('convo show <runId>', 'Show conversation context')
@@ -4943,93 +3988,6 @@ async function outputVersionInfo(): Promise<void> {
   }
 }
 
-async function handlePrOpen(options: CliOptions): Promise<void> {
-  const mode: EventMode = options.json ? 'json' : 'headless';
-  await withCliContext(options, mode, async (ctx) => {
-    const logger = createCliLogger(ctx);
-    const githubToken = requireGitHubAuth(ctx.config);
-    const github = await requireGitHubConfig({
-      config: ctx.config,
-      repoRoot: ctx.repo.repoRoot,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
-    const { owner, repo } = github;
-
-    const branchResult = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: ctx.repo.repoRoot,
-      bus: ctx.events.bus,
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-    });
-    const headBranch = branchResult.stdout.trim();
-    const baseBranch = ctx.config.github.baseBranch ?? ctx.config.repo.defaultBranch;
-    const title = headBranch;
-    const body = `Automated PR for ${headBranch}.`;
-
-    const prResult = await runStep(ctx, 'github.pr.open', 'Open or update PR', async () =>
-      openOrUpdatePr({
-        owner,
-        repo,
-        headBranch,
-        baseBranch,
-        title,
-        body,
-        token: githubToken,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-    );
-
-    await runStep(ctx, 'github.review.request', 'Request reviewers', async () =>
-      requestReviewers({
-        pr: prResult.pr,
-        reviewers: ctx.config.github.reviewers,
-        requestCopilot: ctx.config.github.requestCopilot,
-        token: githubToken,
-        bus: ctx.events.bus,
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode },
-      }),
-    );
-
-    await persistRunState(ctx, mode, (data) => ({
-      ...data,
-      summary: {
-        ...(typeof data['summary'] === 'object' && data['summary']
-          ? data['summary']
-          : {}),
-        prUrl: prResult.pr.url,
-      },
-    }));
-
-    const prTitle =
-      prResult.action === 'opened'
-        ? 'Pull request opened'
-        : prResult.action === 'updated'
-          ? 'Pull request updated'
-          : 'Pull request up to date';
-    await logger.info(
-      renderSuccessSummary({
-        title: prTitle,
-        details: [
-          ['PR', `${prResult.pr.owner}/${prResult.pr.repo}#${prResult.pr.number}`],
-          ['URL', prResult.pr.url ?? 'unknown'],
-        ],
-        nextSteps: ['silvan ci wait', 'silvan review unresolved'],
-      }),
-    );
-
-    if (github.source === 'origin') {
-      await persistRunState(ctx, mode, (data) => ({
-        ...data,
-        repo: {
-          ...(typeof data['repo'] === 'object' && data['repo'] ? data['repo'] : {}),
-          github: { owner, repo, source: github.source },
-        },
-      }));
-    }
-  });
-}
-
 async function runStep<T>(
   ctx: RunContext,
   stepId: string,
@@ -5071,23 +4029,6 @@ async function runStep<T>(
   }
 }
 
-function buildEmitContext(ctx: RunContext): EmitContext {
-  return {
-    runId: ctx.runId,
-    repoRoot: ctx.repo.repoRoot,
-    mode: ctx.events.mode,
-    ...(ctx.repo.worktreePath ? { worktreePath: ctx.repo.worktreePath } : {}),
-  };
-}
-
-function createCliLogger(ctx: RunContext) {
-  return createLogger({
-    bus: ctx.events.bus,
-    source: 'cli',
-    context: buildEmitContext(ctx),
-  });
-}
-
 async function persistRunState(
   ctx: RunContext,
   mode: EventMode,
@@ -5119,38 +4060,4 @@ async function withAgentSessions<T>(
   } finally {
     sessions.close();
   }
-}
-
-function parseAnswerPairs(raw: string | string[] | undefined): Record<string, string> {
-  if (!raw) return {};
-  const entries = Array.isArray(raw) ? raw : [raw];
-  const answers: Record<string, string> = {};
-  for (const entry of entries) {
-    const [id, ...rest] = entry.split('=');
-    const value = rest.join('=').trim();
-    if (!id || !value) continue;
-    answers[id.trim()] = value;
-  }
-  return answers;
-}
-
-function normalizeClarificationQuestions(
-  questions:
-    | Array<{ id: string; text: string; required?: boolean | undefined }>
-    | undefined,
-): ClarificationQuestion[] {
-  if (!questions) return [];
-  return questions.map((question) => ({
-    id: question.id,
-    text: question.text,
-    ...(question.required === undefined ? {} : { required: question.required }),
-  }));
-}
-
-function formatShellArg(value: string): string {
-  const trimmed = value.trim();
-  if (!/[\s"'`]/.test(trimmed)) {
-    return trimmed;
-  }
-  return `"${trimmed.replace(/(["\\])/g, '\\$1')}"`;
 }

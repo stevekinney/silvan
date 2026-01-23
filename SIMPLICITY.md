@@ -101,7 +101,7 @@ Primary goal: reduce cognitive load and make local reasoning possible without ch
 - [x] Split `src/core/run-controller.ts` into `run-plan.ts`, `run-execute.ts`, `run-review.ts`, `run-verify.ts` with a thin orchestrator.
 - [ ] Move tool definitions in `src/agent/registry.ts` to a single array and keep policy checks in one function.
 - [ ] Create a single `isProviderEnabled(config, provider)` helper and use it across `task/resolve` and lifecycle.
-- [ ] Group CLI commands into `src/cli/commands/*` and keep shared formatting in `src/cli/output/*`.
+- [x] Group CLI commands into `src/cli/commands/*` and keep shared formatting in `src/cli/output/*`.
 - [ ] Create `buildQueueRequestView(request, config, nowMs)` and reuse in CLI + UI.
 - [ ] Replace large option bags in `executePlan` and run-controller with smaller explicit parameters.
 - [ ] Add a file-size guard (lint rule or CI script) to flag new files > 800 lines.
