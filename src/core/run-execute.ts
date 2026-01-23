@@ -4,7 +4,6 @@ import { ProseWriter } from 'prose-writer';
 import { executePlan } from '../agent/executor';
 import { planSchema } from '../agent/schemas';
 import { draftPullRequest } from '../ai/cognition/pr-writer';
-import { decideVerification } from '../ai/cognition/verifier';
 import { createConversationStore } from '../ai/conversation';
 import { requireGitHubAuth, requireGitHubConfig } from '../config/validate';
 import { runGit } from '../git/exec';
@@ -22,11 +21,8 @@ import {
 } from '../task/lifecycle';
 import type { Task } from '../task/types';
 import { hashString } from '../utils/hash';
-import { runVerifyCommands } from '../verify/run';
-import { triageVerificationFailures } from '../verify/triage';
 import type { RunContext } from './context';
 import {
-  attemptVerificationAutoFix,
   changePhase,
   createCheckpointCommit,
   getArtifactEntry,
@@ -36,12 +32,12 @@ import {
   getStepRecord,
   getToolBudget,
   heartbeatStep,
-  recordVerificationAssist,
   reviewRequestKey,
   type RunControllerOptions,
   runStep,
   updateState,
 } from './run-helpers';
+import { runVerification } from './run-verify';
 
 export async function runImplementation(
   ctx: RunContext,
@@ -196,128 +192,13 @@ export async function runImplementation(
     }));
   }
 
-  await changePhase(ctx, 'verify');
-  const verifyStep = getStepRecord(data, 'verify.run');
-  const existingVerify = data['verifySummary'];
-  let verifyReport =
-    verifyStep?.status === 'done' &&
-    typeof existingVerify === 'object' &&
-    existingVerify &&
-    (existingVerify as { ok?: boolean }).ok === true
-      ? { ok: true, results: [] }
-      : await runStep(
-          ctx,
-          'verify.run',
-          'Run verification',
-          () => runVerifyCommands(ctx.config, { cwd: worktreeRoot }),
-          {
-            artifacts: (report) => ({ report }),
-          },
-        );
-  await updateState(ctx, (data) => ({
-    ...data,
-    verifySummary: {
-      ok: verifyReport.ok,
-      lastRunAt: new Date().toISOString(),
-    },
-  }));
-
-  if (!verifyReport.ok) {
-    await recordVerificationAssist({
-      ctx,
-      report: verifyReport,
-      context: 'verify',
-      emitContext,
-    });
-    const results = (
-      verifyReport.results as Array<{
-        name: string;
-        exitCode: number;
-        stderr: string;
-      }>
-    ).map((result) => ({
-      name: result.name,
-      exitCode: result.exitCode,
-      stderr: result.stderr,
-    }));
-
-    let failedResults = results.filter((result) => result.exitCode !== 0);
-    let triage = triageVerificationFailures(failedResults);
-    const autoFixOutcome = await attemptVerificationAutoFix({
-      ctx,
-      emitContext,
-      conversationStore,
-      worktreeRoot,
-      failures: failedResults,
-      triageClassified: triage.classified,
-      controllerOptions: options,
-      context: 'verify',
-    });
-    if (autoFixOutcome.report) {
-      verifyReport = autoFixOutcome.report;
-      if (!verifyReport.ok) {
-        const retryResults = (
-          verifyReport.results as Array<{
-            name: string;
-            exitCode: number;
-            stderr: string;
-          }>
-        )
-          .filter((result) => result.exitCode !== 0)
-          .map((result) => ({
-            name: result.name,
-            exitCode: result.exitCode,
-            stderr: result.stderr,
-          }));
-        failedResults = retryResults;
-        triage = triageVerificationFailures(failedResults);
-        await recordVerificationAssist({
-          ctx,
-          report: verifyReport,
-          context: 'verify',
-          emitContext,
-        });
-      }
-    }
-    if (!autoFixOutcome.resolved) {
-      const decision = await runStep(
-        ctx,
-        'verify.decide',
-        'Decide verification next steps',
-        async () => {
-          if (options.apply && !triage.classified) {
-            return decideVerification({
-              report: {
-                ok: verifyReport.ok,
-                results: failedResults,
-              },
-              store: conversationStore,
-              config: ctx.config,
-              ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
-              context: emitContext,
-            });
-          }
-          return triage.decision;
-        },
-        {
-          inputs: {
-            classified: triage.classified,
-            commandCount: failedResults.length,
-          },
-          artifacts: (result) => ({ decision: result }),
-        },
-      );
-
-      await updateState(ctx, (data) => ({
-        ...data,
-        verificationDecisionSummary: {
-          commands: decision.commands,
-          askUser: decision.askUser ?? false,
-        },
-      }));
-      throw new Error('Verification failed');
-    }
-  }
+  await runVerification({
+    ctx,
+    controllerOptions: options,
+    conversationStore,
+    emitContext,
+    worktreeRoot,
+  });
 
   const localGateConfig = ctx.config.review.localGate;
   const gateBaseBranch = ctx.config.github.baseBranch ?? ctx.config.repo.defaultBranch;

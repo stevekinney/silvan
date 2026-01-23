@@ -98,7 +98,7 @@ Primary goal: reduce cognitive load and make local reasoning possible without ch
 
 ## Checklist: concrete actions to simplify and maintain
 
-- [ ] Split `src/core/run-controller.ts` into `run-plan.ts`, `run-execute.ts`, `run-review.ts`, `run-verify.ts` with a thin orchestrator.
+- [x] Split `src/core/run-controller.ts` into `run-plan.ts`, `run-execute.ts`, `run-review.ts`, `run-verify.ts` with a thin orchestrator.
 - [ ] Move tool definitions in `src/agent/registry.ts` to a single array and keep policy checks in one function.
 - [ ] Create a single `isProviderEnabled(config, provider)` helper and use it across `task/resolve` and lifecycle.
 - [ ] Group CLI commands into `src/cli/commands/*` and keep shared formatting in `src/cli/output/*`.
