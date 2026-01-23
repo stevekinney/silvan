@@ -27,10 +27,12 @@ describe('executePlan', () => {
       model: 'test',
       repoRoot: '/tmp',
       config,
-      dryRun: true,
-      allowDestructive: false,
-      allowDangerous: false,
-      context: { runId: 'run-1', repoRoot: '/tmp' },
+      policy: {
+        dryRun: true,
+        allowDestructive: false,
+        allowDangerous: false,
+      },
+      runtime: { context: { runId: 'run-1', repoRoot: '/tmp' } },
       deps: {
         createRegistry: (_context) =>
           ({
@@ -65,10 +67,12 @@ describe('executePlan', () => {
         model: 'test',
         repoRoot: '/tmp',
         config,
-        dryRun: true,
-        allowDestructive: false,
-        allowDangerous: false,
-        context: { runId: 'run-2', repoRoot: '/tmp' },
+        policy: {
+          dryRun: true,
+          allowDestructive: false,
+          allowDangerous: false,
+        },
+        runtime: { context: { runId: 'run-2', repoRoot: '/tmp' } },
         deps: {
           createRegistry: (_context) =>
             ({

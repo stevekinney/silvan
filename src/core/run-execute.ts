@@ -136,17 +136,21 @@ export async function runImplementation(
               model: execModel,
               repoRoot: worktreeRoot,
               config: ctx.config,
-              dryRun: Boolean(options.dryRun),
-              allowDestructive: Boolean(options.apply),
-              allowDangerous: Boolean(options.dangerous),
-              ...(options.sessions ? { sessionPool: options.sessions } : {}),
-              bus: ctx.events.bus,
-              context: emitContext,
-              state: ctx.state,
-              ...execBudgets,
-              ...getToolBudget(ctx.config),
-              heartbeat: () => heartbeatStep(ctx, 'agent.execute'),
-              toolCallLog,
+              policy: {
+                dryRun: Boolean(options.dryRun),
+                allowDestructive: Boolean(options.apply),
+                allowDangerous: Boolean(options.dangerous),
+                ...getToolBudget(ctx.config),
+              },
+              limits: execBudgets,
+              runtime: {
+                ...(options.sessions ? { sessionPool: options.sessions } : {}),
+                ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+                context: emitContext,
+                state: ctx.state,
+                heartbeat: () => heartbeatStep(ctx, 'agent.execute'),
+                toolCallLog,
+              },
             });
 
             const execConversation = appendMessages(execSnapshot.conversation, {

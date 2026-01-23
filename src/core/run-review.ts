@@ -188,16 +188,20 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
               model: execModel,
               repoRoot: worktreeRoot,
               config: ctx.config,
-              dryRun: Boolean(options.dryRun),
-              allowDestructive: Boolean(options.apply),
-              allowDangerous: Boolean(options.dangerous),
-              ...execBudgets,
-              ...getToolBudget(ctx.config),
-              ...(options.sessions ? { sessionPool: options.sessions } : {}),
-              bus: ctx.events.bus,
-              context: emitContext,
-              state: ctx.state,
-              heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
+              policy: {
+                dryRun: Boolean(options.dryRun),
+                allowDestructive: Boolean(options.apply),
+                allowDangerous: Boolean(options.dangerous),
+                ...getToolBudget(ctx.config),
+              },
+              limits: execBudgets,
+              runtime: {
+                ...(options.sessions ? { sessionPool: options.sessions } : {}),
+                ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+                context: emitContext,
+                state: ctx.state,
+                heartbeat: () => heartbeatStep(ctx, 'ci.fix.apply'),
+              },
             });
 
             const execConversation = appendMessages(execSnapshot.conversation, {
@@ -829,16 +833,20 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
               model: execModel,
               repoRoot: worktreeRoot,
               config: ctx.config,
-              dryRun: Boolean(options.dryRun),
-              allowDestructive: Boolean(options.apply),
-              allowDangerous: Boolean(options.dangerous),
-              ...execBudgets,
-              ...getToolBudget(ctx.config),
-              ...(options.sessions ? { sessionPool: options.sessions } : {}),
-              bus: ctx.events.bus,
-              context: emitContext,
-              state: ctx.state,
-              heartbeat: () => heartbeatStep(ctx, 'review.apply'),
+              policy: {
+                dryRun: Boolean(options.dryRun),
+                allowDestructive: Boolean(options.apply),
+                allowDangerous: Boolean(options.dangerous),
+                ...getToolBudget(ctx.config),
+              },
+              limits: execBudgets,
+              runtime: {
+                ...(options.sessions ? { sessionPool: options.sessions } : {}),
+                ...(ctx.events.bus ? { bus: ctx.events.bus } : {}),
+                context: emitContext,
+                state: ctx.state,
+                heartbeat: () => heartbeatStep(ctx, 'review.apply'),
+              },
             });
 
             const execConversation = appendMessages(execSnapshot.conversation, {

@@ -9,21 +9,23 @@ import type { ClaudeSessionOptions } from './sdk';
 import { createToolHooks } from './sdk';
 import type { SessionPool } from './session';
 
-export type ExecutorInput = {
-  snapshot: ConversationSnapshot;
-  model: string;
-  repoRoot: string;
-  config: Parameters<typeof createToolRegistry>[0]['config'];
+type ExecutionPolicy = {
   dryRun: boolean;
   allowDestructive: boolean;
   allowDangerous: boolean;
-  bus?: EventBus;
-  context: EmitContext;
-  state?: StateStore;
+  toolBudget?: { maxCalls?: number; maxDurationMs?: number };
+};
+
+type ExecutionLimits = {
   maxTurns?: number;
   maxBudgetUsd?: number;
   maxThinkingTokens?: number;
-  toolBudget?: { maxCalls?: number; maxDurationMs?: number };
+};
+
+type ExecutionRuntime = {
+  bus?: EventBus;
+  context: EmitContext;
+  state?: StateStore;
   sessionPool?: SessionPool;
   heartbeat?: () => Promise<void>;
   toolCallLog?: Array<{
@@ -33,6 +35,16 @@ export type ExecutorInput = {
     resultDigest?: string;
     ok: boolean;
   }>;
+};
+
+export type ExecutorInput = {
+  snapshot: ConversationSnapshot;
+  model: string;
+  repoRoot: string;
+  config: Parameters<typeof createToolRegistry>[0]['config'];
+  policy: ExecutionPolicy;
+  runtime: ExecutionRuntime;
+  limits?: ExecutionLimits;
   deps?: {
     createRegistry?: typeof createToolRegistry;
     createToolGate?: typeof createClaudeToolGate;
@@ -46,17 +58,18 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
   const toolGateFactory = input.deps?.createToolGate ?? createClaudeToolGate;
   const toolHooksFactory = input.deps?.createToolHooks ?? createToolHooks;
   const agentInvoker = input.deps?.invokeAgent ?? invokeAgent;
+  const { policy, runtime, limits } = input;
 
   const registry = registryFactory({
     repoRoot: input.repoRoot,
     config: input.config,
-    dryRun: input.dryRun,
-    allowDestructive: input.allowDestructive,
-    allowDangerous: input.allowDangerous,
-    ...(input.toolBudget ? { toolBudget: input.toolBudget } : {}),
-    emitContext: input.context,
-    ...(input.bus ? { bus: input.bus } : {}),
-    ...(input.state ? { state: input.state } : {}),
+    dryRun: policy.dryRun,
+    allowDestructive: policy.allowDestructive,
+    allowDangerous: policy.allowDangerous,
+    ...(policy.toolBudget ? { toolBudget: policy.toolBudget } : {}),
+    emitContext: runtime.context,
+    ...(runtime.bus ? { bus: runtime.bus } : {}),
+    ...(runtime.state ? { state: runtime.state } : {}),
   });
 
   const builtinTools = {
@@ -71,23 +84,23 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     builtinTools.dangerous.length;
 
   const start = performance.now();
-  if (input.bus) {
-    await input.bus.emit(
+  if (runtime.bus) {
+    await runtime.bus.emit(
       createEnvelope({
         type: 'ai.session_started',
         source: 'ai',
         level: 'info',
-        context: input.context,
+        context: runtime.context,
         payload: {
           model: { provider: 'anthropic', model: input.model },
           task: 'execute',
           allowedTools: allowedToolCount,
-          ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
-          ...(typeof input.maxBudgetUsd === 'number'
-            ? { maxBudgetUsd: input.maxBudgetUsd }
+          ...(typeof limits?.maxTurns === 'number' ? { maxTurns: limits.maxTurns } : {}),
+          ...(typeof limits?.maxBudgetUsd === 'number'
+            ? { maxBudgetUsd: limits.maxBudgetUsd }
             : {}),
-          ...(typeof input.maxThinkingTokens === 'number'
-            ? { maxThinkingTokens: input.maxThinkingTokens }
+          ...(typeof limits?.maxThinkingTokens === 'number'
+            ? { maxThinkingTokens: limits.maxThinkingTokens }
             : {}),
         },
       }),
@@ -97,26 +110,26 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
   let result;
   try {
     const toolHooks = toolHooksFactory({
-      ...(input.bus ? { bus: input.bus } : {}),
-      context: input.context,
-      ...(input.heartbeat ? { onHeartbeat: input.heartbeat } : {}),
-      ...(input.toolCallLog
+      ...(runtime.bus ? { bus: runtime.bus } : {}),
+      context: runtime.context,
+      ...(runtime.heartbeat ? { onHeartbeat: runtime.heartbeat } : {}),
+      ...(runtime.toolCallLog
         ? {
             onToolCall: (entry) => {
-              input.toolCallLog?.push(entry);
+              runtime.toolCallLog?.push(entry);
             },
           }
         : {}),
     });
 
-    const permissionMode: ClaudeSessionOptions['permissionMode'] = input.dryRun
+    const permissionMode: ClaudeSessionOptions['permissionMode'] = policy.dryRun
       ? 'plan'
       : 'dontAsk';
     const toolGate = toolGateFactory({
       registry: registry.armorer,
-      readOnly: input.dryRun,
-      allowMutation: input.allowDestructive,
-      allowDangerous: input.allowDangerous && input.allowDestructive && !input.dryRun,
+      readOnly: policy.dryRun,
+      allowMutation: policy.allowDestructive,
+      allowDangerous: policy.allowDangerous && policy.allowDestructive && !policy.dryRun,
       builtin: builtinTools,
       messages: {
         dangerous: 'Use --apply and --dangerous to allow this tool.',
@@ -139,40 +152,40 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
       mcpServers: { 'silvan-tools': registry.sdkServer },
       canUseTool,
       hooks: toolHooks,
-      ...(typeof input.maxTurns === 'number' ? { maxTurns: input.maxTurns } : {}),
-      ...(typeof input.maxBudgetUsd === 'number'
-        ? { maxBudgetUsd: input.maxBudgetUsd }
+      ...(typeof limits?.maxTurns === 'number' ? { maxTurns: limits.maxTurns } : {}),
+      ...(typeof limits?.maxBudgetUsd === 'number'
+        ? { maxBudgetUsd: limits.maxBudgetUsd }
         : {}),
-      ...(typeof input.maxThinkingTokens === 'number'
-        ? { maxThinkingTokens: input.maxThinkingTokens }
+      ...(typeof limits?.maxThinkingTokens === 'number'
+        ? { maxThinkingTokens: limits.maxThinkingTokens }
         : {}),
     };
 
-    const session = input.sessionPool?.get('execute', sessionOptions);
+    const session = runtime.sessionPool?.get('execute', sessionOptions);
     const runOptions = session
       ? { snapshot: input.snapshot, model: input.model, session }
       : { snapshot: input.snapshot, ...sessionOptions };
     result = await agentInvoker({
       ...runOptions,
-      ...(input.bus ? { bus: input.bus } : {}),
-      ...(input.context ? { context: input.context } : {}),
+      ...(runtime.bus ? { bus: runtime.bus } : {}),
+      ...(runtime.context ? { context: runtime.context } : {}),
     });
   } finally {
-    if (input.bus) {
+    if (runtime.bus) {
       const durationMs = Math.round(performance.now() - start);
-      await input.bus.emit(
+      await runtime.bus.emit(
         createEnvelope({
           type: 'ai.session_finished',
           source: 'ai',
           level: 'info',
-          context: input.context,
+          context: runtime.context,
           payload: {
             model: { provider: 'anthropic', model: input.model },
             task: 'execute',
             ok: result?.type === 'result' && result?.subtype === 'success',
             durationMs,
-            ...(typeof input.toolCallLog?.length === 'number'
-              ? { toolCalls: input.toolCallLog.length }
+            ...(typeof runtime.toolCallLog?.length === 'number'
+              ? { toolCalls: runtime.toolCallLog.length }
               : {}),
           },
         }),

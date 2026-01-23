@@ -350,18 +350,22 @@ export async function attemptVerificationAutoFix(options: {
           model: execModel,
           repoRoot: options.worktreeRoot,
           config: options.ctx.config,
-          dryRun: Boolean(options.controllerOptions.dryRun),
-          allowDestructive: Boolean(options.controllerOptions.apply),
-          allowDangerous: Boolean(options.controllerOptions.dangerous),
-          ...execBudgets,
-          ...getToolBudget(options.ctx.config),
-          ...(options.controllerOptions.sessions
-            ? { sessionPool: options.controllerOptions.sessions }
-            : {}),
-          bus: options.ctx.events.bus,
-          context: options.emitContext,
-          state: options.ctx.state,
-          heartbeat: () => heartbeatStep(options.ctx, 'verify.autofix.apply'),
+          policy: {
+            dryRun: Boolean(options.controllerOptions.dryRun),
+            allowDestructive: Boolean(options.controllerOptions.apply),
+            allowDangerous: Boolean(options.controllerOptions.dangerous),
+            ...getToolBudget(options.ctx.config),
+          },
+          limits: execBudgets,
+          runtime: {
+            ...(options.controllerOptions.sessions
+              ? { sessionPool: options.controllerOptions.sessions }
+              : {}),
+            ...(options.ctx.events.bus ? { bus: options.ctx.events.bus } : {}),
+            context: options.emitContext,
+            state: options.ctx.state,
+            heartbeat: () => heartbeatStep(options.ctx, 'verify.autofix.apply'),
+          },
         });
 
         const execConversation = appendMessages(execSnapshot.conversation, {
