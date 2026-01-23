@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { readdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { access, readdir } from 'node:fs/promises';
+import { basename, join, relative } from 'node:path';
 
 import { cac } from 'cac';
 
@@ -44,6 +44,7 @@ import { formatRepoLabel } from '../core/repo-label';
 import {
   resumeRun,
   runImplementation,
+  runLearningNotes,
   runPlanner,
   runRecovery,
   runReviewLoop,
@@ -68,7 +69,15 @@ import { waitForCi } from '../github/ci';
 import { findMergedPr, openOrUpdatePr, requestReviewers } from '../github/pr';
 import { fetchUnresolvedReviewComments } from '../github/review';
 import { findHelpTopic, listHelpTopics } from '../help/topics';
-import { runQueueRequests } from '../queue/runner';
+import { evaluateLearningTargets } from '../learning/auto-apply';
+import { applyLearningNotes } from '../learning/notes';
+import {
+  applyQueuePriority,
+  PRIORITY_MAX,
+  PRIORITY_MIN,
+  sortByPriority,
+} from '../queue/priority';
+import { runPriorityQueueRequests, runQueueRequests } from '../queue/runner';
 import {
   deriveConvergenceFromSnapshot,
   loadRunSnapshot,
@@ -78,11 +87,22 @@ import {
 import type { ArtifactEntry } from '../state/artifacts';
 import { readArtifact } from '../state/artifacts';
 import {
+  type LearningRequest,
+  listLearningRequests,
+  readLearningRequest,
+  writeLearningRequest,
+} from '../state/learning';
+import {
   loadOnboardingState,
   markFirstRunCompleted,
   markQuickstartCompleted,
 } from '../state/onboarding';
-import { deleteQueueRequest, listQueueRequests } from '../state/queue';
+import {
+  deleteQueueRequest,
+  listQueueRequests,
+  setQueueRequestPriority,
+  writeQueueRequest,
+} from '../state/queue';
 import { initStateStore } from '../state/store';
 import { promptLocalTaskInput } from '../task/prompt-local-task';
 import { type LocalTaskInput, parseLocalTaskFile } from '../task/providers/local';
@@ -183,6 +203,8 @@ type CliOptions = {
   repo?: string;
   answer?: string | string[];
   planOnly?: boolean;
+  priority?: string;
+  queue?: boolean;
   githubToken?: string;
   linearToken?: string;
   model?: string;
@@ -730,6 +752,15 @@ function parseListFlag(value: string | undefined): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+function parseCsvFlag(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
 function parseModelList(value: string | undefined): string[] | undefined {
   if (!value) return undefined;
   const items = value
@@ -766,6 +797,29 @@ function parseConcurrency(value: string | undefined, fallback = 1): number {
       userMessage: 'Queue concurrency must be a whole number of 1 or higher.',
       kind: 'validation',
       nextSteps: ['Use --concurrency 1 or higher.'],
+    });
+  }
+  return parsed;
+}
+
+function parseQueuePriority(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (
+    !Number.isFinite(parsed) ||
+    !Number.isInteger(parsed) ||
+    parsed < PRIORITY_MIN ||
+    parsed > PRIORITY_MAX
+  ) {
+    throw new SilvanError({
+      code: 'queue.invalid_priority',
+      message: `Invalid priority value: ${value}`,
+      userMessage: `Queue priority must be a whole number between ${PRIORITY_MIN} and ${PRIORITY_MAX}.`,
+      kind: 'validation',
+      nextSteps: [
+        `Use --priority ${PRIORITY_MIN}-${PRIORITY_MAX}.`,
+        'Example: silvan task start "Your task" --priority 8',
+      ],
     });
   }
   return parsed;
@@ -2498,6 +2552,33 @@ cli
       unresolvedReviewCount?: number;
       blockedReason?: string;
     };
+    const reviewPriority = Array.isArray(data['reviewThreadPriority'])
+      ? (data['reviewThreadPriority'] as Array<{
+          threadId?: string;
+          severity?: string;
+          summary?: string;
+          path?: string | null;
+          line?: number | null;
+          isOutdated?: boolean;
+        }>)
+      : [];
+    const reviewerSuggestions = (data['reviewerSuggestions'] as
+      | {
+          users?: string[];
+          teams?: string[];
+          error?: string;
+        }
+      | undefined) ?? { users: [], teams: [] };
+    const reviewResponseSummary =
+      (data['reviewResponseSummary'] as
+        | {
+            requestedAt?: string;
+            reviewers?: string[];
+            respondedReviewers?: string[];
+            pendingReviewers?: string[];
+            avgResponseHours?: number;
+          }
+        | undefined) ?? {};
     const verificationAssist = data['verificationAssistSummary'] as
       | {
           summary?: string;
@@ -2526,6 +2607,11 @@ cli
             blockedReason: summary.blockedReason ?? null,
             localGate,
             verificationAssist: verificationAssist ?? null,
+          },
+          review: {
+            priorityThreads: reviewPriority,
+            reviewerSuggestions,
+            responseSummary: reviewResponseSummary,
           },
         },
         repoRoot,
@@ -2572,6 +2658,74 @@ cli
     }
     if (summary.blockedReason) {
       lines.push(`Blocked reason: ${summary.blockedReason}`);
+    }
+    if (reviewPriority.length > 0) {
+      lines.push('');
+      lines.push(renderSectionHeader('Review priorities', { width: 60, kind: 'minor' }));
+      const list = reviewPriority.map((thread) => {
+        const severity = thread.severity ?? 'unknown';
+        const summaryText = thread.summary ?? thread.threadId ?? 'Thread';
+        const location = thread.path
+          ? `${thread.path}${thread.line ? `:${thread.line}` : ''}`
+          : 'unknown location';
+        return `${severity.toUpperCase()}: ${summaryText} (${location})`;
+      });
+      lines.push(
+        ...formatKeyList('Threads', `${reviewPriority.length} item(s)`, list, {
+          labelWidth: 12,
+        }),
+      );
+    }
+    if (
+      reviewerSuggestions.error ||
+      (reviewerSuggestions.users?.length ?? 0) > 0 ||
+      (reviewerSuggestions.teams?.length ?? 0) > 0
+    ) {
+      lines.push('');
+      lines.push(
+        renderSectionHeader('Reviewer suggestions', { width: 60, kind: 'minor' }),
+      );
+      if (reviewerSuggestions.users?.length) {
+        lines.push(
+          ...formatKeyList(
+            'Users',
+            `${reviewerSuggestions.users.length} suggested`,
+            reviewerSuggestions.users,
+            { labelWidth: 12 },
+          ),
+        );
+      }
+      if (reviewerSuggestions.teams?.length) {
+        lines.push(
+          ...formatKeyList(
+            'Teams',
+            `${reviewerSuggestions.teams.length} suggested`,
+            reviewerSuggestions.teams,
+            { labelWidth: 12 },
+          ),
+        );
+      }
+      if (reviewerSuggestions.error) {
+        lines.push(`Notes: ${reviewerSuggestions.error}`);
+      }
+    }
+    if (reviewResponseSummary.reviewers?.length) {
+      const respondedCount = reviewResponseSummary.respondedReviewers?.length ?? 0;
+      const pendingCount = reviewResponseSummary.pendingReviewers?.length ?? 0;
+      lines.push('');
+      lines.push(renderSectionHeader('Reviewer responses', { width: 60, kind: 'minor' }));
+      const responseDetails: Array<[string, string]> = [
+        ['Requested', `${reviewResponseSummary.reviewers.length} reviewer(s)`],
+        ['Responded', `${respondedCount} reviewer(s)`],
+        ['Pending', `${pendingCount} reviewer(s)`],
+      ];
+      if (typeof reviewResponseSummary.avgResponseHours === 'number') {
+        responseDetails.push([
+          'Avg response',
+          `${reviewResponseSummary.avgResponseHours.toFixed(1)}h`,
+        ]);
+      }
+      lines.push(...formatKeyValues(responseDetails, { labelWidth: 12 }));
     }
     if (verificationAssist?.summary || verificationAssist?.steps?.length) {
       lines.push('');
@@ -2679,6 +2833,487 @@ function isArtifactEntry(value: unknown): value is ArtifactEntry {
     typeof record['updatedAt'] === 'string' &&
     (record['kind'] === 'json' || record['kind'] === 'text')
   );
+}
+
+cli
+  .command('learning review', 'Review pending learning notes')
+  .option('--approve <runIds>', 'Approve pending learnings (comma-separated run IDs)')
+  .option('--reject <runIds>', 'Reject pending learnings (comma-separated run IDs)')
+  .option('--all', 'Apply action to all pending learnings')
+  .action((options: CliOptions & { approve?: string; reject?: string; all?: boolean }) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const logger = createCliLogger(ctx);
+      const requests = await listLearningRequests({ state: ctx.state });
+      const pending = requests.filter((request) => request.status === 'pending');
+
+      const approveIds = parseCsvFlag(options.approve);
+      const rejectIds = parseCsvFlag(options.reject);
+      const action = approveIds ? 'approve' : rejectIds ? 'reject' : undefined;
+
+      if (approveIds && rejectIds) {
+        throw new SilvanError({
+          code: 'learning.review.conflict',
+          message: 'Choose either --approve or --reject.',
+          userMessage: 'Choose either --approve or --reject.',
+          kind: 'validation',
+          nextSteps: ['Run `silvan learning review --approve <runId>` or `--reject`.'],
+        });
+      }
+
+      if (options.all && !action) {
+        throw new SilvanError({
+          code: 'learning.review.missing_action',
+          message: 'Specify --approve or --reject when using --all.',
+          userMessage: 'Specify --approve or --reject when using --all.',
+          kind: 'validation',
+          nextSteps: ['Run `silvan learning review --approve --all`.'],
+        });
+      }
+
+      if (!action) {
+        if (options.json) {
+          await emitJsonSuccess({
+            command: 'learning review',
+            data: {
+              pending: pending.map((request) => ({
+                runId: request.runId,
+                summary: request.summary,
+                confidence: request.confidence,
+                threshold: request.threshold,
+                reason: request.reason ?? null,
+                createdAt: request.createdAt,
+              })),
+            },
+            repoRoot: ctx.repo.repoRoot,
+            runId: ctx.runId,
+          });
+          return;
+        }
+        if (options.quiet) {
+          return;
+        }
+        if (pending.length === 0) {
+          await logger.info('No pending learning notes.');
+          return;
+        }
+        const lines: string[] = [];
+        lines.push(renderSectionHeader('Pending learning notes', { width: 60 }));
+        lines.push(
+          ...formatKeyValues([['Pending', `${pending.length} item(s)`]], {
+            labelWidth: 12,
+          }),
+        );
+        const summaries = pending.map((request) => {
+          const confidence = `${Math.round(request.confidence * 100)}%`;
+          return `${request.runId} (${confidence}): ${request.summary}`;
+        });
+        lines.push(
+          ...formatKeyList('Items', `${pending.length} item(s)`, summaries, {
+            labelWidth: 12,
+          }),
+        );
+        lines.push(
+          renderNextSteps([
+            'silvan learning review --approve <runId>',
+            'silvan learning review --reject <runId>',
+          ]),
+        );
+        await logger.info(lines.join('\n'));
+        return;
+      }
+
+      const targetIds = options.all
+        ? pending.map((request) => request.id)
+        : action === 'approve'
+          ? (approveIds ?? [])
+          : (rejectIds ?? []);
+
+      const selection = pending.filter((request) => targetIds.includes(request.id));
+      const missing = targetIds.filter(
+        (id) => !pending.some((request) => request.id === id),
+      );
+
+      const results: Array<{ runId: string; status: string; message?: string }> = [];
+      for (const request of selection) {
+        try {
+          if (action === 'approve') {
+            const result = await applyLearningRequestForCli(ctx, request);
+            results.push({
+              runId: request.runId,
+              status: 'applied',
+              ...(result.commitSha ? { message: `commit ${result.commitSha}` } : {}),
+            });
+          } else {
+            await rejectLearningRequestForCli(ctx, request);
+            results.push({ runId: request.runId, status: 'rejected' });
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Learning review failed';
+          results.push({ runId: request.runId, status: 'failed', message });
+        }
+      }
+
+      const failed = results.filter((result) => result.status === 'failed');
+      if (options.json) {
+        await emitJsonResult({
+          command: 'learning review',
+          success: failed.length === 0,
+          data: {
+            action,
+            processed: results.length,
+            failed: failed.length,
+            missing,
+            results,
+          },
+          ...(failed.length > 0
+            ? {
+                error: {
+                  code: 'learning.review.failed',
+                  message: 'One or more learning review actions failed.',
+                  details: { failed },
+                  suggestions: ['Inspect failures, then re-run the command.'],
+                },
+              }
+            : {}),
+          repoRoot: ctx.repo.repoRoot,
+          runId: ctx.runId,
+        });
+        return;
+      }
+
+      if (options.quiet) {
+        return;
+      }
+      const lines: string[] = [];
+      const title =
+        failed.length > 0
+          ? 'Learning review completed with errors'
+          : 'Learning review completed';
+      lines.push(renderSectionHeader(title, { width: 60, kind: 'minor' }));
+      lines.push(
+        ...formatKeyValues(
+          [
+            ['Action', action],
+            ['Processed', `${results.length} item(s)`],
+            ['Failed', `${failed.length} item(s)`],
+          ],
+          { labelWidth: 12 },
+        ),
+      );
+      if (missing.length > 0) {
+        lines.push(
+          ...formatKeyList('Missing', `${missing.length} item(s)`, missing, {
+            labelWidth: 12,
+          }),
+        );
+      }
+      if (failed.length > 0) {
+        lines.push(
+          ...formatKeyList(
+            'Failures',
+            `${failed.length} item(s)`,
+            failed.map((result) => `${result.runId}: ${result.message}`),
+            { labelWidth: 12 },
+          ),
+        );
+      }
+      lines.push(renderNextSteps(['silvan learning review', 'silvan run list']));
+      await logger.info(lines.join('\n'));
+      if (failed.length > 0) {
+        process.exitCode = 1;
+      }
+    }),
+  );
+
+cli
+  .command('learning rollback <runId>', 'Rollback applied learning updates')
+  .action((runId: string, options: CliOptions) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const logger = createCliLogger(ctx);
+      const result = await rollbackLearningRequestForCli(ctx, runId);
+
+      if (options.json) {
+        await emitJsonSuccess({
+          command: 'learning rollback',
+          data: result,
+          repoRoot: ctx.repo.repoRoot,
+          runId: ctx.runId,
+        });
+        return;
+      }
+      if (options.quiet) {
+        return;
+      }
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Learning rollback complete',
+          details: [
+            ['Run ID', runId],
+            ['Revert', result.revertSha ?? 'unknown'],
+          ],
+          nextSteps: [`silvan run status ${runId}`, 'silvan learning review'],
+        }),
+      );
+    }),
+  );
+
+async function applyLearningRequestForCli(
+  ctx: RunContext,
+  request: LearningRequest,
+): Promise<{ appliedTo: string[]; commitSha?: string }> {
+  const snapshot = await ctx.state.readRunState(request.runId);
+  if (!snapshot) {
+    throw new SilvanError({
+      code: 'learning.review.run_missing',
+      message: `Run not found: ${request.runId}`,
+      userMessage: `Run not found: ${request.runId}`,
+      kind: 'not_found',
+      nextSteps: ['Run `silvan run list` to check available runs.'],
+    });
+  }
+  const data = snapshot.data as Record<string, unknown>;
+  const worktreeRoot = await resolveLearningWorktreeRoot(ctx, data, request.runId);
+  const targetCheck = evaluateLearningTargets({
+    targets: request.targets,
+    worktreeRoot,
+  });
+  if (!targetCheck.ok) {
+    throw new SilvanError({
+      code: 'learning.review.unsafe_targets',
+      message: targetCheck.reasons.join('; '),
+      userMessage: 'Learning targets are not safe to apply automatically.',
+      kind: 'validation',
+      nextSteps: [
+        'Update learning.targets to point at documentation files.',
+        'Re-run `silvan learning review` after fixing the targets.',
+      ],
+    });
+  }
+  const applyResult = await applyLearningNotes({
+    runId: request.runId,
+    worktreeRoot,
+    notes: request.notes,
+    targets: request.targets,
+  });
+  const commitResult = await commitLearningRequestForCli({
+    ctx,
+    runId: request.runId,
+    worktreeRoot,
+    appliedTo: applyResult.appliedTo,
+  });
+  const appliedAt = new Date().toISOString();
+
+  await ctx.state.updateRunState(request.runId, (prev) => ({
+    ...prev,
+    learningSummary: {
+      ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
+        ? (prev['learningSummary'] as Record<string, unknown>)
+        : {}),
+      status: 'applied',
+      appliedAt,
+      appliedTo: applyResult.appliedTo,
+      commitSha: commitResult.sha,
+      autoApplied: false,
+    },
+  }));
+
+  await writeLearningRequest({
+    state: ctx.state,
+    request: {
+      ...request,
+      status: 'applied',
+      updatedAt: appliedAt,
+      appliedAt,
+      appliedTo: applyResult.appliedTo,
+      ...(commitResult.sha ? { commitSha: commitResult.sha } : {}),
+    },
+  });
+
+  return {
+    appliedTo: applyResult.appliedTo,
+    ...(commitResult.sha ? { commitSha: commitResult.sha } : {}),
+  };
+}
+
+async function rejectLearningRequestForCli(
+  ctx: RunContext,
+  request: LearningRequest,
+): Promise<void> {
+  const rejectedAt = new Date().toISOString();
+  await ctx.state.updateRunState(request.runId, (prev) => ({
+    ...prev,
+    learningSummary: {
+      ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
+        ? (prev['learningSummary'] as Record<string, unknown>)
+        : {}),
+      status: 'rejected',
+      rejectedAt,
+    },
+  }));
+  await writeLearningRequest({
+    state: ctx.state,
+    request: {
+      ...request,
+      status: 'rejected',
+      updatedAt: rejectedAt,
+      rejectedAt,
+    },
+  });
+}
+
+async function rollbackLearningRequestForCli(
+  ctx: RunContext,
+  runId: string,
+): Promise<{ runId: string; commitSha?: string; revertSha?: string }> {
+  const snapshot = await ctx.state.readRunState(runId);
+  if (!snapshot) {
+    throw new SilvanError({
+      code: 'learning.rollback.missing_run',
+      message: `Run not found: ${runId}`,
+      userMessage: `Run not found: ${runId}`,
+      kind: 'not_found',
+      nextSteps: ['Run `silvan run list` to check available runs.'],
+    });
+  }
+  const data = snapshot.data as Record<string, unknown>;
+  const learningSummary = (data['learningSummary'] as Record<string, unknown>) ?? {};
+  const request = await readLearningRequest({ state: ctx.state, requestId: runId });
+  const commitSha =
+    (typeof learningSummary['commitSha'] === 'string'
+      ? learningSummary['commitSha']
+      : undefined) ?? request?.commitSha;
+
+  if (!commitSha) {
+    throw new SilvanError({
+      code: 'learning.rollback.missing_commit',
+      message: 'No learning commit found for this run.',
+      userMessage: 'No learning commit found for this run.',
+      kind: 'validation',
+      nextSteps: ['Run `silvan learning review` to see pending notes.'],
+    });
+  }
+
+  const worktreeRoot = await resolveLearningWorktreeRoot(ctx, data, runId);
+  const revert = await runGit(['revert', '--no-edit', commitSha], {
+    cwd: worktreeRoot,
+    context: { runId, repoRoot: ctx.repo.repoRoot },
+  });
+  if (revert.exitCode !== 0) {
+    throw new SilvanError({
+      code: 'learning.rollback.failed',
+      message: revert.stderr || 'Failed to revert learning commit.',
+      userMessage: 'Failed to revert the learning commit.',
+      kind: 'internal',
+      nextSteps: [
+        'Resolve conflicts in the worktree.',
+        'Run `git revert --continue` or `git revert --abort`.',
+      ],
+    });
+  }
+
+  const shaResult = await runGit(['rev-parse', 'HEAD'], {
+    cwd: worktreeRoot,
+    context: { runId, repoRoot: ctx.repo.repoRoot },
+  });
+  const revertSha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : undefined;
+  const rolledBackAt = new Date().toISOString();
+
+  await ctx.state.updateRunState(runId, (prev) => ({
+    ...prev,
+    learningSummary: {
+      ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
+        ? (prev['learningSummary'] as Record<string, unknown>)
+        : {}),
+      status: 'rolled_back',
+      rolledBackAt,
+      rollbackSha: revertSha,
+    },
+  }));
+
+  if (request) {
+    await writeLearningRequest({
+      state: ctx.state,
+      request: {
+        ...request,
+        status: 'rolled_back',
+        updatedAt: rolledBackAt,
+        rolledBackAt,
+        commitSha,
+      },
+    });
+  }
+
+  return {
+    runId,
+    ...(commitSha ? { commitSha } : {}),
+    ...(revertSha ? { revertSha } : {}),
+  };
+}
+
+async function resolveLearningWorktreeRoot(
+  ctx: RunContext,
+  data: Record<string, unknown>,
+  runId: string,
+): Promise<string> {
+  const worktree = (typeof data['worktree'] === 'object' && data['worktree']
+    ? (data['worktree'] as { path?: string })
+    : undefined) ?? { path: undefined };
+  const candidate = worktree.path ?? ctx.repo.repoRoot;
+
+  try {
+    await access(candidate);
+  } catch {
+    throw new SilvanError({
+      code: 'learning.review.worktree_missing',
+      message: `Worktree not found for run ${runId}.`,
+      userMessage: `Worktree not found for run ${runId}.`,
+      kind: 'not_found',
+      nextSteps: ['Run `silvan tree list` to locate the worktree.'],
+    });
+  }
+  return candidate;
+}
+
+async function commitLearningRequestForCli(options: {
+  ctx: RunContext;
+  runId: string;
+  worktreeRoot: string;
+  appliedTo: string[];
+}): Promise<{ committed: boolean; sha?: string }> {
+  const relativePaths = options.appliedTo
+    .map((filePath) => relative(options.worktreeRoot, filePath))
+    .filter((path) => path && !path.startsWith('..'));
+  if (relativePaths.length === 0) {
+    return { committed: false };
+  }
+  await runGit(['add', '--', ...relativePaths], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+  const diff = await runGit(['diff', '--cached', '--quiet'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+  if (diff.exitCode === 0) {
+    return { committed: false };
+  }
+  const commit = await runGit(
+    ['commit', '-m', `silvan: apply learnings (${options.runId})`],
+    {
+      cwd: options.worktreeRoot,
+      context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+    },
+  );
+  if (commit.exitCode !== 0) {
+    throw new Error(commit.stderr || 'Failed to commit learning updates');
+  }
+  const shaResult = await runGit(['rev-parse', 'HEAD'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+  const sha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : undefined;
+  return { committed: true, ...(sha ? { sha } : {}) };
 }
 
 cli
@@ -2880,6 +3515,8 @@ cli
   .option('--ac <criteria>', 'Acceptance criteria (can be used multiple times)')
   .option('--from-file <path>', 'Load task details from a markdown file')
   .option('--answer <pair>', 'Answer question (id=value)', { default: [] })
+  .option('--priority <n>', 'Queue priority for this task (1-10)')
+  .option('--queue', 'Add the task to the queue instead of starting immediately')
   .option('--plan-only', 'Generate plan without creating a worktree')
   .option('--print-cd', 'Print cd command to worktree (default: true)', {
     default: true,
@@ -2887,46 +3524,202 @@ cli
   .option('--open-shell', 'Open interactive shell in worktree')
   .option('--exec <cmd>', 'Run command in worktree then exit')
   .action((taskRef: string | undefined, options: CliOptions) =>
-    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) =>
-      withAgentSessions(Boolean(ctx.config.ai.sessions.persist), async (sessions) => {
-        let localInput = await buildLocalTaskInput(options);
-        let inferred =
-          taskRef ??
-          inferTaskRefFromBranch(ctx.repo.branch ?? '') ??
-          localInput?.title ??
-          '';
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const jsonMode = Boolean(options.json);
+      const logger = createCliLogger(ctx);
+      let localInput = await buildLocalTaskInput(options);
+      let inferred =
+        taskRef ??
+        inferTaskRefFromBranch(ctx.repo.branch ?? '') ??
+        localInput?.title ??
+        '';
 
-        if (!inferred) {
-          if (!process.stdin.isTTY) {
-            throw new SilvanError({
-              code: 'task.missing_reference',
-              message:
-                'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-              userMessage: 'Task reference required.',
-              kind: 'validation',
-              nextSteps: [
-                'Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
-                'Run `silvan help task-refs` for examples.',
-              ],
-            });
-          }
-          localInput = await promptLocalTaskInput();
-          inferred = localInput.title;
+      if (!inferred) {
+        if (!process.stdin.isTTY) {
+          throw new SilvanError({
+            code: 'task.missing_reference',
+            message:
+              'Task reference required. Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
+            userMessage: 'Task reference required.',
+            kind: 'validation',
+            nextSteps: [
+              'Provide a Linear ID, gh-<number>, GitHub issue URL, or a local title.',
+              'Run `silvan help task-refs` for examples.',
+            ],
+          });
         }
-        await startTaskFlow({
-          ctx,
-          ...(sessions ? { sessions } : {}),
-          taskRef: inferred,
-          ...(localInput ? { localInput } : {}),
-          printCd: options.printCd !== false,
-          answers: parseAnswerPairs(options.answer),
-          planOnly: options.planOnly ?? false,
-          skipPrompts: options.yes ?? false,
-          ...(options.exec ? { exec: options.exec } : {}),
-          ...(options.openShell ? { openShell: options.openShell } : {}),
+        localInput = await promptLocalTaskInput();
+        inferred = localInput.title;
+      }
+
+      const shouldQueue = Boolean(options.queue || options.priority);
+      if (shouldQueue) {
+        const priority = parseQueuePriority(
+          options.priority,
+          ctx.config.queue.priority.default,
+        );
+        const request = {
+          id: crypto.randomUUID(),
+          type: 'start-task',
+          title: inferred,
+          ...(localInput?.description ? { description: localInput.description } : {}),
+          ...(localInput?.acceptanceCriteria?.length
+            ? { acceptanceCriteria: localInput.acceptanceCriteria }
+            : {}),
+          priority,
+          createdAt: new Date().toISOString(),
+        } satisfies Parameters<typeof writeQueueRequest>[0]['request'];
+        const path = await writeQueueRequest({ state: ctx.state, request });
+        if (jsonMode) {
+          await emitJsonSuccess({
+            command: 'task start',
+            data: { queued: request, path },
+            nextSteps: ['silvan queue run'],
+            repoRoot: ctx.repo.repoRoot,
+            runId: ctx.runId,
+          });
+          return;
+        }
+        if (!options.quiet) {
+          await logger.info(
+            renderSuccessSummary({
+              title: 'Task queued',
+              details: [
+                ['Request ID', request.id],
+                ['Priority', `${priority}`],
+                ['Title', request.title],
+                ['Path', path],
+              ],
+              nextSteps: ['silvan queue run', 'silvan queue status'],
+            }),
+          );
+        }
+        return;
+      }
+
+      await withAgentSessions(
+        Boolean(ctx.config.ai.sessions.persist),
+        async (sessions) => {
+          await startTaskFlow({
+            ctx,
+            ...(sessions ? { sessions } : {}),
+            taskRef: inferred,
+            ...(localInput ? { localInput } : {}),
+            printCd: options.printCd !== false,
+            answers: parseAnswerPairs(options.answer),
+            planOnly: options.planOnly ?? false,
+            skipPrompts: options.yes ?? false,
+            ...(options.exec ? { exec: options.exec } : {}),
+            ...(options.openShell ? { openShell: options.openShell } : {}),
+          });
+        },
+      );
+    }),
+  );
+
+cli
+  .command('queue status', 'Show queued task depth by priority level')
+  .action((options: CliOptions) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const jsonMode = Boolean(options.json);
+      const logger = createCliLogger(ctx);
+      const requests = await listQueueRequests({ state: ctx.state });
+      const prioritizedRequests = requests
+        .map((request) => applyQueuePriority(request, ctx.config))
+        .sort(sortByPriority);
+      const priorityDepth = new Map<number, number>();
+      const basePriorityDepth = new Map<number, number>();
+      for (let priority = PRIORITY_MIN; priority <= PRIORITY_MAX; priority += 1) {
+        priorityDepth.set(priority, 0);
+        basePriorityDepth.set(priority, 0);
+      }
+      const tierDepth = {
+        high: 0,
+        medium: 0,
+        low: 0,
+      };
+      let boosted = 0;
+      for (const request of prioritizedRequests) {
+        priorityDepth.set(
+          request.effectivePriority,
+          (priorityDepth.get(request.effectivePriority) ?? 0) + 1,
+        );
+        basePriorityDepth.set(
+          request.priority,
+          (basePriorityDepth.get(request.priority) ?? 0) + 1,
+        );
+        tierDepth[request.priorityTier] += 1;
+        if ((request.priorityBoost ?? 0) > 0) {
+          boosted += 1;
+        }
+      }
+
+      if (jsonMode) {
+        await emitJsonSuccess({
+          command: 'queue status',
+          data: {
+            total: prioritizedRequests.length,
+            boosted,
+            priorityDepth: Object.fromEntries(priorityDepth.entries()),
+            basePriorityDepth: Object.fromEntries(basePriorityDepth.entries()),
+            tierDepth,
+            concurrency: ctx.config.queue.concurrency,
+            escalation: ctx.config.queue.priority.escalation,
+          },
+          repoRoot: ctx.repo.repoRoot,
+          runId: ctx.runId,
         });
-      }),
-    ),
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push(renderSectionHeader('Queue status', { width: 60, kind: 'minor' }));
+      lines.push(
+        ...formatKeyValues(
+          [
+            ['Total', `${prioritizedRequests.length} request(s)`],
+            ['Boosted', `${boosted} request(s)`],
+            [
+              'Concurrency',
+              `high ${ctx.config.queue.concurrency.tiers.high}, medium ${ctx.config.queue.concurrency.tiers.medium}, low ${ctx.config.queue.concurrency.tiers.low}`,
+            ],
+          ],
+          { labelWidth: 12 },
+        ),
+      );
+      const priorityLines: string[] = [];
+      for (let priority = PRIORITY_MAX; priority >= PRIORITY_MIN; priority -= 1) {
+        priorityLines.push(`P${priority}: ${priorityDepth.get(priority) ?? 0}`);
+      }
+      lines.push(
+        ...formatKeyList(
+          'Priority depth',
+          `${prioritizedRequests.length} request(s)`,
+          priorityLines,
+          { labelWidth: 12 },
+        ),
+      );
+      const basePriorityLines: string[] = [];
+      for (let priority = PRIORITY_MAX; priority >= PRIORITY_MIN; priority -= 1) {
+        basePriorityLines.push(`P${priority}: ${basePriorityDepth.get(priority) ?? 0}`);
+      }
+      lines.push(
+        ...formatKeyList(
+          'Base priority',
+          `${prioritizedRequests.length} request(s)`,
+          basePriorityLines,
+          { labelWidth: 12 },
+        ),
+      );
+      const nextSteps: string[] = [];
+      if (prioritizedRequests.length > 0) {
+        nextSteps.push('silvan queue run');
+      } else {
+        nextSteps.push('silvan task start --queue "Your task"');
+      }
+      lines.push(renderNextSteps(nextSteps));
+      await logger.info(lines.join('\n'));
+    }),
   );
 
 cli
@@ -2937,7 +3730,12 @@ cli
     withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
       const jsonMode = Boolean(options.json);
       const logger = createCliLogger(ctx);
-      const concurrency = parseConcurrency(options.concurrency);
+      const concurrencyOverride = options.concurrency
+        ? parseConcurrency(options.concurrency)
+        : undefined;
+      const tierConcurrency = ctx.config.queue.concurrency.tiers;
+      const concurrencyMode = concurrencyOverride ? 'total' : 'tiered';
+      const concurrency = concurrencyOverride ?? ctx.config.queue.concurrency.default;
       const continueOnError = Boolean(options.continueOnError);
       const requests = await listQueueRequests({ state: ctx.state });
       if (requests.length === 0) {
@@ -2950,6 +3748,8 @@ cli
               failed: 0,
               remaining: 0,
               concurrency,
+              concurrencyMode,
+              tierConcurrency,
               continueOnError,
               failures: [],
             },
@@ -2962,14 +3762,25 @@ cli
         return;
       }
 
+      const prioritizedRequests = requests
+        .map((request) => applyQueuePriority(request, ctx.config))
+        .sort(sortByPriority);
       const requestLabels = new Map(
-        requests.map((request) => [request.id, request.title]),
+        prioritizedRequests.map((request) => [request.id, request.title]),
       );
-      const result = await runQueueRequests({
-        requests,
-        concurrency,
+      const requestPriorities = new Map(
+        prioritizedRequests.map((request) => [
+          request.id,
+          {
+            base: request.priority,
+            effective: request.effectivePriority,
+            tier: request.priorityTier,
+          },
+        ]),
+      );
+      const runOptions = {
         continueOnError,
-        onRequest: async (request) => {
+        onRequest: async (request: (typeof prioritizedRequests)[number]) => {
           await withRunContext(
             {
               cwd: process.cwd(),
@@ -2999,16 +3810,28 @@ cli
               ),
           );
         },
-        onSuccess: async (request) => {
+        onSuccess: async (request: (typeof prioritizedRequests)[number]) => {
           await deleteQueueRequest({ state: ctx.state, requestId: request.id });
         },
-      });
+      };
+      const result = concurrencyOverride
+        ? await runQueueRequests({
+            requests: prioritizedRequests,
+            concurrency,
+            ...runOptions,
+          })
+        : await runPriorityQueueRequests({
+            requests: prioritizedRequests,
+            tierConcurrency,
+            ...runOptions,
+          });
 
       const remainingRequests = await listQueueRequests({ state: ctx.state });
       const remaining = remainingRequests.length;
       const failures = result.failures.map((failure) => ({
         id: failure.id,
         title: requestLabels.get(failure.id),
+        priority: requestPriorities.get(failure.id)?.effective,
         message: failure.message,
       }));
 
@@ -3022,6 +3845,8 @@ cli
             failed: result.failed,
             remaining,
             concurrency,
+            concurrencyMode,
+            tierConcurrency,
             continueOnError,
             failures,
           },
@@ -3054,7 +3879,12 @@ cli
             ['Succeeded', `${result.succeeded} request(s)`],
             ['Failed', `${result.failed} request(s)`],
             ['Remaining', `${remaining} request(s)`],
-            ['Concurrency', `${concurrency}`],
+            [
+              'Concurrency',
+              concurrencyOverride
+                ? `${concurrency}`
+                : `tiered (high ${tierConcurrency.high}, medium ${tierConcurrency.medium}, low ${tierConcurrency.low})`,
+            ],
             ['Continue on error', continueOnError ? 'Yes' : 'No'],
           ],
           { labelWidth: 12 },
@@ -3063,7 +3893,9 @@ cli
       if (failures.length > 0) {
         const failureLines = failures.map((failure) => {
           const label = failure.title ?? failure.id;
-          return `${label}: ${failure.message}`;
+          return failure.priority
+            ? `${label} (P${failure.priority}): ${failure.message}`
+            : `${label}: ${failure.message}`;
         });
         lines.push(
           ...formatKeyList('Failures', `${failures.length} request(s)`, failureLines, {
@@ -3080,6 +3912,62 @@ cli
       if (result.failed > 0) {
         process.exitCode = 1;
       }
+    }),
+  );
+
+cli
+  .command(
+    'queue priority <requestId> <priority>',
+    'Update the priority of a queued task',
+  )
+  .action((requestId: string, priority: string, options: CliOptions) =>
+    withCliContext(options, options.json ? 'json' : 'headless', async (ctx) => {
+      const jsonMode = Boolean(options.json);
+      const logger = createCliLogger(ctx);
+      const nextPriority = parseQueuePriority(
+        priority,
+        ctx.config.queue.priority.default,
+      );
+      const updated = await setQueueRequestPriority({
+        state: ctx.state,
+        requestId,
+        priority: nextPriority,
+      });
+      if (!updated) {
+        throw new SilvanError({
+          code: 'queue.request_not_found',
+          message: `Queue request not found: ${requestId}`,
+          userMessage: 'Queue request not found.',
+          kind: 'not_found',
+          nextSteps: ['Run `silvan queue status` to list queued requests.'],
+        });
+      }
+      if (jsonMode) {
+        await emitJsonSuccess({
+          command: 'queue priority',
+          data: {
+            requestId,
+            priority: nextPriority,
+            updatedAt: updated.updatedAt,
+          },
+          repoRoot: ctx.repo.repoRoot,
+          runId: ctx.runId,
+        });
+        return;
+      }
+      if (options.quiet) {
+        return;
+      }
+      await logger.info(
+        renderSuccessSummary({
+          title: 'Queue priority updated',
+          details: [
+            ['Request ID', requestId],
+            ['Priority', `${nextPriority}`],
+          ],
+          nextSteps: ['silvan queue status', 'silvan queue run'],
+        }),
+      );
     }),
   );
 
@@ -3768,6 +4656,7 @@ cli
         if (shouldReview) {
           await runReviewLoop(ctx, runOptions);
         }
+        await runLearningNotes(ctx, { allowApply: Boolean(options.apply) });
       }),
     ),
   );

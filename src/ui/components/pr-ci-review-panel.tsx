@@ -125,6 +125,12 @@ export function PrCiReviewPanel({
             {reviewSummary.classificationText ? (
               <Text color="gray">{reviewSummary.classificationText}</Text>
             ) : null}
+            {reviewSummary.severityText ? (
+              <Text color="gray">{reviewSummary.severityText}</Text>
+            ) : null}
+            {reviewSummary.autoResolvedText ? (
+              <Text color="gray">{reviewSummary.autoResolvedText}</Text>
+            ) : null}
             {reviewSummary.fixPlanText ? (
               <Text color="gray">{reviewSummary.fixPlanText}</Text>
             ) : null}
@@ -196,6 +202,8 @@ function deriveReviewSummary(run: RunRecord): {
   iteration?: number;
   unresolvedText?: string;
   classificationText?: string;
+  severityText?: string;
+  autoResolvedText?: string;
   fixPlanText?: string;
   verificationText?: string;
   verificationColor: 'green' | 'red' | 'yellow' | 'gray';
@@ -204,6 +212,8 @@ function deriveReviewSummary(run: RunRecord): {
     iteration?: number;
     unresolvedText?: string;
     classificationText?: string;
+    severityText?: string;
+    autoResolvedText?: string;
     fixPlanText?: string;
     verificationText?: string;
     verificationColor: 'green' | 'red' | 'yellow' | 'gray';
@@ -221,6 +231,13 @@ function deriveReviewSummary(run: RunRecord): {
   }
   if (run.reviewClassification) {
     parts.classificationText = `Classification ${run.reviewClassification.actionable} actionable, ${run.reviewClassification.ignored} ignored, ${run.reviewClassification.needsContext} needs context`;
+    if (run.reviewClassification.severity) {
+      const severity = run.reviewClassification.severity;
+      parts.severityText = `Severity ${severity.blocking} blocking, ${severity.question} questions, ${severity.suggestion} suggestions, ${severity.nitpick} nitpicks`;
+    }
+    if (typeof run.reviewClassification.autoResolved === 'number') {
+      parts.autoResolvedText = `Auto-resolved ${run.reviewClassification.autoResolved} thread(s)`;
+    }
   }
   if (run.reviewFixPlan) {
     parts.fixPlanText = `Fix plan ${run.reviewFixPlan.actionable} actionable, ${run.reviewFixPlan.ignored} ignored`;
@@ -237,6 +254,8 @@ function deriveReviewSummary(run: RunRecord): {
       Boolean(parts.iteration) ||
       Boolean(parts.unresolvedText) ||
       Boolean(parts.classificationText) ||
+      Boolean(parts.severityText) ||
+      Boolean(parts.autoResolvedText) ||
       Boolean(parts.fixPlanText) ||
       Boolean(parts.verificationText),
     ...parts,

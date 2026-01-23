@@ -116,6 +116,61 @@ export const configSchema = z.object({
       root: z.string().optional(),
     })
     .default({ mode: 'global' }),
+  queue: z
+    .object({
+      priority: z
+        .object({
+          default: z.number().int().min(1).max(10).default(5),
+          escalation: z
+            .object({
+              afterMinutes: z.number().int().positive().default(30),
+              stepMinutes: z.number().int().positive().default(30),
+              boost: z.number().int().positive().default(1),
+              max: z.number().int().min(1).max(10).default(10),
+            })
+            .default({ afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 }),
+          tiers: z
+            .object({
+              highMin: z.number().int().min(1).max(10).default(8),
+              mediumMin: z.number().int().min(1).max(10).default(4),
+            })
+            .default({ highMin: 8, mediumMin: 4 }),
+        })
+        .default({
+          default: 5,
+          escalation: { afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 },
+          tiers: { highMin: 8, mediumMin: 4 },
+        }),
+      concurrency: z
+        .object({
+          default: z.number().int().positive().default(2),
+          tiers: z
+            .object({
+              high: z.number().int().positive().default(2),
+              medium: z.number().int().positive().default(1),
+              low: z.number().int().positive().default(1),
+            })
+            .default({ high: 2, medium: 1, low: 1 }),
+        })
+        .default({ default: 2, tiers: { high: 2, medium: 1, low: 1 } }),
+    })
+    .default({
+      priority: {
+        default: 5,
+        escalation: { afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 },
+        tiers: { highMin: 8, mediumMin: 4 },
+      },
+      concurrency: { default: 2, tiers: { high: 2, medium: 1, low: 1 } },
+    })
+    .superRefine((value, ctx) => {
+      if (value.priority.tiers.highMin <= value.priority.tiers.mediumMin) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'queue.priority.tiers.highMin must be greater than mediumMin',
+          path: ['priority', 'tiers', 'highMin'],
+        });
+      }
+    }),
   ui: z
     .object({
       worktrees: z
@@ -443,6 +498,69 @@ export const configSchema = z.object({
           enabled: z.boolean().default(true),
         })
         .default({ enabled: true }),
+      intelligence: z
+        .object({
+          enabled: z.boolean().default(true),
+          severityPolicy: z
+            .object({
+              blocking: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              question: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              suggestion: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              nitpick: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+            })
+            .default({
+              blocking: 'actionable',
+              question: 'actionable',
+              suggestion: 'actionable',
+              nitpick: 'actionable',
+            }),
+          nitpickAcknowledgement: z
+            .string()
+            .default('Noted - resolving as a nitpick for now.'),
+          reviewerSuggestions: z
+            .object({
+              enabled: z.boolean().default(true),
+              useCodeowners: z.boolean().default(true),
+              useBlame: z.boolean().default(true),
+              maxSuggestions: z.number().int().min(1).default(5),
+              autoRequest: z.boolean().default(false),
+              reviewerAliases: z.record(z.string(), z.string()).default({}),
+            })
+            .default({
+              enabled: true,
+              useCodeowners: true,
+              useBlame: true,
+              maxSuggestions: 5,
+              autoRequest: false,
+              reviewerAliases: {},
+            }),
+        })
+        .default({
+          enabled: true,
+          severityPolicy: {
+            blocking: 'actionable',
+            question: 'actionable',
+            suggestion: 'actionable',
+            nitpick: 'actionable',
+          },
+          nitpickAcknowledgement: 'Noted - resolving as a nitpick for now.',
+          reviewerSuggestions: {
+            enabled: true,
+            useCodeowners: true,
+            useBlame: true,
+            maxSuggestions: 5,
+            autoRequest: false,
+            reviewerAliases: {},
+          },
+        }),
     })
     .default({
       localGate: {
@@ -455,6 +573,24 @@ export const configSchema = z.object({
         allowConsoleLogPatterns: [],
       },
       aiReviewer: { enabled: true },
+      intelligence: {
+        enabled: true,
+        severityPolicy: {
+          blocking: 'actionable',
+          question: 'actionable',
+          suggestion: 'actionable',
+          nitpick: 'actionable',
+        },
+        nitpickAcknowledgement: 'Noted - resolving as a nitpick for now.',
+        reviewerSuggestions: {
+          enabled: true,
+          useCodeowners: true,
+          useBlame: true,
+          maxSuggestions: 5,
+          autoRequest: false,
+          reviewerAliases: {},
+        },
+      },
     }),
   learning: z
     .object({
@@ -465,6 +601,21 @@ export const configSchema = z.object({
           enabled: z.boolean().default(false),
         })
         .default({ enabled: false }),
+      autoApply: z
+        .object({
+          enabled: z.boolean().default(true),
+          threshold: z.number().min(0).max(1).default(0.7),
+          minSamples: z.number().int().min(0).default(3),
+          lookbackDays: z.number().int().min(1).default(30),
+          maxHistory: z.number().int().min(1).default(50),
+        })
+        .default({
+          enabled: true,
+          threshold: 0.7,
+          minSamples: 3,
+          lookbackDays: 30,
+          maxHistory: 50,
+        }),
       targets: z
         .object({
           rules: z.string().default('docs/rules.md'),
@@ -482,6 +633,13 @@ export const configSchema = z.object({
       enabled: true,
       mode: 'artifact',
       ai: { enabled: false },
+      autoApply: {
+        enabled: true,
+        threshold: 0.7,
+        minSamples: 3,
+        lookbackDays: 30,
+        maxHistory: 50,
+      },
       targets: {
         rules: 'docs/rules.md',
         skills: 'docs/skills.md',

@@ -200,6 +200,67 @@ review: {
 }
 ```
 
+## Learning Notes
+
+Silvan can generate learning notes after successful runs and auto-apply them to docs/rules/skills files when confidence is high. Auto-apply is enabled by default (writes are gated by `--apply`, otherwise notes remain pending for review).
+
+Tune the automatic application thresholds or disable it:
+
+```ts
+learning: {
+  enabled: true,
+  mode: 'artifact',
+  autoApply: {
+    enabled: true,
+    threshold: 0.7,
+    minSamples: 3,
+    lookbackDays: 30,
+    maxHistory: 50,
+  },
+  targets: {
+    rules: 'docs/rules.md',
+    skills: 'docs/skills.md',
+    docs: 'docs/learned.md',
+  },
+}
+```
+
+Review and control pending learnings:
+
+```bash
+silvan learning review
+silvan learning review --approve <runId>
+silvan learning rollback <runId>
+```
+
+## Review Intelligence
+
+Silvan can classify review threads by severity (blocking, question, suggestion, nitpick) and optionally auto-resolve low-impact nitpicks. Reviewer suggestions are derived from CODEOWNERS and git blame.
+
+Auto-resolve is only attempted when `--apply` is set.
+
+```ts
+review: {
+  intelligence: {
+    enabled: true,
+    severityPolicy: {
+      nitpick: 'auto_resolve',
+    },
+    nitpickAcknowledgement: 'Noted - resolving as a nitpick for now.',
+    reviewerSuggestions: {
+      enabled: true,
+      useCodeowners: true,
+      useBlame: true,
+      maxSuggestions: 5,
+      autoRequest: false,
+      reviewerAliases: {
+        'dev@example.com': 'github-handle',
+      },
+    },
+  },
+}
+```
+
 Silvan can also run an optional AI reviewer after the local gate. It is enabled by
 default and can be disabled via `review.aiReviewer.enabled`.
 
@@ -320,6 +381,25 @@ export default defineConfig({
 });
 ```
 
+### Queue configuration (priority + load balancing)
+
+Queue requests store a base priority (1-10). Silvan boosts priority as tasks wait
+and uses tiered concurrency to balance load across high/medium/low work.
+
+```ts
+queue: {
+  priority: {
+    default: 5,
+    escalation: { afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 },
+    tiers: { highMin: 8, mediumMin: 4 },
+  },
+  concurrency: {
+    default: 2,
+    tiers: { high: 2, medium: 1, low: 1 },
+  },
+},
+```
+
 Example `silvan.config.json` with schema:
 
 ```json
@@ -364,10 +444,12 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 
 ### Agent workflows
 
-- `task start [task]` — create worktree + generate plan (`--answer`, `--plan-only`)
+- `task start [task]` — create worktree + generate plan (`--answer`, `--plan-only`, `--queue`, `--priority`)
 - `quickstart` — guided setup + sample plan
 - `init` — scaffold a baseline `silvan.config.ts` (`--assist` for cognition defaults)
+- `queue status` — show queued task depth by priority
 - `queue run` — process queued task requests (`--concurrency <n>`, `--continue-on-error`)
+- `queue priority <requestId> <n>` — update queue priority (1–10)
 - `agent plan` — generate a structured plan
 - `agent clarify` — answer required questions and re‑plan
 - `agent run` — execute plan (`--dry-run`, `--apply`, `--dangerous`)
@@ -378,6 +460,12 @@ See `silvan doctor` for a full diagnostic report of effective configuration.
 - `run list` / `run inspect <runId>` / `run resume <runId>`
 - `run status <runId>` / `run explain <runId>` / `run override <runId> <reason...>` / `run abort <runId>`
 - `analytics` — success rates, phase averages, failure reasons (`--since`, `--provider`, `--repo`, `--json`)
+
+### Learning
+
+- `learning show <runId>` — show learning notes for a run
+- `learning review` — review pending learnings (`--approve`, `--reject`, `--all`)
+- `learning rollback <runId>` — rollback applied learnings
 
 ### Models + context
 

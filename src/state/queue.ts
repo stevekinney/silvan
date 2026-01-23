@@ -10,7 +10,9 @@ export type QueueRequest = {
   title: string;
   description?: string;
   acceptanceCriteria?: string[];
+  priority?: number;
   createdAt: string;
+  updatedAt?: string;
 };
 
 export async function writeQueueRequest(options: {
@@ -66,4 +68,33 @@ export async function deleteQueueRequest(options: {
   } catch {
     // ignore
   }
+}
+
+export async function getQueueRequest(options: {
+  state: StateStore;
+  requestId: string;
+}): Promise<QueueRequest | null> {
+  const path = join(options.state.queueDir, `${sanitizeName(options.requestId)}.json`);
+  try {
+    const raw = await Bun.file(path).text();
+    return JSON.parse(raw) as QueueRequest;
+  } catch {
+    return null;
+  }
+}
+
+export async function setQueueRequestPriority(options: {
+  state: StateStore;
+  requestId: string;
+  priority: number;
+}): Promise<QueueRequest | null> {
+  const existing = await getQueueRequest(options);
+  if (!existing) return null;
+  const updated: QueueRequest = {
+    ...existing,
+    priority: options.priority,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeQueueRequest({ state: options.state, request: updated });
+  return updated;
 }

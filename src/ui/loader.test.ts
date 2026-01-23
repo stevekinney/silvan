@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, test } from 'bun:test';
 
+import { configSchema } from '../config/schema';
 import { writeQueueRequest } from '../state/queue';
 import { initStateStore } from '../state/store';
 import { loadQueueRequests, loadWorktrees } from './loader';
@@ -36,6 +37,7 @@ describe('ui loader', () => {
     await withTempRepo(async (repoRoot) => {
       const state = await initStateStore(repoRoot, { lock: false, mode: 'repo' });
       const requestId = crypto.randomUUID();
+      const config = configSchema.parse({});
       await writeQueueRequest({
         state,
         request: {
@@ -46,11 +48,13 @@ describe('ui loader', () => {
         },
       });
 
-      const requests = await loadQueueRequests(state, { scope: 'current' });
+      const requests = await loadQueueRequests(state, config, { scope: 'current' });
       expect(requests.length).toBe(1);
       expect(requests[0]?.id).toBe(requestId);
       expect(requests[0]?.title).toBe('Ship the dashboard panel');
       expect(requests[0]?.createdAt).toBeTruthy();
+      expect(requests[0]?.priority).toBe(5);
+      expect(requests[0]?.effectivePriority).toBe(5);
       expect(requests[0]?.repoLabel).toBeTruthy();
     });
   });

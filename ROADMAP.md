@@ -93,13 +93,13 @@ Silvan aims to be the definitive tool for teams running AI-assisted development 
 
 ---
 
-### - [ ] Automatic Learning Application
+### - [x] Automatic Learning Application
 
 **Problem**: The learning system generates notes (`learning.mode: artifact`) but requires manual review to apply. Operators want high-confidence learnings applied automatically.
 
 **Acceptance Criteria**:
 
-- New config option `learning.autoApply.enabled` (default: false)
+- New config option `learning.autoApply.enabled` (default: true)
 - Configure confidence threshold for auto-apply
 - Auto-applied learnings committed with clear attribution (commit message references run)
 - `silvan learning review` shows pending learnings that did not meet auto-apply threshold
@@ -140,7 +140,7 @@ Silvan aims to be the definitive tool for teams running AI-assisted development 
 
 ---
 
-### - [ ] Review Intelligence and Priority Triage
+### - [x] Review Intelligence and Priority Triage
 
 **Problem**: Review threads are treated equally. There is no prioritization based on severity, no suggested reviewers based on code ownership, and no automated resolution for trivial comments.
 

@@ -64,6 +64,13 @@ Marks a run as aborted and prevents further automatic actions.
 - Status: `waiting_for_user`
 - Action: inspect the local gate report, fix issues, re‑run or override with a reason
 
+### Learning notes pending review
+
+- Status: `waiting_for_user`
+- Action: run `silvan learning review` to approve or reject pending learnings
+- Notes auto-apply by default when confidence is high, but file writes still require `--apply`
+- Only docs/rules/skills targets are eligible for auto-apply; unsafe targets stay pending
+
 ### CI failing
 
 - Status: `waiting_for_ci` or `blocked`
@@ -73,6 +80,7 @@ Marks a run as aborted and prevents further automatic actions.
 
 - Status: `waiting_for_review`
 - Action: apply fixes and resume the review loop
+  - Silvan triages review threads by severity and surfaces priorities via `run explain`
 
 ## Safety guarantees
 

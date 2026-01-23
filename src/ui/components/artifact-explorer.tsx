@@ -582,6 +582,7 @@ function formatReviewClassificationPreview(data: unknown): {
     actionableThreadIds?: string[];
     ignoredThreadIds?: string[];
     needsContextThreadIds?: string[];
+    threads?: Array<{ severity?: string }>;
     clusters?: Array<{ summary?: string; threadIds?: string[] }>;
   };
   const lines: string[] = ['Review Classification'];
@@ -591,6 +592,20 @@ function formatReviewClassificationPreview(data: unknown): {
   lines.push(
     `Actionable: ${actionable} | Ignored: ${ignored} | Needs context: ${needsContext}`,
   );
+  if (report.threads?.length) {
+    const severityCounts = report.threads.reduce<Record<string, number>>(
+      (acc, thread) => {
+        const severity = thread.severity ?? 'unknown';
+        acc[severity] = (acc[severity] ?? 0) + 1;
+        return acc;
+      },
+      {},
+    );
+    const summary = Object.entries(severityCounts)
+      .map(([severity, count]) => `${severity} ${count}`)
+      .join(' | ');
+    lines.push(`Severity: ${summary}`);
+  }
   if (report.clusters?.length) {
     lines.push('');
     lines.push('Clusters');

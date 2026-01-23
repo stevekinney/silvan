@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
-import { runQueueRequests } from './runner';
+import type { QueuePriorityTier } from './priority';
+import { runPriorityQueueRequests, runQueueRequests } from './runner';
 
 type TestRequest = { id: string };
 
@@ -71,5 +72,45 @@ describe('runQueueRequests', () => {
     expect(result.processed).toBe(2);
     expect(result.succeeded).toBe(1);
     expect(result.failed).toBe(1);
+  });
+});
+
+describe('runPriorityQueueRequests', () => {
+  test('respects tier concurrency', async () => {
+    const requests = [
+      { id: 'h1', priorityTier: 'high' as const },
+      { id: 'h2', priorityTier: 'high' as const },
+      { id: 'l1', priorityTier: 'low' as const },
+      { id: 'l2', priorityTier: 'low' as const },
+    ];
+    const inFlight: Record<QueuePriorityTier, number> = {
+      high: 0,
+      medium: 0,
+      low: 0,
+    };
+    const maxInFlight: Record<QueuePriorityTier, number> = {
+      high: 0,
+      medium: 0,
+      low: 0,
+    };
+
+    const result = await runPriorityQueueRequests({
+      requests,
+      tierConcurrency: { high: 1, medium: 1, low: 1 },
+      onRequest: async (request) => {
+        const tier = request.priorityTier;
+        inFlight[tier] += 1;
+        if (inFlight[tier] > maxInFlight[tier]) {
+          maxInFlight[tier] = inFlight[tier];
+        }
+        await sleep(20);
+        inFlight[tier] -= 1;
+      },
+    });
+
+    expect(result.succeeded).toBe(4);
+    expect(result.failed).toBe(0);
+    expect(maxInFlight['high']).toBeLessThanOrEqual(1);
+    expect(maxInFlight['low']).toBeLessThanOrEqual(1);
   });
 });

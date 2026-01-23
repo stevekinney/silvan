@@ -8,6 +8,7 @@ query ReviewThread($id: ID!) {
       comments(first: 100) {
         nodes {
           id
+          databaseId
           body
           path
           line

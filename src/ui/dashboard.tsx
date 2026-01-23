@@ -163,7 +163,7 @@ export function Dashboard({
           cache: loaderCache.current,
           scope: effectiveScope,
         }),
-        loadQueueRequests(stateStore, {
+        loadQueueRequests(stateStore, config, {
           cache: loaderCache.current,
           scope: effectiveScope,
         }),
@@ -433,10 +433,12 @@ export function Dashboard({
     if (!title) return;
     const queueRequests = await enqueueQueueRequest({
       state: stateStore,
+      config,
       cache: loaderCache.current,
       scope: effectiveScope,
       title,
       description: requestDescription,
+      priority: config.queue.priority.default,
     });
     setSnapshot((prev) => ({ ...prev, queueRequests }));
     setRequestActive(false);

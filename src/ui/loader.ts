@@ -1,8 +1,10 @@
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
+import type { Config } from '../config/schema';
 import type { Event } from '../events/schema';
 import { listWorktrees } from '../git/worktree';
+import { applyQueuePriority, sortByPriority } from '../queue/priority';
 import { listQueueRequestsInDir } from '../state/queue';
 import type { RunStateEnvelope, StateStore } from '../state/store';
 import { readStateMetadata } from '../state/store';
@@ -174,6 +176,7 @@ export async function loadRunEvents(options: {
 
 export async function loadQueueRequests(
   state: StateStore,
+  config: Config,
   options?: { cache?: RunSnapshotCache; scope?: DashboardScope },
 ): Promise<QueueRecord[]> {
   const roots = await resolveRepoRoots(state, {
@@ -181,13 +184,20 @@ export async function loadQueueRequests(
     ...(options?.scope ? { scope: options.scope } : {}),
   });
   const requests: QueueRecord[] = [];
+  const nowMs = Date.now();
   for (const root of roots) {
     const entries = await listQueueRequestsInDir(root.queueDir);
     for (const request of entries) {
+      const priorityInfo = applyQueuePriority(request, config, nowMs);
       requests.push({
         id: request.id,
         title: request.title,
         ...(request.description ? { description: request.description } : {}),
+        priority: priorityInfo.basePriority,
+        effectivePriority: priorityInfo.effectivePriority,
+        priorityBoost: priorityInfo.priorityBoost,
+        priorityTier: priorityInfo.priorityTier,
+        ageMinutes: priorityInfo.ageMinutes,
         createdAt: request.createdAt,
         ...(root.repoId ? { repoId: root.repoId } : {}),
         ...(root.repoLabel ? { repoLabel: root.repoLabel } : {}),
@@ -198,7 +208,7 @@ export async function loadQueueRequests(
     const repoA = a.repoLabel ?? a.repoId ?? '';
     const repoB = b.repoLabel ?? b.repoId ?? '';
     if (repoA !== repoB) return repoA.localeCompare(repoB);
-    return a.createdAt.localeCompare(b.createdAt);
+    return sortByPriority(a, b);
   });
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { appendMessages, createConversation } from 'conversationalist';
 import type { ZodSchema } from 'zod';
 
+import type { ReviewClassification } from '../../agent/schemas';
 import { configSchema } from '../../config/schema';
 import { EventBus } from '../../events/bus';
 import { setEnvValue, unsetEnvValue } from '../../utils/env';
@@ -194,10 +195,11 @@ describe('cognition workflows', () => {
       threads: [],
       store: createMemoryStore(),
       config,
-      client: createChatClient({
+      client: createChatClient<ReviewClassification>({
         actionableThreadIds: [] as string[],
         ignoredThreadIds: [] as string[],
         needsContextThreadIds: [] as string[],
+        threads: [],
       }),
     });
     restoreAnthropicToken();

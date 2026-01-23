@@ -41,10 +41,16 @@ export async function classifyReviewThreads(input: {
   systemWriter.write('You are the review triage agent for Silvan.');
   systemWriter.write('Classify review threads using only fingerprints and excerpts.');
   systemWriter.write(
-    'Return JSON only with: { actionableThreadIds, ignoredThreadIds, needsContextThreadIds, clusters? }.',
+    'Return JSON only with: { actionableThreadIds, ignoredThreadIds, needsContextThreadIds, threads?, clusters? }.',
   );
   systemWriter.write(
     'Use needsContextThreadIds only when full comment bodies are required to decide.',
+  );
+  systemWriter.write(
+    'For threads, include { threadId, severity, summary } for each thread you can assess.',
+  );
+  systemWriter.write(
+    'Severity values: blocking, question, suggestion, nitpick. Use nitpick sparingly for low-impact style feedback.',
   );
 
   const userWriter = new ProseWriter();
@@ -90,11 +96,15 @@ export async function classifyReviewThreads(input: {
     throw new Error('Review classification validation failed');
   }
 
-  const summary = [
+  const summaryParts = [
     `actionable: ${parsed.data.actionableThreadIds.length}`,
     `ignored: ${parsed.data.ignoredThreadIds.length}`,
     `needsContext: ${parsed.data.needsContextThreadIds.length}`,
-  ].join(', ');
+  ];
+  if (parsed.data.threads?.length) {
+    summaryParts.push(`threads: ${parsed.data.threads.length}`);
+  }
+  const summary = summaryParts.join(', ');
 
   const withSummary = appendMessages(snapshot.conversation, {
     role: 'assistant',

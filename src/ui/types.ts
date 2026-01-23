@@ -64,6 +64,13 @@ export type RunRecord = {
     actionable: number;
     ignored: number;
     needsContext: number;
+    severity?: {
+      blocking: number;
+      question: number;
+      suggestion: number;
+      nitpick: number;
+    };
+    autoResolved?: number;
   };
   reviewFixPlan?: {
     actionable: number;
@@ -102,6 +109,12 @@ export type RunRecord = {
     docs: number;
     mode: string;
     appliedTo?: string[];
+    status?: string;
+    confidence?: number;
+    threshold?: number;
+    autoApplied?: boolean;
+    commitSha?: string;
+    decisionReason?: string;
   };
   recoverySummary?: {
     nextAction: string;
@@ -136,6 +149,11 @@ export type QueueRecord = {
   id: string;
   title: string;
   description?: string;
+  priority: number;
+  effectivePriority: number;
+  priorityBoost?: number;
+  priorityTier?: 'high' | 'medium' | 'low';
+  ageMinutes?: number;
   createdAt: string;
   repoId?: string;
   repoLabel?: string;

@@ -184,7 +184,18 @@ const COMMAND_META: Record<string, HelpMeta> = {
       'silvan queue run --continue-on-error',
       'silvan queue run --json',
     ],
-    seeAlso: ['silvan task start "Your task"', 'silvan run list'],
+    seeAlso: ['silvan queue status', 'silvan task start --queue "Your task"'],
+  },
+  'queue status': {
+    examples: ['silvan queue status', 'silvan queue status --json'],
+    seeAlso: ['silvan queue run', 'silvan task start --queue "Your task"'],
+  },
+  'queue priority': {
+    examples: [
+      'silvan queue priority <requestId> 8',
+      'silvan queue priority <requestId> 8 --json',
+    ],
+    seeAlso: ['silvan queue status', 'silvan queue run'],
   },
   'convo show': {
     examples: ['silvan convo show <runId>', 'silvan convo show <runId> --limit 50'],
@@ -201,6 +212,23 @@ const COMMAND_META: Record<string, HelpMeta> = {
   'learning show': {
     examples: ['silvan learning show <runId>', 'silvan learning show <runId> --json'],
     seeAlso: ['silvan run inspect <runId>', 'silvan convo show <runId>'],
+  },
+  'learning review': {
+    examples: [
+      'silvan learning review',
+      'silvan learning review --approve <runId>',
+      'silvan learning review --reject <runId>',
+      'silvan learning review --approve --all',
+      'silvan learning review --json',
+    ],
+    seeAlso: ['silvan learning show <runId>', 'silvan run list'],
+  },
+  'learning rollback': {
+    examples: [
+      'silvan learning rollback <runId>',
+      'silvan learning rollback <runId> --json',
+    ],
+    seeAlso: ['silvan learning review', 'silvan run status <runId>'],
   },
   completion: {
     examples: ['silvan completion zsh', 'silvan completion bash'],

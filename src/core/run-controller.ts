@@ -1,3 +1,5 @@
+import { relative } from 'node:path';
+
 import { appendMessages } from 'conversationalist';
 import { ProseWriter } from 'prose-writer';
 
@@ -23,10 +25,17 @@ import { runGit } from '../git/exec';
 import { waitForCi } from '../github/ci';
 import { openOrUpdatePr, requestReviewers } from '../github/pr';
 import {
+  fetchReviewResponses,
   fetchReviewThreadById,
   fetchUnresolvedReviewComments,
+  replyToReviewComment,
   resolveReviewThread,
 } from '../github/review';
+import {
+  evaluateLearningTargets,
+  loadLearningHistory,
+  scoreLearningConfidence,
+} from '../learning/auto-apply';
 import {
   applyLearningNotes,
   generateLearningNotes,
@@ -34,13 +43,26 @@ import {
 } from '../learning/notes';
 import { hashPrompt, renderPromptSummary } from '../prompts';
 import { runAiReviewer } from '../review/ai-reviewer';
+import {
+  applySeverityPolicy,
+  buildReviewPriorityList,
+  buildSeverityIndex,
+  buildSeveritySummary,
+} from '../review/intelligence';
 import { formatLocalGateSummary, generateLocalGateReport } from '../review/local-gate';
 import {
   buildReviewPlanThreads,
   type ReviewThreadFingerprint,
   selectThreadsForContext,
 } from '../review/planning';
+import { suggestReviewers } from '../review/reviewer-suggestions';
 import { type ArtifactEntry, readArtifact, writeArtifact } from '../state/artifacts';
+import { type LearningRequest, writeLearningRequest } from '../state/learning';
+import {
+  readReviewerStats,
+  recordReviewerRequests,
+  recordReviewerResponses,
+} from '../state/reviewers';
 import {
   commentOnPrOpen,
   completeTask,
@@ -619,6 +641,53 @@ async function createCheckpointCommit(
   const shaResult = await runGit(['rev-parse', 'HEAD'], {
     cwd: worktreeRoot,
     context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot },
+  });
+  const sha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : undefined;
+
+  return { committed: true, ...(sha ? { sha } : {}) };
+}
+
+async function commitLearningNotes(options: {
+  ctx: RunContext;
+  worktreeRoot: string;
+  runId: string;
+  appliedTo: string[];
+  message: string;
+}): Promise<{ committed: boolean; sha?: string }> {
+  const relativePaths = options.appliedTo
+    .map((path) => relative(options.worktreeRoot, path))
+    .filter((path) => path && !path.startsWith('..'));
+
+  if (relativePaths.length === 0) {
+    return { committed: false };
+  }
+
+  await runGit(['add', '--', ...relativePaths], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+
+  const diff = await runGit(['diff', '--cached', '--quiet'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+
+  if (diff.exitCode === 0) {
+    return { committed: false };
+  }
+
+  const commit = await runGit(['commit', '-m', options.message], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
+  });
+
+  if (commit.exitCode !== 0) {
+    throw new Error(commit.stderr || 'Failed to commit learning notes');
+  }
+
+  const shaResult = await runGit(['rev-parse', 'HEAD'], {
+    cwd: options.worktreeRoot,
+    context: { runId: options.runId, repoRoot: options.ctx.repo.repoRoot },
   });
   const sha = shaResult.exitCode === 0 ? shaResult.stdout.trim() : undefined;
 
@@ -1632,9 +1701,62 @@ export async function runImplementation(
     }));
   }
   const reviewStep = getStepRecord(data, 'github.review.request');
+  const reviewIntelligence = ctx.config.review.intelligence;
+  let reviewerSuggestions: Awaited<ReturnType<typeof suggestReviewers>> | null = null;
+  if (reviewIntelligence?.enabled && reviewIntelligence.reviewerSuggestions.enabled) {
+    try {
+      const reviewerStats = await readReviewerStats(ctx.state);
+      reviewerSuggestions = await suggestReviewers({
+        repoRoot: worktreeRoot,
+        baseBranch,
+        headBranch: headBranch ?? baseBranch,
+        reviewerAliases: reviewIntelligence.reviewerSuggestions.reviewerAliases ?? {},
+        useCodeowners: reviewIntelligence.reviewerSuggestions.useCodeowners,
+        useBlame: reviewIntelligence.reviewerSuggestions.useBlame,
+        maxSuggestions: reviewIntelligence.reviewerSuggestions.maxSuggestions,
+        reviewerStats,
+      });
+      if (reviewerSuggestions) {
+        const suggestions = reviewerSuggestions;
+        await updateState(ctx, (data) => ({
+          ...data,
+          reviewerSuggestions: {
+            users: suggestions.users,
+            teams: suggestions.teams,
+            sources: suggestions.sources,
+            changedFiles: suggestions.changedFiles,
+            generatedAt: new Date().toISOString(),
+          },
+        }));
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to suggest reviewers';
+      await updateState(ctx, (data) => ({
+        ...data,
+        reviewerSuggestions: {
+          users: [],
+          teams: [],
+          sources: { codeowners: [], blame: [] },
+          changedFiles: [],
+          generatedAt: new Date().toISOString(),
+          error: message,
+        },
+      }));
+    }
+  }
+
+  const suggestedUsers = reviewerSuggestions?.users ?? [];
+  const reviewersToRequest =
+    ctx.config.github.reviewers.length > 0
+      ? ctx.config.github.reviewers
+      : reviewIntelligence?.reviewerSuggestions.autoRequest
+        ? suggestedUsers
+        : [];
+
   const requestKey = reviewRequestKey({
     prNumber: prResult.pr.number,
-    reviewers: ctx.config.github.reviewers,
+    reviewers: reviewersToRequest,
     requestCopilot: ctx.config.github.requestCopilot,
   });
   const existingRequestKey =
@@ -1643,14 +1765,27 @@ export async function runImplementation(
     await runStep(ctx, 'github.review.request', 'Request reviewers', () =>
       requestReviewers({
         pr: prResult.pr,
-        reviewers: ctx.config.github.reviewers,
+        reviewers: reviewersToRequest,
         requestCopilot: ctx.config.github.requestCopilot,
         token: githubToken,
         bus: ctx.events.bus,
         context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
       }),
     );
-    await updateState(ctx, (data) => ({ ...data, reviewRequestKey: requestKey }));
+    const requestedAt = new Date().toISOString();
+    await updateState(ctx, (data) => ({
+      ...data,
+      reviewRequestKey: requestKey,
+      reviewRequest: {
+        reviewers: reviewersToRequest,
+        suggestedReviewers: suggestedUsers,
+        requestedAt,
+        copilot: ctx.config.github.requestCopilot,
+      },
+    }));
+    if (reviewersToRequest.length > 0) {
+      await recordReviewerRequests({ state: ctx.state, reviewers: reviewersToRequest });
+    }
   }
 
   await updateState(ctx, (data) => ({ ...data, pr: prResult.pr }));
@@ -1911,6 +2046,92 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         },
       }));
 
+      const reviewRequest = (typeof iterationData['reviewRequest'] === 'object' &&
+      iterationData['reviewRequest']
+        ? (iterationData['reviewRequest'] as {
+            reviewers?: string[];
+            requestedAt?: string;
+          })
+        : undefined) ?? { reviewers: [], requestedAt: undefined };
+      const requestedAt = reviewRequest.requestedAt;
+      const requestedReviewers = Array.isArray(reviewRequest.reviewers)
+        ? reviewRequest.reviewers
+        : [];
+
+      if (requestedAt && requestedReviewers.length > 0) {
+        const responses = await fetchReviewResponses({
+          pr: review.pr,
+          token: githubToken,
+          since: requestedAt,
+          bus: ctx.events.bus,
+          context: emitContext,
+        });
+        const responseByReviewer = new Map<string, { submittedAt: string }>();
+        for (const response of responses) {
+          const existing = responseByReviewer.get(response.reviewer);
+          if (!existing || response.submittedAt < existing.submittedAt) {
+            responseByReviewer.set(response.reviewer, {
+              submittedAt: response.submittedAt,
+            });
+          }
+        }
+        const respondedReviewers = Array.from(responseByReviewer.keys());
+        const pendingReviewers = requestedReviewers.filter(
+          (reviewer) => !responseByReviewer.has(reviewer),
+        );
+        const requestTs = Date.parse(requestedAt);
+        const responseTimes = respondedReviewers
+          .map((reviewer) => {
+            const submittedAt = responseByReviewer.get(reviewer)?.submittedAt ?? '';
+            const submittedTs = Date.parse(submittedAt);
+            if (Number.isNaN(requestTs) || Number.isNaN(submittedTs)) return null;
+            const hours = (submittedTs - requestTs) / (1000 * 60 * 60);
+            return { reviewer, responseHours: hours, respondedAt: submittedAt };
+          })
+          .filter(
+            (
+              entry,
+            ): entry is {
+              reviewer: string;
+              responseHours: number;
+              respondedAt: string;
+            } => entry !== null,
+          );
+        const avgResponseHours =
+          responseTimes.length > 0
+            ? responseTimes.reduce((sum, entry) => sum + entry.responseHours, 0) /
+              responseTimes.length
+            : undefined;
+        const previousSummary = (iterationData['reviewResponseSummary'] as
+          | { respondedReviewers?: string[] }
+          | undefined) ?? { respondedReviewers: [] };
+        const recordedReviewers = new Set(previousSummary.respondedReviewers ?? []);
+        const newResponses = responseTimes.filter(
+          (entry) => !recordedReviewers.has(entry.reviewer),
+        );
+        if (newResponses.length > 0) {
+          await recordReviewerResponses({ state: ctx.state, responses: newResponses });
+        }
+        await updateState(ctx, (data) => ({
+          ...data,
+          reviewResponseSummary: {
+            requestedAt,
+            reviewers: requestedReviewers,
+            respondedReviewers,
+            pendingReviewers,
+            ...(avgResponseHours !== undefined ? { avgResponseHours } : {}),
+            ...(responseTimes.length > 0
+              ? {
+                  lastResponseAt: responseTimes
+                    .map((entry) => entry.respondedAt)
+                    .sort()
+                    .slice(-1)[0],
+                }
+              : {}),
+          },
+        }));
+      }
+
       if (review.comments.length === 0 && ciResult.state === 'passing') {
         await changePhase(ctx, 'complete', 'review_loop_clean');
         const latest = await ctx.state.readRunState(ctx.runId);
@@ -1934,6 +2155,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         });
         entry.comments.push({
           id: comment.id,
+          databaseId: comment.databaseId ?? null,
           path: comment.path,
           line: comment.line,
           bodyDigest: hashString(comment.body),
@@ -2036,19 +2258,163 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
         },
       );
 
+      const fingerprintList = Object.values(threadFingerprints);
+      const reviewIntelligence = ctx.config.review.intelligence;
+      const severityIndex = buildSeverityIndex({
+        classification,
+        fingerprints: fingerprintList,
+      });
+      const severitySummary = buildSeveritySummary(severityIndex.severityByThreadId);
+      const applyIntelligence = reviewIntelligence.enabled;
+      const policyAction = applyIntelligence
+        ? applySeverityPolicy({
+            severityByThreadId: severityIndex.severityByThreadId,
+            policy: reviewIntelligence.severityPolicy,
+          })
+        : {
+            actionableThreadIds: classification.actionableThreadIds,
+            ignoredThreadIds: classification.ignoredThreadIds,
+            autoResolveThreadIds: [],
+          };
+
+      let actionableThreadIds = policyAction.actionableThreadIds;
+      let ignoredThreadIds = policyAction.ignoredThreadIds;
+      let autoResolveThreadIds = policyAction.autoResolveThreadIds;
+
+      if (!applyIntelligence) {
+        autoResolveThreadIds = [];
+      }
+
       await updateState(ctx, (data) => ({
         ...data,
         reviewClassificationSummary: {
-          actionable: classification.actionableThreadIds.length,
-          ignored: classification.ignoredThreadIds.length,
+          actionable: actionableThreadIds.length,
+          ignored: ignoredThreadIds.length,
           needsContext: classification.needsContextThreadIds.length,
+          severity: severitySummary,
         },
+        reviewThreadPriority: buildReviewPriorityList({
+          fingerprints: fingerprintList,
+          severityByThreadId: severityIndex.severityByThreadId,
+          summaryByThreadId: severityIndex.summaryByThreadId,
+        }),
       }));
-      const fingerprintList = Object.values(threadFingerprints);
       const threadsNeedingContext = selectThreadsForContext({
         fingerprints: fingerprintList,
         needsContextThreadIds: classification.needsContextThreadIds,
       });
+
+      const autoResolveEnabled = applyIntelligence && autoResolveThreadIds.length > 0;
+      let resolvedAutoResolveIds: string[] = [];
+      let autoResolveFailures: Array<{ threadId: string; reason: string }> = [];
+      let autoResolveSkipped: Array<{ threadId: string; reason: string }> = [];
+
+      if (autoResolveEnabled) {
+        const allowAutoResolve = Boolean(options.apply);
+        if (!allowAutoResolve) {
+          autoResolveSkipped = autoResolveThreadIds.map((threadId) => ({
+            threadId,
+            reason: 'apply_disabled',
+          }));
+        } else {
+          const autoResolveStep = getStepRecord(iterationData, 'review.nitpick.resolve');
+          if (autoResolveStep?.status !== 'done') {
+            const autoResolveResult = await runStep(
+              ctx,
+              'review.nitpick.resolve',
+              'Resolve nitpick review threads',
+              async () => {
+                const resolved: string[] = [];
+                const skipped: Array<{ threadId: string; reason: string }> = [];
+                const failed: Array<{ threadId: string; reason: string }> = [];
+                const byId = new Map(
+                  fingerprintList.map((thread) => [thread.threadId, thread]),
+                );
+
+                for (const threadId of autoResolveThreadIds) {
+                  const thread = byId.get(threadId);
+                  if (!thread) {
+                    skipped.push({ threadId, reason: 'missing_thread' });
+                    continue;
+                  }
+                  if (thread.isOutdated) {
+                    skipped.push({ threadId, reason: 'outdated_thread' });
+                    continue;
+                  }
+                  const commentId = thread.comments[0]?.databaseId;
+                  if (!commentId) {
+                    skipped.push({ threadId, reason: 'missing_comment_id' });
+                    continue;
+                  }
+                  try {
+                    await replyToReviewComment({
+                      pr: review.pr,
+                      commentId,
+                      body: reviewIntelligence.nitpickAcknowledgement,
+                      token: githubToken,
+                      bus: ctx.events.bus,
+                      context: emitContext,
+                    });
+                    await resolveReviewThread({
+                      threadId,
+                      pr: review.pr,
+                      token: githubToken,
+                      bus: ctx.events.bus,
+                      context: emitContext,
+                    });
+                    resolved.push(threadId);
+                  } catch (error) {
+                    const reason =
+                      error instanceof Error ? error.message : 'failed_to_resolve';
+                    failed.push({ threadId, reason });
+                  }
+                }
+                return { resolved, skipped, failed };
+              },
+              {
+                inputs: { count: autoResolveThreadIds.length },
+                artifacts: (result) => ({ result }),
+              },
+            );
+            resolvedAutoResolveIds = autoResolveResult.resolved;
+            autoResolveFailures = autoResolveResult.failed;
+            autoResolveSkipped = autoResolveResult.skipped;
+          }
+        }
+      }
+
+      if (autoResolveEnabled) {
+        const resolvedSet = new Set(resolvedAutoResolveIds);
+        const unresolvedAutoResolve = [
+          ...autoResolveFailures.map((item) => item.threadId),
+          ...autoResolveSkipped.map((item) => item.threadId),
+        ];
+        actionableThreadIds = [
+          ...new Set([
+            ...actionableThreadIds.filter((id) => !resolvedSet.has(id)),
+            ...unresolvedAutoResolve,
+          ]),
+        ];
+        ignoredThreadIds = ignoredThreadIds.filter((id) => !resolvedSet.has(id));
+        await updateState(ctx, (data) => ({
+          ...data,
+          reviewClassificationSummary: {
+            actionable: actionableThreadIds.length,
+            ignored: ignoredThreadIds.length,
+            needsContext: classification.needsContextThreadIds.length,
+            severity: severitySummary,
+            autoResolved: resolvedAutoResolveIds.length,
+          },
+          reviewAutoResolveSummary: {
+            attempted: autoResolveThreadIds.length,
+            resolved: resolvedAutoResolveIds.length,
+            skipped: autoResolveSkipped.length,
+            failed: autoResolveFailures.length,
+            ...(autoResolveFailures.length > 0 ? { failures: autoResolveFailures } : {}),
+            ...(autoResolveSkipped.length > 0 ? { skipped: autoResolveSkipped } : {}),
+          },
+        }));
+      }
 
       const detailedThreads = threadsNeedingContext.length
         ? await runStep(
@@ -2084,6 +2450,7 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
                   isOutdated: thread.isOutdated,
                   comments: thread.comments.nodes.map((comment) => ({
                     id: comment.id,
+                    databaseId: comment.databaseId ?? null,
                     path: comment.path,
                     line: comment.line,
                     body: comment.body,
@@ -2103,8 +2470,8 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
       const threadsForPlan = buildReviewPlanThreads({
         fingerprints: fingerprintList,
         detailedThreads,
-        actionableThreadIds: classification.actionableThreadIds,
-        ignoredThreadIds: classification.ignoredThreadIds,
+        actionableThreadIds,
+        ignoredThreadIds,
       });
 
       const fixPlan = await runStep(
@@ -2122,8 +2489,8 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
           }),
         {
           inputs: {
-            actionable: classification.actionableThreadIds.length,
-            ignored: classification.ignoredThreadIds.length,
+            actionable: actionableThreadIds.length,
+            ignored: ignoredThreadIds.length,
           },
           artifacts: (result) => ({ plan: result }),
         },
@@ -2474,7 +2841,10 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
   }
 }
 
-export async function runLearningNotes(ctx: RunContext): Promise<void> {
+export async function runLearningNotes(
+  ctx: RunContext,
+  options?: { allowApply?: boolean },
+): Promise<void> {
   const config = ctx.config.learning;
   if (!config.enabled) return;
 
@@ -2586,25 +2956,120 @@ export async function runLearningNotes(ctx: RunContext): Promise<void> {
     });
   }
 
-  await updateState(ctx, (prev) => ({
-    ...prev,
-    learningSummary: {
-      summary: notes.summary,
-      rules: notes.rules.length,
-      skills: notes.skills.length,
-      docs: notes.docs.length,
-      mode: config.mode,
-    },
-  }));
+  const allowApply = options?.allowApply ?? true;
+  const applyTargets = {
+    ...(config.targets.rules ? { rules: config.targets.rules } : {}),
+    ...(config.targets.skills ? { skills: config.targets.skills } : {}),
+    ...(config.targets.docs ? { docs: config.targets.docs } : {}),
+  };
+  const targetCheck = evaluateLearningTargets({
+    targets: applyTargets,
+    worktreeRoot,
+  });
+  const hasItems = notes.rules.length + notes.skills.length + notes.docs.length > 0;
+  const baseSummary = {
+    summary: notes.summary,
+    rules: notes.rules.length,
+    skills: notes.skills.length,
+    docs: notes.docs.length,
+    mode: config.mode,
+  };
+  const updateLearningSummary = async (extra?: Record<string, unknown>) =>
+    updateState(ctx, (prev) => ({
+      ...prev,
+      learningSummary: {
+        ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
+          ? (prev['learningSummary'] as Record<string, unknown>)
+          : {}),
+        ...baseSummary,
+        ...(extra ?? {}),
+      },
+    }));
 
-  if (config.mode === 'apply') {
+  if (!hasItems) {
+    await updateLearningSummary({ status: 'skipped', reason: 'no_items' });
+    return;
+  }
+
+  const autoApplyConfig = config.autoApply;
+  const shouldScore = autoApplyConfig.enabled;
+  const shouldAutoApply = config.mode !== 'apply' && autoApplyConfig.enabled;
+  const shouldApplyImmediately = config.mode === 'apply';
+  const ciState = summary['ci'] as import('../events/schema').CiState | undefined;
+  const unresolvedReviews =
+    typeof summary['unresolvedReviewCount'] === 'number'
+      ? summary['unresolvedReviewCount']
+      : undefined;
+  const aiReviewSummary = data['aiReviewSummary'] as { shipIt?: boolean } | undefined;
+
+  const confidenceResult = shouldScore
+    ? scoreLearningConfidence({
+        notes,
+        history: await loadLearningHistory({
+          state: ctx.state,
+          excludeRunId: ctx.runId,
+          lookbackDays: autoApplyConfig.lookbackDays,
+          maxEntries: autoApplyConfig.maxHistory,
+        }),
+        minSamples: autoApplyConfig.minSamples,
+        threshold: autoApplyConfig.threshold,
+        ...(ciState ? { ci: ciState } : {}),
+        ...(typeof unresolvedReviews === 'number' ? { unresolvedReviews } : {}),
+        ...(typeof aiReviewSummary?.shipIt === 'boolean'
+          ? { aiReviewShipIt: aiReviewSummary.shipIt }
+          : {}),
+      })
+    : undefined;
+
+  if (shouldApplyImmediately) {
+    if (!allowApply) {
+      const request: LearningRequest = {
+        id: ctx.runId,
+        runId: ctx.runId,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        summary: notes.summary,
+        confidence: confidenceResult?.confidence ?? 0,
+        threshold: confidenceResult?.threshold ?? autoApplyConfig.threshold,
+        notes,
+        targets: applyTargets,
+        reason: 'apply_disabled',
+      };
+      await writeLearningRequest({ state: ctx.state, request });
+      await updateLearningSummary({
+        status: 'pending',
+        confidence: request.confidence,
+        threshold: request.threshold,
+        decisionReason: request.reason,
+      });
+      return;
+    }
+
+    if (!targetCheck.ok) {
+      const request: LearningRequest = {
+        id: ctx.runId,
+        runId: ctx.runId,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        summary: notes.summary,
+        confidence: confidenceResult?.confidence ?? 0,
+        threshold: confidenceResult?.threshold ?? autoApplyConfig.threshold,
+        notes,
+        targets: applyTargets,
+        reason: `unsafe_targets: ${targetCheck.reasons.join('; ')}`,
+      };
+      await writeLearningRequest({ state: ctx.state, request });
+      await updateLearningSummary({
+        status: 'pending',
+        confidence: request.confidence,
+        threshold: request.threshold,
+        decisionReason: request.reason,
+      });
+      return;
+    }
+
     const applyStep = getStepRecord(data, 'learning.apply');
     if (applyStep?.status !== 'done') {
-      const applyTargets = {
-        ...(config.targets.rules ? { rules: config.targets.rules } : {}),
-        ...(config.targets.skills ? { skills: config.targets.skills } : {}),
-        ...(config.targets.docs ? { docs: config.targets.docs } : {}),
-      };
       const applyResult = await runStep(
         ctx,
         'learning.apply',
@@ -2618,18 +3083,152 @@ export async function runLearningNotes(ctx: RunContext): Promise<void> {
           }),
         { artifacts: (result) => ({ result }) },
       );
-      await updateState(ctx, (prev) => ({
-        ...prev,
-        learningSummary: {
-          ...(typeof prev['learningSummary'] === 'object' && prev['learningSummary']
-            ? (prev['learningSummary'] as Record<string, unknown>)
-            : {}),
-          applied: true,
+      const commitResult = await commitLearningNotes({
+        ctx,
+        worktreeRoot,
+        runId: ctx.runId,
+        appliedTo: applyResult.appliedTo,
+        message: `silvan: apply learnings (${ctx.runId})`,
+      });
+      const appliedAt = new Date().toISOString();
+      await updateLearningSummary({
+        status: 'applied',
+        appliedTo: applyResult.appliedTo,
+        appliedAt,
+        commitSha: commitResult.sha,
+        autoApplied: true,
+      });
+      await writeLearningRequest({
+        state: ctx.state,
+        request: {
+          id: ctx.runId,
+          runId: ctx.runId,
+          status: 'applied',
+          createdAt: appliedAt,
+          updatedAt: appliedAt,
+          summary: notes.summary,
+          confidence: confidenceResult?.confidence ?? 1,
+          threshold: confidenceResult?.threshold ?? autoApplyConfig.threshold,
+          notes,
+          targets: applyTargets,
+          appliedAt,
           appliedTo: applyResult.appliedTo,
+          ...(commitResult.sha ? { commitSha: commitResult.sha } : {}),
+          reason: 'mode_apply',
         },
-      }));
+      });
     }
+    return;
   }
+
+  if (!shouldAutoApply) {
+    await updateLearningSummary({ status: 'recorded' });
+    return;
+  }
+
+  const confidence = confidenceResult?.confidence ?? 0;
+  const threshold = confidenceResult?.threshold ?? autoApplyConfig.threshold;
+  const belowThreshold = confidence < threshold;
+  const applyBlockedReason = !allowApply
+    ? 'apply_disabled'
+    : !targetCheck.ok
+      ? `unsafe_targets: ${targetCheck.reasons.join('; ')}`
+      : belowThreshold
+        ? 'below_threshold'
+        : undefined;
+
+  if (applyBlockedReason) {
+    const request: LearningRequest = {
+      id: ctx.runId,
+      runId: ctx.runId,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      summary: notes.summary,
+      confidence,
+      threshold,
+      notes,
+      targets: applyTargets,
+      reason: applyBlockedReason,
+    };
+    await writeLearningRequest({ state: ctx.state, request });
+    await updateLearningSummary({
+      status: 'pending',
+      confidence,
+      threshold,
+      decisionReason: applyBlockedReason,
+      ...(confidenceResult?.breakdown
+        ? { confidenceBreakdown: confidenceResult.breakdown }
+        : {}),
+    });
+    return;
+  }
+
+  const autoApplyStep = getStepRecord(data, 'learning.auto_apply');
+  if (autoApplyStep?.status === 'done') {
+    await updateLearningSummary({
+      status: 'applied',
+      confidence,
+      threshold,
+      autoApplied: true,
+      ...(confidenceResult?.breakdown
+        ? { confidenceBreakdown: confidenceResult.breakdown }
+        : {}),
+    });
+    return;
+  }
+
+  const applyResult = await runStep(
+    ctx,
+    'learning.auto_apply',
+    'Auto-apply learning updates',
+    () =>
+      applyLearningNotes({
+        runId: ctx.runId,
+        worktreeRoot,
+        notes,
+        targets: applyTargets,
+      }),
+    { artifacts: (result) => ({ result }) },
+  );
+  const commitResult = await commitLearningNotes({
+    ctx,
+    worktreeRoot,
+    runId: ctx.runId,
+    appliedTo: applyResult.appliedTo,
+    message: `silvan: apply learnings (${ctx.runId})`,
+  });
+  const appliedAt = new Date().toISOString();
+  await updateLearningSummary({
+    status: 'applied',
+    appliedTo: applyResult.appliedTo,
+    appliedAt,
+    commitSha: commitResult.sha,
+    autoApplied: true,
+    confidence,
+    threshold,
+    ...(confidenceResult?.breakdown
+      ? { confidenceBreakdown: confidenceResult.breakdown }
+      : {}),
+  });
+  await writeLearningRequest({
+    state: ctx.state,
+    request: {
+      id: ctx.runId,
+      runId: ctx.runId,
+      status: 'applied',
+      createdAt: appliedAt,
+      updatedAt: appliedAt,
+      summary: notes.summary,
+      confidence,
+      threshold,
+      notes,
+      targets: applyTargets,
+      appliedAt,
+      appliedTo: applyResult.appliedTo,
+      ...(commitResult.sha ? { commitSha: commitResult.sha } : {}),
+      reason: 'auto_apply',
+    },
+  });
 }
 
 export async function runRecovery(ctx: RunContext): Promise<void> {
