@@ -4,7 +4,8 @@ import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import type { Config } from '../config/schema';
 import type { Event } from '../events/schema';
 import { listWorktrees } from '../git/worktree';
-import { applyQueuePriority, sortByPriority } from '../queue/priority';
+import { sortByPriority } from '../queue/priority';
+import { buildQueueRequestView } from '../queue/view';
 import { listQueueRequestsInDir } from '../state/queue';
 import type { RunStateEnvelope, StateStore } from '../state/store';
 import { readStateMetadata } from '../state/store';
@@ -188,17 +189,9 @@ export async function loadQueueRequests(
   for (const root of roots) {
     const entries = await listQueueRequestsInDir(root.queueDir);
     for (const request of entries) {
-      const priorityInfo = applyQueuePriority(request, config, nowMs);
+      const view = buildQueueRequestView(request, config, nowMs);
       requests.push({
-        id: request.id,
-        title: request.title,
-        ...(request.description ? { description: request.description } : {}),
-        priority: priorityInfo.basePriority,
-        effectivePriority: priorityInfo.effectivePriority,
-        priorityBoost: priorityInfo.priorityBoost,
-        priorityTier: priorityInfo.priorityTier,
-        ageMinutes: priorityInfo.ageMinutes,
-        createdAt: request.createdAt,
+        ...view,
         ...(root.repoId ? { repoId: root.repoId } : {}),
         ...(root.repoLabel ? { repoLabel: root.repoLabel } : {}),
       });

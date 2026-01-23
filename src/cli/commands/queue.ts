@@ -6,13 +6,9 @@ import type { RunContext } from '../../core/context';
 import { withRunContext } from '../../core/context';
 import { SilvanError } from '../../core/errors';
 import type { EventMode } from '../../events/schema';
-import {
-  applyQueuePriority,
-  PRIORITY_MAX,
-  PRIORITY_MIN,
-  sortByPriority,
-} from '../../queue/priority';
+import { PRIORITY_MAX, PRIORITY_MIN, sortByPriority } from '../../queue/priority';
 import { runPriorityQueueRequests, runQueueRequests } from '../../queue/runner';
+import { buildQueueRequestView, type QueueRequestView } from '../../queue/view';
 import {
   deleteQueueRequest,
   listQueueRequests,
@@ -68,8 +64,9 @@ export function registerQueueCommands(cli: CAC, deps: QueueCommandDeps): void {
         const jsonMode = Boolean(options.json);
         const logger = deps.createCliLogger(ctx);
         const requests = await listQueueRequests({ state: ctx.state });
-        const prioritizedRequests = requests
-          .map((request) => applyQueuePriority(request, ctx.config))
+        const nowMs = Date.now();
+        const prioritizedRequests: QueueRequestView[] = requests
+          .map((request) => buildQueueRequestView(request, ctx.config, nowMs))
           .sort(sortByPriority);
         const priorityDepth = new Map<number, number>();
         const basePriorityDepth = new Map<number, number>();
@@ -206,8 +203,9 @@ export function registerQueueCommands(cli: CAC, deps: QueueCommandDeps): void {
           return;
         }
 
-        const prioritizedRequests = requests
-          .map((request) => applyQueuePriority(request, ctx.config))
+        const nowMs = Date.now();
+        const prioritizedRequests: QueueRequestView[] = requests
+          .map((request) => buildQueueRequestView(request, ctx.config, nowMs))
           .sort(sortByPriority);
         const requestLabels = new Map(
           prioritizedRequests.map((request) => [request.id, request.title]),
