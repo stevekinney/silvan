@@ -9,8 +9,8 @@ import type { SessionPool } from '../agent/session';
 import { suggestVerificationRecovery } from '../ai/cognition/assist';
 import { generateVerificationFixPlan } from '../ai/cognition/verification-fix';
 import { createConversationStore } from '../ai/conversation';
-import { createEnvelope, type EmitContext, toEventError } from '../events/emit';
-import type { Phase, RunPhaseChanged, RunStep } from '../events/schema';
+import { type EmitContext, toEventError } from '../events/emit';
+import type { Phase } from '../events/schema';
 import { runGit } from '../git/exec';
 import type { ArtifactEntry } from '../state/artifacts';
 import { writeArtifact } from '../state/artifacts';
@@ -20,6 +20,7 @@ import { shouldAttemptVerificationAutoFix } from '../verify/auto-fix';
 import { runVerifyCommands, type VerifyResult } from '../verify/run';
 import type { RunContext } from './context';
 import { createLogger } from './logger';
+import { emitRunPersisted, emitRunPhaseChanged, emitRunStep } from './run-events';
 
 export type RunControllerOptions = {
   taskRef?: string;
@@ -690,19 +691,11 @@ export async function updateState(
       },
     };
   });
-  await ctx.events.bus.emit(
-    createEnvelope({
-      type: 'run.persisted',
-      source: 'engine',
-      level: 'info',
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      payload: {
-        path: `${ctx.state.runsDir}/${ctx.runId}.json`,
-        snapshotId,
-        stateVersion: ctx.state.stateVersion,
-      },
-    }),
-  );
+  await emitRunPersisted(ctx, {
+    path: `${ctx.state.runsDir}/${ctx.runId}.json`,
+    snapshotId,
+    stateVersion: ctx.state.stateVersion,
+  });
 }
 
 export async function changePhase(
@@ -724,19 +717,11 @@ export async function changePhase(
     },
   }));
 
-  await ctx.events.bus.emit(
-    createEnvelope({
-      type: 'run.phase_changed',
-      source: 'engine',
-      level: 'info',
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      payload: {
-        from,
-        to,
-        ...(reason ? { reason } : {}),
-      } satisfies RunPhaseChanged,
-    }),
-  );
+  await emitRunPhaseChanged(ctx, {
+    from,
+    to,
+    ...(reason ? { reason } : {}),
+  });
 }
 
 export async function runStep<T>(
@@ -782,15 +767,7 @@ export async function runStep<T>(
     };
   });
 
-  await ctx.events.bus.emit(
-    createEnvelope({
-      type: 'run.step',
-      source: 'engine',
-      level: 'info',
-      context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-      payload: { stepId, title, status: 'running' } satisfies RunStep,
-    }),
-  );
+  await emitRunStep(ctx, { stepId, title, status: 'running' });
   try {
     const result = await fn();
     const endedAt = new Date().toISOString();
@@ -839,15 +816,7 @@ export async function runStep<T>(
           : {}),
       };
     });
-    await ctx.events.bus.emit(
-      createEnvelope({
-        type: 'run.step',
-        source: 'engine',
-        level: 'info',
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-        payload: { stepId, title, status: 'succeeded' } satisfies RunStep,
-      }),
-    );
+    await emitRunStep(ctx, { stepId, title, status: 'succeeded' });
     return result;
   } catch (error) {
     void error;
@@ -888,15 +857,7 @@ export async function runStep<T>(
       metadata: { kind: 'error', protected: true },
     });
     await errorStore.save(errorConversation);
-    await ctx.events.bus.emit(
-      createEnvelope({
-        type: 'run.step',
-        source: 'engine',
-        level: 'error',
-        context: { runId: ctx.runId, repoRoot: ctx.repo.repoRoot, mode: ctx.events.mode },
-        payload: { stepId, title, status: 'failed' } satisfies RunStep,
-      }),
-    );
+    await emitRunStep(ctx, { stepId, title, status: 'failed' }, 'error');
     throw error;
   }
 }
