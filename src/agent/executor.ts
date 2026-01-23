@@ -59,19 +59,16 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
     ...(input.state ? { state: input.state } : {}),
   });
 
-  const readOnlyBuiltinTools = new Set([
-    'read_file',
-    'list_directory',
-    'search_files',
-    'glob',
-  ]);
-  const mutatingBuiltinTools = new Set(['write_file', 'edit_file', 'create_file']);
-  const dangerousBuiltinTools = new Set(['bash']);
+  const builtinTools = {
+    readOnly: ['read_file', 'list_directory', 'search_files', 'glob'],
+    mutating: ['write_file', 'edit_file', 'create_file'],
+    dangerous: ['bash'],
+  };
   const allowedToolCount =
     registry.toolNames.length +
-    readOnlyBuiltinTools.size +
-    mutatingBuiltinTools.size +
-    dangerousBuiltinTools.size;
+    builtinTools.readOnly.length +
+    builtinTools.mutating.length +
+    builtinTools.dangerous.length;
 
   const start = performance.now();
   if (input.bus) {
@@ -120,11 +117,7 @@ export async function executePlan(input: ExecutorInput): Promise<string> {
       readOnly: input.dryRun,
       allowMutation: input.allowDestructive,
       allowDangerous: input.allowDangerous && input.allowDestructive && !input.dryRun,
-      builtin: {
-        readOnly: Array.from(readOnlyBuiltinTools),
-        mutating: Array.from(mutatingBuiltinTools),
-        dangerous: Array.from(dangerousBuiltinTools),
-      },
+      builtin: builtinTools,
       messages: {
         dangerous: 'Use --apply and --dangerous to allow this tool.',
       },
