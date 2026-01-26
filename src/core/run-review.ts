@@ -255,7 +255,6 @@ export async function runReviewLoop(ctx: RunContext, options: RunControllerOptio
             },
           }),
         );
-        finalCiState = ciAfter.state;
         if (ciAfter.state === 'failing') {
           await updateState(ctx, (data) => ({
             ...data,

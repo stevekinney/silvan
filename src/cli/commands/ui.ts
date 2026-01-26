@@ -40,7 +40,7 @@ export function registerUiCommands(cli: CAC, deps: UiCommandDeps): void {
       options,
       'ui',
       async (ctx) => {
-        let stopPolling = () => {};
+        let stopPolling: () => void;
         try {
           const githubToken = requireGitHubAuth(ctx.config);
           const github = await requireGitHubConfig({
