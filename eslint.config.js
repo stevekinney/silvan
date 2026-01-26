@@ -30,6 +30,8 @@ const commonPlugins = {
 const coreRules = {
   'no-restricted-syntax': ['error', 'WithStatement', 'LabeledStatement'],
   'no-console': 'off',
+  'max-lines': ['warn', { max: 800, skipBlankLines: true, skipComments: true }],
+  complexity: ['warn', 20],
 };
 
 const promiseRules = {
