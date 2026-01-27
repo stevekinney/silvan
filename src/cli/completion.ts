@@ -44,7 +44,9 @@ const RUN_SUBCOMMANDS = [
 const AGENT_SUBCOMMANDS = ['plan', 'clarify', 'run', 'resume'];
 const PR_SUBCOMMANDS = ['open', 'sync'];
 const CONFIG_SUBCOMMANDS = ['show', 'validate'];
+const QUEUE_SUBCOMMANDS = ['status', 'run', 'priority'];
 const CONVO_SUBCOMMANDS = ['show', 'export'];
+const LEARNING_SUBCOMMANDS = ['show', 'review', 'rollback'];
 
 export function generateBashCompletion(): string {
   return `# silvan bash completion
@@ -96,7 +98,7 @@ _silvan_completions() {
             return 0
             ;;
         queue)
-            COMPREPLY=( $(compgen -W "run" -- "\${cur}") )
+            COMPREPLY=( $(compgen -W "${QUEUE_SUBCOMMANDS.join(' ')}" -- "\${cur}") )
             return 0
             ;;
         review)
@@ -104,7 +106,7 @@ _silvan_completions() {
             return 0
             ;;
         learning)
-            COMPREPLY=( $(compgen -W "show" -- "\${cur}") )
+            COMPREPLY=( $(compgen -W "${LEARNING_SUBCOMMANDS.join(' ')}" -- "\${cur}") )
             return 0
             ;;
         completion)
@@ -136,7 +138,7 @@ _silvan() {
         'pr:Pull request automation'
         'ci:CI/GitHub integration'
         'config:Show/validate configuration'
-        'queue:Process queued requests'
+        'queue:Manage queued requests'
         'review:Review management'
         'learning:Learning artifacts'
         'convo:Conversation context'
@@ -176,6 +178,20 @@ _silvan() {
         'resume:Resume agent'
     )
 
+    local -a learning_commands
+    learning_commands=(
+        'show:Show learning notes'
+        'review:Review pending learnings'
+        'rollback:Rollback applied learning updates'
+    )
+
+    local -a queue_commands
+    queue_commands=(
+        'status:Show queue depth by priority'
+        'run:Process queued requests'
+        'priority:Set queue priority'
+    )
+
     _arguments -C \\
         '1: :->command' \\
         '2: :->subcommand' \\
@@ -202,8 +218,14 @@ _silvan() {
                 config)
                     _describe -t commands 'config command' '(show validate)'
                     ;;
+                queue)
+                    _describe -t queue_commands 'queue command' queue_commands
+                    ;;
                 convo)
                     _describe -t commands 'convo command' '(show export)'
+                    ;;
+                learning)
+                    _describe -t learning_commands 'learning command' learning_commands
                     ;;
                 completion)
                     _describe -t commands 'shell' '(bash zsh fish)'
@@ -235,7 +257,7 @@ complete -c silvan -n "__fish_use_subcommand" -a "task" -d "Start tasks from iss
 complete -c silvan -n "__fish_use_subcommand" -a "pr" -d "Pull request automation"
 complete -c silvan -n "__fish_use_subcommand" -a "ci" -d "CI/GitHub integration"
 complete -c silvan -n "__fish_use_subcommand" -a "config" -d "Show/validate configuration"
-complete -c silvan -n "__fish_use_subcommand" -a "queue" -d "Process queued requests"
+complete -c silvan -n "__fish_use_subcommand" -a "queue" -d "Manage queued requests"
 complete -c silvan -n "__fish_use_subcommand" -a "review" -d "Review management"
 complete -c silvan -n "__fish_use_subcommand" -a "learning" -d "Learning artifacts"
 complete -c silvan -n "__fish_use_subcommand" -a "convo" -d "Conversation context"
@@ -292,12 +314,16 @@ complete -c silvan -n "__fish_seen_subcommand_from ci" -a "wait" -d "Wait for CI
 complete -c silvan -n "__fish_seen_subcommand_from task" -a "start" -d "Start a task"
 
 # queue subcommands
+complete -c silvan -n "__fish_seen_subcommand_from queue" -a "status" -d "Show queue depth by priority"
 complete -c silvan -n "__fish_seen_subcommand_from queue" -a "run" -d "Process queue"
+complete -c silvan -n "__fish_seen_subcommand_from queue" -a "priority" -d "Update queue priority"
 
 # review subcommands
 complete -c silvan -n "__fish_seen_subcommand_from review" -a "unresolved" -d "Fetch unresolved comments"
 
 # learning subcommands
 complete -c silvan -n "__fish_seen_subcommand_from learning" -a "show" -d "Show learning notes"
+complete -c silvan -n "__fish_seen_subcommand_from learning" -a "review" -d "Review pending learnings"
+complete -c silvan -n "__fish_seen_subcommand_from learning" -a "rollback" -d "Rollback applied learning updates"
 `;
 }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, test } from 'bun:test';
 
+import { configSchema } from '../config/schema';
 import { initStateStore } from '../state/store';
 import { createRunSnapshotCache } from './loader';
 import { enqueueQueueRequest } from './queue-requests';
@@ -22,9 +23,11 @@ describe('queue requests', () => {
     await withTempRepo(async (repoRoot) => {
       const state = await initStateStore(repoRoot, { lock: false, mode: 'repo' });
       const cache = createRunSnapshotCache();
+      const config = configSchema.parse({});
 
       await enqueueQueueRequest({
         state,
+        config,
         cache,
         scope: 'current',
         title: 'First request',
@@ -32,6 +35,7 @@ describe('queue requests', () => {
 
       const updated = await enqueueQueueRequest({
         state,
+        config,
         cache,
         scope: 'current',
         title: 'Second request',

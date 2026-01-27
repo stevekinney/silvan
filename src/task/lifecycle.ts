@@ -4,6 +4,7 @@ import type { Octokit } from 'octokit';
 import type { Config } from '../config/schema';
 import { createOctokit } from '../github/client';
 import { moveLinearTicket } from '../linear/linear';
+import { isTaskProviderEnabled } from './provider';
 import type { Task } from './types';
 
 type LifecycleClients = {
@@ -19,7 +20,7 @@ export async function moveTaskToInProgress(
   if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.inProgress;
-    if (!config.task.providers.enabled.includes('linear') || !state) return;
+    if (!isTaskProviderEnabled(config, 'linear') || !state) return;
     await moveLinearTicket(task.id, state, config.linear.token, clients?.linear);
     return;
   }
@@ -35,7 +36,7 @@ export async function moveTaskToInReview(
   if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.inReview;
-    if (!config.task.providers.enabled.includes('linear') || !state) return;
+    if (!isTaskProviderEnabled(config, 'linear') || !state) return;
     await moveLinearTicket(task.id, state, config.linear.token, clients?.linear);
     return;
   }
@@ -51,7 +52,7 @@ export async function completeTask(
   if (task.provider === 'local') return;
   if (task.provider === 'linear') {
     const state = config.task.linear.states.done;
-    if (!config.task.providers.enabled.includes('linear') || !state) return;
+    if (!isTaskProviderEnabled(config, 'linear') || !state) return;
     await moveLinearTicket(task.id, state, config.linear.token, clients?.linear);
     return;
   }

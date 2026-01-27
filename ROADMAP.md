@@ -1,249 +1,468 @@
-# Silvan UX Roadmap
+# Silvan Product Roadmap
 
-A prioritized plan to transform Silvan into a best-in-class CLI for AI-driven development workflows.
+This document outlines the product roadmap for Silvan, an operator-grade CLI for orchestrating resumable AI workflows around git repositories. Features are organized by theme and priority, not by timeline.
 
 ## Vision
 
-Silvan should feel like **`gh` meets `railway` meets `vercel`**: polished, predictable, and powerful. Every command should be discoverable, every output should be actionable, and every error should guide you forward.
+Silvan aims to be the definitive tool for teams running AI-assisted development workflows at scale. The product evolves along three axes:
 
-The goal is an operator-grade tool where:
+1. **Operator Confidence** - Provide complete visibility into cost, performance, and outcomes so operators can trust AI workflows in production
+2. **Intelligent Automation** - Move from reactive to proactive, with smarter model selection, automatic recovery, and continuous learning
+3. **Team Scale** - Support multi-repo orchestration, concurrent workflows, and integrations with team communication tools
 
-- New users succeed on their first run
-- Power users work efficiently across dozens of concurrent runs
-- Scripters can automate everything reliably
-- No one ever stares at a silent terminal wondering what happened
+---
 
-## Design Principles
+## Observability and Cost Control
 
-These principles guide all UX decisions:
+### - [ ] Cost Tracking and Budget Enforcement
 
-1. **Progressive Disclosure** - Show essential info first, details on demand
-2. **Fail Forward** - Every error tells you what to do next
-3. **No Silent Operations** - Every command confirms what it did
-4. **Scriptable by Default** - `--json` everywhere, consistent exit codes
-5. **Keyboard-First UI** - Single-key shortcuts, vim-style navigation
-6. **Semantic Colors** - Green=success, Yellow=warning, Red=error, Cyan=running
-7. **Documentation as UI** - `--help` is a product, not an afterthought
+**Problem**: Operators configure token budgets per phase (`ai.budgets.plan.maxBudgetUsd`) but have no visibility into actual spend, no alerts when approaching limits, and no historical cost data for capacity planning.
 
-## Roadmap
+**Acceptance Criteria**:
 
-### Phase 1: Foundation (Unblock Day-One Experience)
+- `run status <runId>` displays cumulative cost by phase (plan, execute, review, etc.)
+- `silvan costs` command shows cost breakdown by run, task, and time period
+- When a phase exceeds 80% of its budget, emit a warning event
+- When a phase would exceed 100% of budget, block execution with a clear error and `run override` escape hatch
+- Cost data persists in run state and is queryable via `--json` output
 
-These issues fix the critical first-impression problems. A new user should be able to install, configure, and run their first task without confusion.
+**Product Requirements**:
 
-- [x] [#6 - Redesign task start UX](https://github.com/stevekinney/silvan/issues/6)
+- Track input/output tokens per API call with provider-specific pricing
+- Support custom pricing overrides for enterprise/negotiated rates
+- Cost attribution must work across all cognition tasks (13 task types)
+- Budget enforcement must respect phase-level and default-level settings
+- Export cost data in a format compatible with cost management tools (CSV, JSON)
 
-  > **Why first**: This is the primary entry point. If `task start` is confusing, users won't get past day one. Fixes "clarifications look like errors" and silent exits.
+**Success Metrics**:
 
-- [x] [#14 - CLI Progress Indicators for Long Operations](https://github.com/stevekinney/silvan/issues/14)
+- 100% of API calls have cost attribution
+- Budget overruns blocked with actionable error message
+- Operators can generate monthly cost reports
 
-  > **Why second**: Long-running commands with no feedback make users think the tool is broken. Spinners build trust.
+---
 
-- [x] [#3 - Improve silvan init with auto-detection](https://github.com/stevekinney/silvan/issues/3)
+### - [x] Run Analytics and Success Reporting
 
-  > **Why third**: Smooth onboarding. Auto-detect repo settings so users don't have to manually configure.
+**Problem**: There is no aggregate view of workflow success rates, common failure modes, or performance trends. Operators cannot answer "How often do runs succeed?" or "What phase fails most often?"
 
-- [x] [#2 - Support auto-loading .env files](https://github.com/stevekinney/silvan/issues/2)
-  > **Why fourth**: Removes the most common "silent failure" gotcha. Users forget to export tokens.
+**Acceptance Criteria**:
 
-### Phase 2: Polish (Make Every Interaction Delightful)
+- `silvan analytics` command shows success/failure rates, average duration by phase, and common failure reasons
+- Filter analytics by time range, task provider, and repository
+- Export analytics as JSON for dashboards
+- Track and display: runs started, runs converged, runs failed, runs aborted, average time-to-convergence
 
-These issues transform the CLI from functional to polished. Every command feels intentional and helpful.
+**Product Requirements**:
 
-- [x] [#15 - Improve --help with Grouped Options and Examples](https://github.com/stevekinney/silvan/issues/15)
+- Analytics derived from existing JSONL audit trail (no new data collection)
+- Support aggregation across multiple repositories
+- Provide both summary statistics and drill-down capability
+- Include phase-level breakdown (e.g., "35% of failures occur in verify phase")
 
-  > Makes the CLI self-documenting. Users can learn without leaving the terminal.
+**Success Metrics**:
 
-- [x] [#17 - Error Messages with Actionable Recovery Steps](https://github.com/stevekinney/silvan/issues/17)
+- Operators can identify top 3 failure modes without manual log analysis
+- Time-to-answer for "What's our success rate?" is under 5 seconds
 
-  > Eliminates dead ends. Every error becomes a learning moment.
+---
 
-- [x] [#16 - Success Confirmations and Next Steps](https://github.com/stevekinney/silvan/issues/16)
+## Intelligence and Automation
 
-  > Closes the feedback loop. Users always know what they did and what to do next.
+### - [x] Smart Model Routing with Recommendations
 
-- [x] [#23 - Command Output Consistency and Semantic Colors](https://github.com/stevekinney/silvan/issues/23)
+**Problem**: Silvan supports 7 phase-specific models and 13 cognition tasks with `modelByTask` overrides, but operators have no guidance on which models to use. Model selection is trial-and-error.
 
-  > Unifies the visual language. The CLI feels like one cohesive product.
+**Acceptance Criteria**:
 
-- [x] [#20 - run list Visual Improvements](https://github.com/stevekinney/silvan/issues/20)
-  > Makes run management scannable. Operators can quickly find what they need.
+- `silvan models recommend` analyzes recent runs and suggests optimal model configuration
+- Recommendations based on: task complexity, cost efficiency, success rate by model
+- Display estimated cost impact of recommendations
+- `silvan models benchmark` runs a sample task through multiple models and compares results
 
-### Phase 3: Discoverability (Help Users Help Themselves)
+**Product Requirements**:
 
-These issues make Silvan learnable. Users can explore concepts and get help without external documentation.
+- Recommendations consider both cost and quality (not just cheapest)
+- Support A/B testing mode: route percentage of tasks to alternative models
+- Track model performance metrics: latency, tokens used, success rate per task type
+- Recommendations exportable as config snippet
 
-- [x] [#21 - Contextual Help Topics (silvan help <topic>)](https://github.com/stevekinney/silvan/issues/21)
+**Success Metrics**:
 
-  > Explains concepts like "worktrees" and "convergence" inline.
+- Operators can reduce cost by 20% or improve success rate by 10% following recommendations
 
-- [x] [#22 - First-Run Experience and Quickstart Command](https://github.com/stevekinney/silvan/issues/22)
-  > Guided introduction for new users. Try before you understand.
+---
 
-### Phase 4: Scripting (Enable Automation)
+### - [x] Automatic Learning Application
 
-These issues make Silvan a reliable building block for automation and CI pipelines.
+**Problem**: The learning system generates notes (`learning.mode: artifact`) but requires manual review to apply. Operators want high-confidence learnings applied automatically.
 
-- [x] [#19 - --json Output Consistency and Schema Documentation](https://github.com/stevekinney/silvan/issues/19)
+**Acceptance Criteria**:
 
-  > Makes every command scriptable. JSON everywhere, errors included.
+- New config option `learning.autoApply.enabled` (default: true)
+- Configure confidence threshold for auto-apply
+- Auto-applied learnings committed with clear attribution (commit message references run)
+- `silvan learning review` shows pending learnings that did not meet auto-apply threshold
+- Ability to approve/reject pending learnings in batch
 
-- [x] [#18 - Add --quiet and --verbose Modes](https://github.com/stevekinney/silvan/issues/18)
-  > Control output verbosity for scripts and debugging.
+**Product Requirements**:
 
-### Phase 5: Mission Control UI (Scale to Many Runs)
+- Confidence scoring based on: consistency across multiple runs, reviewer approval, CI success
+- Never auto-apply learnings that modify code (only docs, rules, skills files)
+- Audit trail of all auto-applied learnings
+- Rollback mechanism for problematic learnings
 
-These issues transform the dashboard from a simple viewer to a full operator control panel. Build in order due to dependencies.
+---
 
-- [x] [#8 - UI Data Layer: pagination + audit integration](https://github.com/stevekinney/silvan/issues/8)
+### - [x] Verification Failure Auto-Recovery
 
-  > **Prerequisite for all UI work**. Enables handling 100+ runs without performance issues.
+**Problem**: When verification fails, the current triage system (`verify/triage.ts`) classifies failures but does not suggest fixes. Operators must manually diagnose and retry.
 
-- [x] [#9 - Dashboard Overview: filtering, grouping, attention queue](https://github.com/stevekinney/silvan/issues/9)
+**Acceptance Criteria**:
 
-  > Core operator use case. Find and triage runs across repos.
+- After verification failure, generate AI-powered fix suggestions
+- For common failure patterns (lint, type errors, test failures), attempt automatic fix
+- Display diff preview before applying auto-fix
+- `--auto-fix` flag to enable automatic recovery attempts
+- Maximum auto-fix attempts configurable (default: 2)
 
-- [x] [#10 - Run Details: lifecycle timeline, step durations, gating clarity](https://github.com/stevekinney/silvan/issues/10)
+**Product Requirements**:
 
-  > Understand why runs are blocked. Diagnostic depth.
+- Auto-fix isolated to verification failures (not arbitrary code changes)
+- Each fix attempt logged in audit trail
+- Fix suggestions include confidence score
+- Fallback to user intervention when auto-fix fails twice
 
-- [x] [#12 - PR/CI/Review deep panel](https://github.com/stevekinney/silvan/issues/12)
+**Success Metrics**:
 
-  > Reduce context-switching to GitHub. See PR status inline.
+- 50% of lint/type failures auto-resolved without user intervention
+- Mean time to verification pass reduced by 30%
 
-- [x] [#11 - Artifact and Report Explorer](https://github.com/stevekinney/silvan/issues/11)
+---
 
-  > Deep inspection for debugging. View plans and reports without leaving UI.
+### - [x] Review Intelligence and Priority Triage
 
-- [x] [#13 - Queue and Worktree monitor](https://github.com/stevekinney/silvan/issues/13)
-  > Multi-repo workspace management. See pending tasks and worktree health.
+**Problem**: Review threads are treated equally. There is no prioritization based on severity, no suggested reviewers based on code ownership, and no automated resolution for trivial comments.
 
-_Note: [#7 - UI Mission Control milestone](https://github.com/stevekinney/silvan/issues/7) is the tracking epic for Phase 5._
+**Acceptance Criteria**:
 
-## Ideal End State
+- Classify review comments by severity: blocking, suggestion, question, nitpick
+- Auto-resolve nitpicks with acknowledgment comment (configurable)
+- Suggest reviewers based on git blame / CODEOWNERS
+- `run explain` shows review threads sorted by priority
+- Track reviewer response patterns to optimize assignment
 
-### On First Run
+**Product Requirements**:
 
-```
-$ silvan
+- Classification model configurable via `ai.cognition.modelByTask.reviewClassify`
+- Severity thresholds configurable (e.g., "block on security comments, auto-resolve style nitpicks")
+- Integration with GitHub CODEOWNERS file
+- Reviewer suggestions consider availability (if GitHub API provides this)
 
-  Welcome to Silvan - AI-driven development workflows
+---
 
-  Get started:
-    silvan init          Create configuration
-    silvan quickstart    Guided setup + sample task
-    silvan doctor        Check environment
-```
+### - [x] Conversation Context Optimization
 
-### On silvan init
+**Problem**: Conversation pruning exists (`ai.conversation.pruning`) but uses simple turn/byte limits. Long-running workflows accumulate context inefficiently, increasing cost and reducing coherence.
 
-```
-$ silvan init
+**Acceptance Criteria**:
 
-  Silvan Configuration
+- Implement semantic compression: summarize older turns while preserving key decisions
+- Priority-based retention: keep error messages, tool results, and user corrections longer
+- `convo optimize <runId>` manually triggers context optimization
+- Display context efficiency metrics: compression ratio, tokens saved
 
-  Detected:
-    Repository      github.com/acme/my-repo
-    Default branch  main
-    Package manager bun
+**Product Requirements**:
 
-  Task providers (space to select):
-  > [x] GitHub Issues
-    [ ] Linear
-    [x] Local tasks
+- Compression preserves all information needed to resume from any checkpoint
+- Configurable retention rules by message type (system, user, assistant, tool_result)
+- Compression logged in conversation metadata
+- Rollback to uncompressed state if needed
 
-  Created silvan.config.ts
+---
 
-  Next steps:
-    1. Set GITHUB_TOKEN for PR automation
-    2. Run: silvan doctor
-    3. Try:  silvan task start "Your first task"
-```
+## Scale and Concurrency
 
-### On silvan task start
+### - [ ] Priority Queue with Load Balancing
 
-```
-$ silvan task start "Add dark mode toggle"
+**Problem**: The queue system (`state/queue.ts`) processes tasks FIFO without priority. Batch workloads cannot prioritize urgent tasks or balance load across resources.
 
-  Resolving task...                          done
-  Creating worktree silvan/add-dark-mode...  done (2s)
-  Installing dependencies...                 done (8s)
-  Generating plan...                         done (12s)
+**Acceptance Criteria**:
 
-  Plan Summary
-  ─────────────────────────────────────────────────────
-  Summary    Add dark mode toggle to settings page
-  Steps      4 implementation steps
-  Files      3 files to modify
-  Risks      None identified
+- Assign priority to queue requests (1-10, default 5)
+- `queue run` processes high-priority tasks first
+- Support priority escalation: tasks waiting longer than threshold get priority boost
+- `queue status` shows queue depth by priority level
+- Configurable concurrency limits by priority tier
 
-  Ready to implement. Next steps:
-    cd .worktrees/add-dark-mode
-    silvan agent run --apply
-```
+**Product Requirements**:
 
-### On Errors
+- Priority stored in queue request JSON
+- `task start --priority <n>` sets initial priority
+- API for external systems to adjust priority
+- Starvation prevention: ensure low-priority tasks eventually run
 
-```
-$ silvan task start GH-999
+---
 
-  Error: GitHub issue #999 not found
+### - [ ] Cross-Repository Orchestration
 
-  Possible causes:
-    - Issue doesn't exist in acme/my-repo
-    - GITHUB_TOKEN lacks read access
+**Problem**: Silvan operates on single repositories. Teams with monorepos or multi-repo architectures cannot coordinate changes across boundaries.
 
-  Try:
-    silvan doctor --network   Check GitHub access
-    silvan help task-refs     Learn about task references
-```
+**Acceptance Criteria**:
 
-### On silvan run list
+- `silvan workspace init` creates a workspace configuration linking multiple repos
+- `task start` can reference tasks that span repositories
+- Workspace-level queue and convergence tracking
+- `workspace status` shows aggregate state across all repos
+- Dependency ordering: "repo B changes depend on repo A PR merging"
 
-```
-$ silvan run list
+**Product Requirements**:
 
-  Runs (12 total)
-  ─────────────────────────────────────────────────────────────────
-  ID       Status     Phase       Task                    Updated
-  ─────────────────────────────────────────────────────────────────
-  abc123   ● Running  implement   Add dark mode           2 min ago
-  def456   ⚠ Blocked  review      Fix login bug           1 hour ago
-  ghi789   ✓ Success  complete    Update docs             3 hours ago
+- Workspace config stored outside individual repos
+- Each repo retains its own `silvan.config.ts` for repo-specific settings
+- Cross-repo runs linked via workspace ID
+- Support for both monorepo (single git root, multiple logical projects) and multi-repo patterns
 
-  Filters: silvan run list --status blocked
-  Details: silvan run inspect <id>
-```
+---
 
-### On silvan ui
+### - [ ] Concurrent Run Batching
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ SILVAN DASHBOARD                            Refreshed 5s ago   q:quit │
-├──────────────────────────────────────────────────────────────────────┤
-│ Attention (2)         │ abc123 - Add dark mode toggle                │
-│ ● def456 Blocked      │ ─────────────────────────────────────────    │
-│ ● jkl012 Failed       │ Phase: implement → verify                    │
-│                       │ Step:  Running lint (45s)                    │
-│ Runs (12)             │                                              │
-│ ● abc123 Running      │ Gate Status                                  │
-│   def456 Blocked      │ ⚠ Waiting: lint check pending               │
-│   ghi789 Success      │ Next: Will proceed when lint passes         │
-│                       │                                              │
-│ Worktrees (4)         │ Artifacts                                    │
-│   add-dark-mode ●     │   plan.json                                  │
-│   fix-login           │   verify-report.json                         │
-└──────────────────────────────────────────────────────────────────────┘
-```
+**Problem**: When multiple tasks target the same files, concurrent runs can conflict. There is no detection or coordination mechanism.
 
-## Progress Tracking
+**Acceptance Criteria**:
 
-| Phase              | Issues                     | Status         |
-| ------------------ | -------------------------- | -------------- |
-| Foundation         | #6, #14, #3, #2            | Complete (4/4) |
-| Polish             | #15, #17, #16, #23, #20    | Complete (5/5) |
-| Discoverability    | #21, #22                   | Complete (2/2) |
-| Scripting          | #19, #18                   | Complete (2/2) |
-| Mission Control UI | #8, #9, #10, #12, #11, #13 | Complete (6/6) |
+- Detect file overlap between queued tasks before starting runs
+- Option to batch overlapping tasks into a single run
+- Option to serialize overlapping tasks (run sequentially)
+- `queue analyze` shows potential conflicts before running
+- Configurable conflict resolution strategy per repository
 
-**Total: 19 issues** (excludes #7 which is a tracking epic)
+**Product Requirements**:
+
+- Overlap detection based on task description analysis and historical file patterns
+- Batching preserves individual task identity for tracking
+- Conflict detection runs before worktree creation
+- Manual override to force parallel execution
+
+---
+
+## Developer Experience
+
+### - [ ] Custom Tool Extension System
+
+**Problem**: The tool registry (`agent/registry.ts`) is hardcoded. Teams cannot add domain-specific tools without modifying Silvan source.
+
+**Acceptance Criteria**:
+
+- Define custom tools in `silvan.config.ts` under `tools.custom`
+- Tools specify: name, description, schema (Zod), handler (file path or inline)
+- Custom tools appear in agent tool list alongside built-in tools
+- `silvan tools list` shows all available tools with source (built-in vs custom)
+- Tools can be marked as mutating/dangerous with appropriate gating
+
+**Product Requirements**:
+
+- Handler can be: TypeScript file path, shell command, or HTTP endpoint
+- Schema validation enforced before handler execution
+- Custom tools sandboxed: cannot access Silvan internals directly
+- Tool execution logged in audit trail
+
+---
+
+### - [ ] State Branching and Rollback
+
+**Problem**: Operators cannot experiment with different approaches without affecting run state. There is no way to "try something" and revert if it fails.
+
+**Acceptance Criteria**:
+
+- `run branch <runId>` creates a named branch of run state
+- Work on branch without affecting original run
+- `run merge <branchName>` merges branch back (if successful)
+- `run rollback <runId> --to <checkpoint>` reverts to earlier state
+- List available checkpoints with `run checkpoints <runId>`
+
+**Product Requirements**:
+
+- Checkpoints created automatically at phase boundaries
+- Branch state stored separately (does not pollute original run directory)
+- Rollback preserves audit trail (marks rolled-back events)
+- Git worktree state synchronized with Silvan state on rollback
+
+---
+
+### - [ ] Advanced Git Operations
+
+**Problem**: Silvan handles basic git operations but lacks support for complex scenarios: rebase conflicts, cherry-picking fixes across branches, and squash strategies for clean history.
+
+**Acceptance Criteria**:
+
+- `--squash` flag on PR creation to squash commits before merge
+- Conflict detection during rebase with AI-assisted resolution suggestions
+- `run cherry-pick <runId> --to <branch>` applies specific commits to another branch
+- Configurable commit message templates per repository
+
+**Product Requirements**:
+
+- Conflict resolution preserves both versions with clear markers
+- AI suggestions for conflict resolution reviewed before applying
+- Cherry-pick creates audit trail linking source and destination
+- Squash preserves individual commit messages in squash commit body
+
+---
+
+### - [ ] Cache Warming and Invalidation
+
+**Problem**: The AI cache (`ai/cache.ts`) uses input digest for cache keys but has no invalidation strategy. Stale cache entries persist indefinitely, and there is no way to pre-warm cache for common operations.
+
+**Acceptance Criteria**:
+
+- Configure cache TTL per prompt kind
+- `silvan cache warm` pre-generates cache entries for common operations
+- `silvan cache invalidate --older-than <duration>` removes stale entries
+- `silvan cache stats` shows hit rate, size, and age distribution
+- Partial cache matching: reuse results when inputs are similar (not identical)
+
+**Product Requirements**:
+
+- TTL configurable in `ai.cache.ttl` (per prompt kind or global default)
+- Cache warming based on historical prompt patterns
+- Partial matching uses embedding similarity (configurable threshold)
+- Cache size limits with LRU eviction
+
+---
+
+## Integrations and Extensibility
+
+### - [ ] Slack/Teams/Discord Notifications
+
+**Problem**: Operators monitor runs through the CLI or dashboard. There is no way to receive notifications in team communication tools.
+
+**Acceptance Criteria**:
+
+- Configure notification webhooks in `silvan.config.ts` under `notifications`
+- Supported events: run started, run blocked, run converged, run failed, budget warning
+- Configurable message templates per event type
+- Channel routing: send different events to different channels
+- Rate limiting to prevent notification spam
+
+**Product Requirements**:
+
+- Native integration for Slack (incoming webhooks)
+- Generic webhook support for Teams, Discord, and custom endpoints
+- Messages include deep links to Silvan dashboard/CLI commands
+- Test notification command to verify configuration
+
+---
+
+### - [ ] Monitoring System Integration
+
+**Problem**: Silvan events are logged to JSONL but not exported to standard monitoring systems. Teams cannot correlate Silvan activity with infrastructure metrics.
+
+**Acceptance Criteria**:
+
+- Export events to: OpenTelemetry, Datadog, custom HTTP endpoint
+- Configurable event filtering (export only specific event types)
+- Span propagation: Silvan runs appear as traces in APM tools
+- Metrics export: run counts, duration histograms, error rates
+
+**Product Requirements**:
+
+- OpenTelemetry collector endpoint configurable
+- Datadog API key and site configurable
+- Trace context propagated through tool calls
+- Metrics follow standard naming conventions (e.g., `silvan.run.duration.seconds`)
+
+---
+
+### - [ ] Linear Deep Integration
+
+**Problem**: Linear integration exists for task intake but does not sync status updates, comments, or attachments bidirectionally.
+
+**Acceptance Criteria**:
+
+- Update Linear issue status when run phase changes
+- Post PR link and run summary as Linear comment when PR opens
+- Sync Linear labels to Silvan task metadata
+- Create Linear issue from Silvan when task fails (optional)
+
+**Product Requirements**:
+
+- Status mapping configurable via `task.linear.states`
+- Comment templates customizable
+- Rate limiting to respect Linear API limits
+- Graceful degradation if Linear unavailable
+
+---
+
+### - [ ] GitHub Actions Integration
+
+**Problem**: Silvan runs as a CLI but is not easily invoked from CI/CD pipelines. Teams cannot trigger Silvan workflows from GitHub Actions.
+
+**Acceptance Criteria**:
+
+- Publish official GitHub Action: `silvan-ai/silvan-action`
+- Action supports: task start, queue run, run resume
+- Outputs: run ID, convergence status, PR URL
+- Support for caching Silvan state between workflow runs
+- Matrix support: run multiple tasks in parallel
+
+**Product Requirements**:
+
+- Action uses pinned Silvan version (configurable)
+- Secrets passed via GitHub Actions secrets mechanism
+- Action outputs compatible with downstream workflow steps
+- Documentation includes common workflow patterns
+
+---
+
+## Documentation and Onboarding
+
+### - [ ] Interactive Onboarding Wizard
+
+**Problem**: `silvan init` generates a config file but does not guide users through understanding their options or validating their setup.
+
+**Acceptance Criteria**:
+
+- `silvan setup` runs interactive wizard
+- Wizard detects: git configuration, available tokens, existing CI setup
+- Guided prompts for each config section with explanations
+- Validates configuration at each step
+- Generates example task to verify end-to-end workflow
+
+**Product Requirements**:
+
+- Wizard works in both TTY and non-TTY environments
+- Skip sections with `--skip <section>` flag
+- Resume interrupted wizard
+- Export wizard choices as shareable configuration
+
+---
+
+### - [ ] Contextual Help System
+
+**Problem**: `silvan help` provides static text. Users cannot get context-aware help based on their current situation (e.g., "I have a blocked run, what do I do?").
+
+**Acceptance Criteria**:
+
+- `silvan help --context` analyzes current state and provides relevant guidance
+- When run is blocked, explain why and suggest specific commands
+- When configuration is invalid, explain the issue and provide fix
+- Link to relevant documentation sections
+
+**Product Requirements**:
+
+- Context detection based on: current directory, recent runs, config validation
+- Help text includes concrete examples with actual values from user's environment
+- Integrate with existing help topics (`help/topics.ts`)
+
+---
+
+## Non-Goals (Explicit Exclusions)
+
+The following are explicitly out of scope for the foreseeable future:
+
+1. **Web UI** - Silvan remains CLI-first. The Ink dashboard provides sufficient visualization.
+2. **Multi-tenant SaaS** - Silvan runs locally or in CI. No hosted service planned.
+3. **Non-Claude AI Providers for Execution** - The execution lane uses Claude Agents SDK. Cognition lane already supports multiple providers.
+4. **Real-time Collaboration** - Silvan is designed for single-operator workflows. Team coordination happens through PRs and issue trackers.
+5. **IDE Plugins** - CLI is the primary interface. IDE integration can use CLI under the hood.

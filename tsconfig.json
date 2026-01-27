@@ -42,7 +42,7 @@
 
     // Performance improvements
     "incremental": true,
-    "tsBuildInfoFile": "node_modules/.cache/tsconfig.tsbuildinfo",
+    "tsBuildInfoFile": "node_modules/.cache/tsconfig.main.tsbuildinfo",
     "assumeChangesOnlyAffectDirectDependencies": true,
     "diagnostics": true,
 

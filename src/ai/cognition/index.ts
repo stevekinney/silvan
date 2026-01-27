@@ -6,4 +6,5 @@ export { generateRecoveryPlan } from './recovery';
 export { classifyReviewThreads } from './review-classifier';
 export { generateReviewRemediationKickoffPrompt } from './review-kickoff';
 export { generateReviewFixPlan } from './reviewer';
+export { generateVerificationFixPlan } from './verification-fix';
 export { decideVerification } from './verifier';

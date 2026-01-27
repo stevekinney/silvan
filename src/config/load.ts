@@ -638,6 +638,7 @@ function configFromEnv(): ConfigInput {
     ['localReview', 'SILVAN_COGNITION_MODEL_REVIEW'],
     ['ciTriage', 'SILVAN_COGNITION_MODEL_CI'],
     ['verificationSummary', 'SILVAN_COGNITION_MODEL_VERIFY'],
+    ['verificationFix', 'SILVAN_COGNITION_MODEL_VERIFY'],
     ['recovery', 'SILVAN_COGNITION_MODEL_RECOVERY'],
     ['prDraft', 'SILVAN_COGNITION_MODEL_PR'],
     ['conversationSummary', 'SILVAN_COGNITION_MODEL_CONVERSATION_SUMMARY'],

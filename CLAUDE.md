@@ -125,9 +125,22 @@ When possible, use Bun's native APIs instead of Node.js equivalents. Bun's APIs 
 
 When a Bun equivalent doesn't exist or Node's API is more appropriate for the use case, use the `node:` prefix for clarity (e.g., `import { join } from 'node:path'`).
 
+## Simplicity Guardrails
+
+- Keep `src/core` phases split (`run-plan`, `run-execute`, `run-verify`, `run-review`, `run-recovery`, `run-learning`) with a thin `run-controller`.
+- Use `src/core/run-events.ts` helpers for run event payloads; avoid ad-hoc envelopes.
+- CLI command logic belongs in `src/cli/commands/*` with shared helpers in `src/cli/` (e.g., `answers`, `logger`, `types`).
+- Reuse the queue view builder (`src/queue/view.ts`) for CLI/UI output shaping.
+- Prefer smaller, explicit option groups instead of large option bags in hot paths.
+- Keep files under size guard limits; `scripts/check-file-size.ts` enforces the cap (override with `SILVAN_MAX_FILE_LINES` if needed).
+
 ### Configuration Notes
 
 - **bunfig.toml**: Build targets Bun with sourcemaps and minification.
 - **TypeScript**: Uses Bun types; Node type libs are not included by default.
 - **ESLint**: Flat config with `typescript-eslint` presets; type-aware rules only under `src/**` for speed. Unused imports are auto-fixable via `eslint-plugin-unused-imports`; import order via `eslint-plugin-simple-import-sort`; stylistic conflicts disabled by `eslint-config-prettier`. Test files have relaxed rules.
 - **Testing**: You can run tests in parallel via `bun test --parallel`.
+
+### Generated Artifacts
+
+- `schemas/silvan.config.schema.json` is generated during build; expect it to change when config schema changes.

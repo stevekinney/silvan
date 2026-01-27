@@ -258,7 +258,8 @@ export type AiPlanGenerated = {
     | 'review_fix_plan'
     | 'recovery_plan'
     | 'pr_draft'
-    | 'verification_decision';
+    | 'verification_decision'
+    | 'verification_fix_plan';
   tokens?: { input?: number; output?: number };
   planDigest: string;
 };
@@ -284,6 +285,7 @@ export type AiToolCallResult = {
 
 export type AiSessionStarted = {
   model: AiModelInfo;
+  task?: string;
   allowedTools?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
@@ -292,6 +294,7 @@ export type AiSessionStarted = {
 
 export type AiSessionFinished = {
   model: AiModelInfo;
+  task?: string;
   ok: boolean;
   durationMs: number;
   toolCalls?: number;

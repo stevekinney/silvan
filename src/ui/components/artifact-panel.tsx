@@ -90,6 +90,19 @@ export function ArtifactPanel({ run }: { run: RunRecord }): React.ReactElement {
           {run.reviewClassification.needsContext} needs context
         </Text>
       ) : null}
+      {run.reviewClassification?.severity ? (
+        <Text color="gray">
+          Review severity: {run.reviewClassification.severity.blocking} blocking,{' '}
+          {run.reviewClassification.severity.question} questions,{' '}
+          {run.reviewClassification.severity.suggestion} suggestions,{' '}
+          {run.reviewClassification.severity.nitpick} nitpicks
+        </Text>
+      ) : null}
+      {typeof run.reviewClassification?.autoResolved === 'number' ? (
+        <Text color="gray">
+          Review auto-resolve: {run.reviewClassification.autoResolved} thread(s)
+        </Text>
+      ) : null}
       {run.reviewFixPlan ? (
         <Text color="gray">
           Review plan: {run.reviewFixPlan.actionable} actionable,{' '}

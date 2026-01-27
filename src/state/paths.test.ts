@@ -41,6 +41,9 @@ describe('resolveStatePaths', () => {
     expect(paths.tasksDir).toBe(
       '/Users/alice/Library/Application Support/silvan/repos/repo-1/tasks',
     );
+    expect(paths.learningDir).toBe(
+      '/Users/alice/Library/Application Support/silvan/repos/repo-1/learning/requests',
+    );
   });
 
   it('resolves global paths on Linux', () => {
@@ -62,6 +65,9 @@ describe('resolveStatePaths', () => {
       '/home/alice/.local/share/silvan/repos/repo-2/artifacts',
     );
     expect(paths.tasksDir).toBe('/home/alice/.local/share/silvan/repos/repo-2/tasks');
+    expect(paths.learningDir).toBe(
+      '/home/alice/.local/share/silvan/repos/repo-2/learning/requests',
+    );
   });
 
   it('resolves global paths on Windows', () => {
@@ -93,6 +99,9 @@ describe('resolveStatePaths', () => {
     );
     expect(paths.tasksDir).toBe(
       'C:\\Users\\Alice\\AppData\\Roaming\\silvan\\repos\\repo-3\\tasks',
+    );
+    expect(paths.learningDir).toBe(
+      'C:\\Users\\Alice\\AppData\\Roaming\\silvan\\repos\\repo-3\\learning\\requests',
     );
   });
 });

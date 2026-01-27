@@ -16,6 +16,7 @@ export type StateStore = {
   artifactsDir: string;
   tasksDir: string;
   queueDir: string;
+  learningDir: string;
   stateVersion: string;
   lockRelease: () => Promise<void>;
   writeRunState: (runId: string, data: RunStateData) => Promise<string>;
@@ -69,6 +70,7 @@ export async function initStateStore(
     artifactsDir,
     tasksDir,
     queueDir,
+    learningDir,
   } = paths;
 
   await mkdir(runsDir, { recursive: true });
@@ -78,6 +80,7 @@ export async function initStateStore(
   await mkdir(artifactsDir, { recursive: true });
   await mkdir(tasksDir, { recursive: true });
   await mkdir(queueDir, { recursive: true });
+  await mkdir(learningDir, { recursive: true });
 
   const lockRelease =
     options?.lock === false
@@ -145,6 +148,7 @@ export async function initStateStore(
     artifactsDir,
     tasksDir,
     queueDir,
+    learningDir,
     stateVersion,
     lockRelease,
     writeRunState,

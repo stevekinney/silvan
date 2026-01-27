@@ -18,6 +18,16 @@ function createMemoryStore(): ConversationStore {
     updatedAt: new Date().toISOString(),
     path: 'memory',
   });
+  const metrics = () => ({
+    beforeMessages: conversation.ids.length,
+    afterMessages: conversation.ids.length,
+    beforeTokens: 0,
+    afterTokens: 0,
+    tokensSaved: 0,
+    compressionRatio: 1,
+    summaryAdded: false,
+    changed: false,
+  });
   return {
     load: async () => conversation,
     save: async (next) => {
@@ -30,6 +40,10 @@ function createMemoryStore(): ConversationStore {
       return snapshot(conversation);
     },
     snapshot,
+    optimize: async () => {
+      const snap = await snapshot();
+      return { conversation: snap.conversation, snapshot: snap, metrics: metrics() };
+    },
   };
 }
 

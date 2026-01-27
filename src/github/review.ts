@@ -12,6 +12,7 @@ import reviewThreadsQuery from './queries/review-threads.graphql';
 
 export type ReviewComment = {
   id: string;
+  databaseId?: number | null;
   threadId: string;
   path: string | null;
   line: number | null;
@@ -41,6 +42,7 @@ type ReviewThreadsResponse = {
           comments: {
             nodes: Array<{
               id: string;
+              databaseId: number | null;
               body: string;
               path: string | null;
               line: number | null;
@@ -77,6 +79,7 @@ type ReviewThreadResponse = {
         comments: {
           nodes: Array<{
             id: string;
+            databaseId: number | null;
             body: string;
             path: string | null;
             line: number | null;
@@ -252,6 +255,7 @@ export async function fetchUnresolvedReviewComments(options: {
     .flatMap((thread) =>
       thread.comments.nodes.map((comment) => ({
         id: comment.id,
+        databaseId: comment.databaseId ?? null,
         threadId: thread.id,
         path: comment.path ?? null,
         line: comment.line ?? null,
@@ -333,6 +337,40 @@ export async function resolveReviewThread(options: {
   }
 }
 
+export async function replyToReviewComment(options: {
+  pr: PrIdent;
+  commentId: number;
+  body: string;
+  token?: string;
+  octokit?: Octokit;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<void> {
+  const octokit = options.octokit ?? createOctokit(options.token);
+  try {
+    await octokit.request(
+      'POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies',
+      {
+        owner: options.pr.owner,
+        repo: options.pr.repo,
+        pull_number: options.pr.number,
+        comment_id: options.commentId,
+        body: options.body,
+      },
+    );
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'resolve_comment',
+      error,
+      pr: options.pr,
+      details: 'Failed to reply to review comment',
+    });
+    throw error;
+  }
+}
+
 export async function fetchReviewApprovals(options: {
   pr: { owner: string; repo: string; number: number };
   token: string;
@@ -372,4 +410,53 @@ export async function fetchReviewApprovals(options: {
   ).length;
 
   return { approvedCount };
+}
+
+export async function fetchReviewResponses(options: {
+  pr: { owner: string; repo: string; number: number };
+  token: string;
+  since?: string;
+  octokit?: Octokit;
+  bus?: EventBus;
+  context: EmitContext;
+}): Promise<
+  Array<{
+    reviewer: string;
+    submittedAt: string;
+    state: string;
+  }>
+> {
+  const octokit = options.octokit ?? createOctokit(options.token);
+  let response;
+  try {
+    response = await octokit.rest.pulls.listReviews({
+      owner: options.pr.owner,
+      repo: options.pr.repo,
+      pull_number: options.pr.number,
+      per_page: 100,
+    });
+  } catch (error) {
+    await emitGitHubError({
+      ...(options.bus ? { bus: options.bus } : {}),
+      context: options.context,
+      operation: 'fetch_comments',
+      error,
+      details: 'Failed to fetch PR reviews',
+    });
+    throw error;
+  }
+
+  const sinceTs = options.since ? Date.parse(options.since) : undefined;
+  return response.data
+    .map((review) => ({
+      reviewer: review.user?.login ?? '',
+      submittedAt: review.submitted_at ?? '',
+      state: review.state ?? 'COMMENTED',
+    }))
+    .filter((review) => review.reviewer && review.submittedAt)
+    .filter((review) => {
+      if (!sinceTs || Number.isNaN(sinceTs)) return true;
+      const submittedTs = Date.parse(review.submittedAt);
+      return !Number.isNaN(submittedTs) && submittedTs >= sinceTs;
+    });
 }

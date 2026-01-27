@@ -86,8 +86,18 @@ export const configSchema = z.object({
       commands: z.array(verificationCommandSchema).default([]),
       failFast: z.boolean().default(true),
       shell: z.string().optional(),
+      autoFix: z
+        .object({
+          enabled: z.boolean().default(true),
+          maxAttempts: z.number().int().positive().default(2),
+        })
+        .default({ enabled: true, maxAttempts: 2 }),
     })
-    .default({ commands: [], failFast: true }),
+    .default({
+      commands: [],
+      failFast: true,
+      autoFix: { enabled: true, maxAttempts: 2 },
+    }),
   naming: z
     .object({
       branchPrefix: z.string().default('feature/'),
@@ -106,6 +116,61 @@ export const configSchema = z.object({
       root: z.string().optional(),
     })
     .default({ mode: 'global' }),
+  queue: z
+    .object({
+      priority: z
+        .object({
+          default: z.number().int().min(1).max(10).default(5),
+          escalation: z
+            .object({
+              afterMinutes: z.number().int().positive().default(30),
+              stepMinutes: z.number().int().positive().default(30),
+              boost: z.number().int().positive().default(1),
+              max: z.number().int().min(1).max(10).default(10),
+            })
+            .default({ afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 }),
+          tiers: z
+            .object({
+              highMin: z.number().int().min(1).max(10).default(8),
+              mediumMin: z.number().int().min(1).max(10).default(4),
+            })
+            .default({ highMin: 8, mediumMin: 4 }),
+        })
+        .default({
+          default: 5,
+          escalation: { afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 },
+          tiers: { highMin: 8, mediumMin: 4 },
+        }),
+      concurrency: z
+        .object({
+          default: z.number().int().positive().default(2),
+          tiers: z
+            .object({
+              high: z.number().int().positive().default(2),
+              medium: z.number().int().positive().default(1),
+              low: z.number().int().positive().default(1),
+            })
+            .default({ high: 2, medium: 1, low: 1 }),
+        })
+        .default({ default: 2, tiers: { high: 2, medium: 1, low: 1 } }),
+    })
+    .default({
+      priority: {
+        default: 5,
+        escalation: { afterMinutes: 30, stepMinutes: 30, boost: 1, max: 10 },
+        tiers: { highMin: 8, mediumMin: 4 },
+      },
+      concurrency: { default: 2, tiers: { high: 2, medium: 1, low: 1 } },
+    })
+    .superRefine((value, ctx) => {
+      if (value.priority.tiers.highMin <= value.priority.tiers.mediumMin) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'queue.priority.tiers.highMin must be greater than mediumMin',
+          path: ['priority', 'tiers', 'highMin'],
+        });
+      }
+    }),
   ui: z
     .object({
       worktrees: z
@@ -211,6 +276,23 @@ export const configSchema = z.object({
           fallbackProviders: z
             .array(z.enum(['anthropic', 'openai', 'gemini']))
             .default([]),
+          routing: z
+            .object({
+              enabled: z.boolean().default(true),
+              autoApply: z.boolean().default(true),
+              minSamples: z.number().int().positive().default(10),
+              maxLatencyDelta: z.number().positive().default(0.2),
+              lookbackDays: z.number().int().positive().default(30),
+              respectOverrides: z.boolean().default(true),
+            })
+            .default({
+              enabled: true,
+              autoApply: true,
+              minSamples: 10,
+              maxLatencyDelta: 0.2,
+              lookbackDays: 30,
+              respectOverrides: true,
+            }),
           modelByTask: z
             .object({
               kickoffPrompt: z.string().optional(),
@@ -222,6 +304,7 @@ export const configSchema = z.object({
               localReview: z.string().optional(),
               ciTriage: z.string().optional(),
               verificationSummary: z.string().optional(),
+              verificationFix: z.string().optional(),
               recovery: z.string().optional(),
               prDraft: z.string().optional(),
               learningNotes: z.string().optional(),
@@ -232,6 +315,14 @@ export const configSchema = z.object({
         .default({
           provider: 'anthropic',
           fallbackProviders: [],
+          routing: {
+            enabled: true,
+            autoApply: true,
+            minSamples: 10,
+            maxLatencyDelta: 0.2,
+            lookbackDays: 30,
+            respectOverrides: true,
+          },
           modelByTask: {},
         }),
       conversation: z
@@ -249,6 +340,42 @@ export const configSchema = z.object({
               summarizeAfterTurns: 30,
               keepLastTurns: 20,
             }),
+          optimization: z
+            .object({
+              enabled: z.boolean().default(true),
+              retention: z
+                .object({
+                  system: z.number().int().positive().default(6),
+                  user: z.number().int().positive().default(12),
+                  assistant: z.number().int().positive().default(8),
+                  tool: z.number().int().positive().default(12),
+                  error: z.number().int().positive().default(6),
+                  correction: z.number().int().positive().default(6),
+                })
+                .default({
+                  system: 6,
+                  user: 12,
+                  assistant: 8,
+                  tool: 12,
+                  error: 6,
+                  correction: 6,
+                }),
+              correctionPatterns: z
+                .array(z.string())
+                .default(['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b']),
+            })
+            .default({
+              enabled: true,
+              retention: {
+                system: 6,
+                user: 12,
+                assistant: 8,
+                tool: 12,
+                error: 6,
+                correction: 6,
+              },
+              correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
+            }),
         })
         .default({
           pruning: {
@@ -256,6 +383,18 @@ export const configSchema = z.object({
             maxBytes: 200_000,
             summarizeAfterTurns: 30,
             keepLastTurns: 20,
+          },
+          optimization: {
+            enabled: true,
+            retention: {
+              system: 6,
+              user: 12,
+              assistant: 8,
+              tool: 12,
+              error: 6,
+              correction: 6,
+            },
+            correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
           },
         }),
     })
@@ -273,13 +412,37 @@ export const configSchema = z.object({
       toolLimits: {},
       cache: { enabled: true },
       sessions: { persist: false },
-      cognition: { provider: 'anthropic', fallbackProviders: [], modelByTask: {} },
+      cognition: {
+        provider: 'anthropic',
+        fallbackProviders: [],
+        routing: {
+          enabled: true,
+          autoApply: true,
+          minSamples: 10,
+          maxLatencyDelta: 0.2,
+          lookbackDays: 30,
+          respectOverrides: true,
+        },
+        modelByTask: {},
+      },
       conversation: {
         pruning: {
           maxTurns: 80,
           maxBytes: 200_000,
           summarizeAfterTurns: 30,
           keepLastTurns: 20,
+        },
+        optimization: {
+          enabled: true,
+          retention: {
+            system: 6,
+            user: 12,
+            assistant: 8,
+            tool: 12,
+            error: 6,
+            correction: 6,
+          },
+          correctionPatterns: ['\\bactually\\b', '\\bcorrection\\b', '\\bupdate\\b'],
         },
       },
     }),
@@ -335,6 +498,69 @@ export const configSchema = z.object({
           enabled: z.boolean().default(true),
         })
         .default({ enabled: true }),
+      intelligence: z
+        .object({
+          enabled: z.boolean().default(true),
+          severityPolicy: z
+            .object({
+              blocking: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              question: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              suggestion: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+              nitpick: z
+                .enum(['actionable', 'ignore', 'auto_resolve'])
+                .default('actionable'),
+            })
+            .default({
+              blocking: 'actionable',
+              question: 'actionable',
+              suggestion: 'actionable',
+              nitpick: 'actionable',
+            }),
+          nitpickAcknowledgement: z
+            .string()
+            .default('Noted - resolving as a nitpick for now.'),
+          reviewerSuggestions: z
+            .object({
+              enabled: z.boolean().default(true),
+              useCodeowners: z.boolean().default(true),
+              useBlame: z.boolean().default(true),
+              maxSuggestions: z.number().int().min(1).default(5),
+              autoRequest: z.boolean().default(false),
+              reviewerAliases: z.record(z.string(), z.string()).default({}),
+            })
+            .default({
+              enabled: true,
+              useCodeowners: true,
+              useBlame: true,
+              maxSuggestions: 5,
+              autoRequest: false,
+              reviewerAliases: {},
+            }),
+        })
+        .default({
+          enabled: true,
+          severityPolicy: {
+            blocking: 'actionable',
+            question: 'actionable',
+            suggestion: 'actionable',
+            nitpick: 'actionable',
+          },
+          nitpickAcknowledgement: 'Noted - resolving as a nitpick for now.',
+          reviewerSuggestions: {
+            enabled: true,
+            useCodeowners: true,
+            useBlame: true,
+            maxSuggestions: 5,
+            autoRequest: false,
+            reviewerAliases: {},
+          },
+        }),
     })
     .default({
       localGate: {
@@ -347,6 +573,24 @@ export const configSchema = z.object({
         allowConsoleLogPatterns: [],
       },
       aiReviewer: { enabled: true },
+      intelligence: {
+        enabled: true,
+        severityPolicy: {
+          blocking: 'actionable',
+          question: 'actionable',
+          suggestion: 'actionable',
+          nitpick: 'actionable',
+        },
+        nitpickAcknowledgement: 'Noted - resolving as a nitpick for now.',
+        reviewerSuggestions: {
+          enabled: true,
+          useCodeowners: true,
+          useBlame: true,
+          maxSuggestions: 5,
+          autoRequest: false,
+          reviewerAliases: {},
+        },
+      },
     }),
   learning: z
     .object({
@@ -357,6 +601,21 @@ export const configSchema = z.object({
           enabled: z.boolean().default(false),
         })
         .default({ enabled: false }),
+      autoApply: z
+        .object({
+          enabled: z.boolean().default(true),
+          threshold: z.number().min(0).max(1).default(0.7),
+          minSamples: z.number().int().min(0).default(3),
+          lookbackDays: z.number().int().min(1).default(30),
+          maxHistory: z.number().int().min(1).default(50),
+        })
+        .default({
+          enabled: true,
+          threshold: 0.7,
+          minSamples: 3,
+          lookbackDays: 30,
+          maxHistory: 50,
+        }),
       targets: z
         .object({
           rules: z.string().default('docs/rules.md'),
@@ -374,6 +633,13 @@ export const configSchema = z.object({
       enabled: true,
       mode: 'artifact',
       ai: { enabled: false },
+      autoApply: {
+        enabled: true,
+        threshold: 0.7,
+        minSamples: 3,
+        lookbackDays: 30,
+        maxHistory: 50,
+      },
       targets: {
         rules: 'docs/rules.md',
         skills: 'docs/skills.md',

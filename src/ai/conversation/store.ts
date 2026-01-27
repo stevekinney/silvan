@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import {
@@ -21,10 +21,12 @@ import { createEnvelope } from '../../events/emit';
 import type { StateStore } from '../../state/store';
 import { hashString } from '../../utils/hash';
 import { summarizeConversation } from '../cognition/summarize';
+import { optimizeConversation } from './optimize';
 import { getConversationPruningPolicy } from './policy';
 import type {
   ConversationEnvelope,
   ConversationMessageMetadata,
+  ConversationOptimizationResult,
   ConversationPruningPolicy,
   ConversationSnapshot,
   ConversationStore,
@@ -41,7 +43,6 @@ type StoreOptions = {
 };
 
 function isProtectedMessage(message: Message): boolean {
-  if (message.role === 'system') return true;
   const metadata = message.metadata as ConversationMessageMetadata | undefined;
   return Boolean(metadata?.protected);
 }
@@ -149,12 +150,66 @@ export function createConversationStore(options: StoreOptions): ConversationStor
     };
   }
 
+  async function backupConversation(): Promise<string | undefined> {
+    try {
+      await access(conversationPath);
+    } catch {
+      return undefined;
+    }
+    const backupPath = join(
+      dirname(conversationPath),
+      `${options.runId}.backup.${Date.now()}.json`,
+    );
+    await copyFile(conversationPath, backupPath);
+    return backupPath;
+  }
+
+  async function recordOptimization(
+    metrics: { [key: string]: unknown },
+    backupPath?: string,
+  ): Promise<void> {
+    await options.state.updateRunState(options.runId, (data) => ({
+      ...data,
+      conversationOptimization: {
+        updatedAt: new Date().toISOString(),
+        ...(backupPath ? { backupPath } : {}),
+        ...metrics,
+      },
+    }));
+  }
+
   async function prune(conversation: Conversation): Promise<Conversation> {
     const ids = getMessageIds(conversation);
     const payload = JSON.stringify(conversation);
     const bytes = Buffer.byteLength(payload, 'utf8');
     if (!shouldPrune(ids.length, bytes, policy)) {
       return conversation;
+    }
+
+    if (policy.optimization.enabled) {
+      const result = await optimizeConversation({
+        conversation,
+        policy,
+        config: options.config,
+        runId: options.runId,
+        ...(options.bus ? { bus: options.bus } : {}),
+        ...(options.context ? { context: options.context } : {}),
+      });
+
+      let backupPath: string | undefined;
+      if (result.metrics.changed) {
+        backupPath = await backupConversation();
+        await recordOptimization(result.metrics, backupPath);
+      }
+
+      await emitConversationStep(
+        options.bus,
+        options.context,
+        'ai.conversation.optimized',
+        result.metrics.changed ? 'Conversation optimized' : 'Conversation checked',
+      );
+
+      return result.conversation;
     }
 
     let next = conversation;
@@ -189,7 +244,9 @@ export function createConversationStore(options: StoreOptions): ConversationStor
       messages.slice(-policy.keepLastTurns).map((message) => message.id),
     );
     const protectedIds = new Set(
-      messages.filter(isProtectedMessage).map((message) => message.id),
+      messages
+        .filter((message) => isProtectedMessage(message) || message.role === 'system')
+        .map((message) => message.id),
     );
     const finalIds = messages
       .filter((message) => keepIds.has(message.id) || protectedIds.has(message.id))
@@ -240,10 +297,47 @@ export function createConversationStore(options: StoreOptions): ConversationStor
     return writeConversation(current);
   }
 
+  async function optimize(opt?: {
+    force?: boolean;
+  }): Promise<ConversationOptimizationResult> {
+    const current = await load();
+    const result = await optimizeConversation({
+      conversation: current,
+      policy,
+      config: options.config,
+      runId: options.runId,
+      force: opt?.force ?? false,
+      ...(options.bus ? { bus: options.bus } : {}),
+      ...(options.context ? { context: options.context } : {}),
+    });
+
+    let backupPath: string | undefined;
+    if (result.metrics.changed) {
+      backupPath = await backupConversation();
+      await recordOptimization(result.metrics, backupPath);
+    }
+
+    await emitConversationStep(
+      options.bus,
+      options.context,
+      'ai.conversation.optimized',
+      result.metrics.changed ? 'Conversation optimized' : 'Conversation checked',
+    );
+
+    const snapshot = await writeConversation(result.conversation);
+    return {
+      conversation: result.conversation,
+      snapshot,
+      metrics: result.metrics,
+      ...(backupPath ? { backupPath } : {}),
+    };
+  }
+
   return {
     load,
     save,
     append,
     snapshot,
+    optimize,
   };
 }

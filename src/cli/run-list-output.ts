@@ -34,6 +34,21 @@ export type RunListRenderOptions = {
   };
 };
 
+export function deriveRunListStatus(
+  runStatus: string | undefined,
+  convergenceStatus: string,
+): string {
+  if (runStatus === 'success') return 'success';
+  if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'canceled') return 'canceled';
+  if (convergenceStatus === 'blocked') return 'blocked';
+  if (convergenceStatus.startsWith('waiting_')) return 'blocked';
+  if (convergenceStatus === 'converged') return 'success';
+  if (convergenceStatus === 'failed') return 'failed';
+  if (convergenceStatus === 'aborted') return 'canceled';
+  return runStatus ?? 'running';
+}
+
 export function renderRunListTable(
   runs: RunListEntry[],
   options: RunListRenderOptions,

@@ -4,6 +4,7 @@ export type ReviewThreadFingerprint = {
   threadId: string;
   comments: Array<{
     id: string;
+    databaseId?: number | null;
     path: string | null;
     line: number | null;
     bodyDigest: string;
@@ -16,6 +17,7 @@ export type ReviewThreadDetails = {
   threadId: string;
   comments: Array<{
     id: string;
+    databaseId?: number | null;
     path: string | null;
     line: number | null;
     body: string;
@@ -28,6 +30,7 @@ export type ReviewThreadContext = {
   threadId: string;
   comments: Array<{
     id: string;
+    databaseId?: number | null;
     path: string | null;
     line: number | null;
     bodyDigest: string;
@@ -77,6 +80,7 @@ export function buildReviewPlanThreads(options: {
     const comments = detailed
       ? detailed.comments.map((comment) => ({
           id: comment.id,
+          databaseId: comment.databaseId ?? null,
           path: comment.path,
           line: comment.line,
           bodyDigest: hashString(comment.body),
@@ -84,6 +88,7 @@ export function buildReviewPlanThreads(options: {
         }))
       : fingerprint.comments.map((comment) => ({
           id: comment.id,
+          databaseId: comment.databaseId ?? null,
           path: comment.path,
           line: comment.line,
           bodyDigest: comment.bodyDigest,

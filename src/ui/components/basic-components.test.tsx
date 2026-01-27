@@ -115,7 +115,13 @@ describe('ui components', () => {
     expect(lastFrame()).toContain('PR');
 
     const requests: QueueRecord[] = [
-      { id: 'req-1', title: 'Task', createdAt: new Date().toISOString() },
+      {
+        id: 'req-1',
+        title: 'Task',
+        priority: 5,
+        effectivePriority: 5,
+        createdAt: new Date().toISOString(),
+      },
     ];
     const { lastFrame: queueFrame } = render(
       <QueuePanel requests={requests} nowMs={Date.now()} hint="hint" />,
@@ -140,7 +146,13 @@ describe('ui components', () => {
     expect(prFrame()).toContain('repo#1');
 
     const requests: QueueRecord[] = [
-      { id: 'req-1', title: 'Task', createdAt: new Date().toISOString() },
+      {
+        id: 'req-1',
+        title: 'Task',
+        priority: 5,
+        effectivePriority: 5,
+        createdAt: new Date().toISOString(),
+      },
     ];
     const { lastFrame: queueFrame } = render(
       <QueuePanel

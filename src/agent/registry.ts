@@ -45,6 +45,9 @@ type ToolDefinition<TSchema extends z.ZodObject<z.ZodRawShape>> = {
 };
 
 const readOnlyMetadata: ToolMetadata = { readOnly: true };
+const defineTool = <TSchema extends z.ZodObject<z.ZodRawShape>>(
+  definition: ToolDefinition<TSchema>,
+) => definition;
 
 async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> {
   if (!ctx.state) {
@@ -57,6 +60,174 @@ async function readRunState(ctx: ToolContext): Promise<Record<string, unknown>> 
     return {};
   }
   return data as Record<string, unknown>;
+}
+
+function getToolDefinitions(context: ToolContext, githubToken?: string) {
+  return [
+    defineTool({
+      name: 'silvan.state.read',
+      description: 'Read persisted run state data',
+      schema: z.object({ key: z.string().optional() }),
+      metadata: readOnlyMetadata,
+      async execute({ key }): Promise<unknown> {
+        const data = await readRunState(context);
+        if (!key) return data;
+        return data[key];
+      },
+    }),
+    defineTool({
+      name: 'silvan.plan.read',
+      description: 'Read the current run plan',
+      schema: z.object({}),
+      metadata: readOnlyMetadata,
+      async execute() {
+        const data = await readRunState(context);
+        return data['plan'];
+      },
+    }),
+    defineTool({
+      name: 'silvan.task.read',
+      description: 'Read the current run task payload',
+      schema: z.object({}),
+      metadata: readOnlyMetadata,
+      async execute() {
+        const data = await readRunState(context);
+        return data['task'];
+      },
+    }),
+    defineTool({
+      name: 'silvan.review.read',
+      description: 'Read persisted review thread fingerprints',
+      schema: z.object({}),
+      metadata: readOnlyMetadata,
+      async execute() {
+        const data = await readRunState(context);
+        const index = data['artifactsIndex'] as
+          | Record<string, Record<string, ArtifactEntry>>
+          | undefined;
+        const entry = index?.['github.review.fetch']?.['threads'];
+        if (!entry || entry.kind !== 'json') return undefined;
+        return readArtifact({ entry });
+      },
+    }),
+    defineTool({
+      name: 'github.pr.open',
+      description: 'Open or update a pull request',
+      schema: z.object({
+        owner: z.string(),
+        repo: z.string(),
+        headBranch: z.string(),
+        baseBranch: z.string(),
+        title: z.string(),
+        body: z.string(),
+      }),
+      metadata: { mutates: true },
+      async execute({ owner, repo, headBranch, baseBranch, title, body }) {
+        return await openOrUpdatePr({
+          owner,
+          repo,
+          headBranch,
+          baseBranch,
+          title,
+          body,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(context.bus ? { bus: context.bus } : {}),
+          context: context.emitContext,
+        });
+      },
+    }),
+    defineTool({
+      name: 'github.review.request',
+      description: 'Request reviewers for a PR',
+      schema: z.object({
+        owner: z.string(),
+        repo: z.string(),
+        number: z.number(),
+        reviewers: z.array(z.string()),
+        requestCopilot: z.boolean().optional(),
+      }),
+      metadata: { mutates: true },
+      async execute({ owner, repo, number, reviewers, requestCopilot }) {
+        await requestReviewers({
+          pr: { owner, repo, number },
+          reviewers,
+          requestCopilot: requestCopilot ?? true,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(context.bus ? { bus: context.bus } : {}),
+          context: context.emitContext,
+        });
+        return { ok: true };
+      },
+    }),
+    defineTool({
+      name: 'github.review.fetch',
+      description: 'Fetch unresolved review threads',
+      schema: z.object({ owner: z.string(), repo: z.string(), headBranch: z.string() }),
+      metadata: readOnlyMetadata,
+      async execute({ owner, repo, headBranch }) {
+        return await fetchUnresolvedReviewComments({
+          owner,
+          repo,
+          headBranch,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(context.bus ? { bus: context.bus } : {}),
+          context: context.emitContext,
+        });
+      },
+    }),
+    defineTool({
+      name: 'github.review.thread',
+      description: 'Fetch a review thread by ID',
+      schema: z.object({ threadId: z.string() }),
+      metadata: readOnlyMetadata,
+      async execute({ threadId }) {
+        return await fetchReviewThreadById({
+          threadId,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(context.bus ? { bus: context.bus } : {}),
+          context: context.emitContext,
+        });
+      },
+    }),
+    defineTool({
+      name: 'github.review.resolve',
+      description: 'Resolve a review thread',
+      schema: z.object({ threadId: z.string() }),
+      metadata: { mutates: true },
+      async execute({ threadId }) {
+        return await resolveReviewThread({
+          threadId,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(context.bus ? { bus: context.bus } : {}),
+          context: context.emitContext,
+        });
+      },
+    }),
+    defineTool({
+      name: 'github.ci.wait',
+      description: 'Wait for CI checks to complete',
+      schema: z.object({
+        owner: z.string(),
+        repo: z.string(),
+        headBranch: z.string(),
+        pollIntervalMs: z.number().optional(),
+        timeoutMs: z.number().optional(),
+      }),
+      metadata: readOnlyMetadata,
+      async execute({ owner, repo, headBranch, pollIntervalMs, timeoutMs }, ctx) {
+        return await waitForCi({
+          owner,
+          repo,
+          headBranch,
+          pollIntervalMs: pollIntervalMs ?? 15000,
+          timeoutMs: timeoutMs ?? 900000,
+          ...(githubToken ? { token: githubToken } : {}),
+          ...(ctx.bus ? { bus: ctx.bus } : {}),
+          context: ctx.emitContext,
+        });
+      },
+    }),
+  ];
 }
 
 export function createToolRegistry(context: ToolContext) {
@@ -94,178 +265,9 @@ export function createToolRegistry(context: ToolContext) {
     createTool(toolConfig, armorer);
   };
 
-  register({
-    name: 'silvan.state.read',
-    description: 'Read persisted run state data',
-    schema: z.object({ key: z.string().optional() }),
-    metadata: readOnlyMetadata,
-    async execute({ key }) {
-      const data = await readRunState(context);
-      if (!key) return data;
-      return data[key];
-    },
-  });
-
-  register({
-    name: 'silvan.plan.read',
-    description: 'Read the current run plan',
-    schema: z.object({}),
-    metadata: readOnlyMetadata,
-    async execute() {
-      const data = await readRunState(context);
-      return data['plan'];
-    },
-  });
-
-  register({
-    name: 'silvan.task.read',
-    description: 'Read the current run task payload',
-    schema: z.object({}),
-    metadata: readOnlyMetadata,
-    async execute() {
-      const data = await readRunState(context);
-      return data['task'];
-    },
-  });
-
-  register({
-    name: 'silvan.review.read',
-    description: 'Read persisted review thread fingerprints',
-    schema: z.object({}),
-    metadata: readOnlyMetadata,
-    async execute() {
-      const data = await readRunState(context);
-      const index = data['artifactsIndex'] as
-        | Record<string, Record<string, ArtifactEntry>>
-        | undefined;
-      const entry = index?.['github.review.fetch']?.['threads'];
-      if (!entry || entry.kind !== 'json') return undefined;
-      return readArtifact({ entry });
-    },
-  });
-
-  register({
-    name: 'github.pr.open',
-    description: 'Open or update a pull request',
-    schema: z.object({
-      owner: z.string(),
-      repo: z.string(),
-      headBranch: z.string(),
-      baseBranch: z.string(),
-      title: z.string(),
-      body: z.string(),
-    }),
-    metadata: { mutates: true },
-    async execute({ owner, repo, headBranch, baseBranch, title, body }) {
-      return await openOrUpdatePr({
-        owner,
-        repo,
-        headBranch,
-        baseBranch,
-        title,
-        body,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(context.bus ? { bus: context.bus } : {}),
-        context: context.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'github.review.request',
-    description: 'Request reviewers for a PR',
-    schema: z.object({
-      owner: z.string(),
-      repo: z.string(),
-      number: z.number(),
-      reviewers: z.array(z.string()),
-      requestCopilot: z.boolean().optional(),
-    }),
-    metadata: { mutates: true },
-    async execute({ owner, repo, number, reviewers, requestCopilot }) {
-      await requestReviewers({
-        pr: { owner, repo, number },
-        reviewers,
-        requestCopilot: requestCopilot ?? true,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(context.bus ? { bus: context.bus } : {}),
-        context: context.emitContext,
-      });
-      return { ok: true };
-    },
-  });
-
-  register({
-    name: 'github.review.fetch',
-    description: 'Fetch unresolved review threads',
-    schema: z.object({ owner: z.string(), repo: z.string(), headBranch: z.string() }),
-    metadata: readOnlyMetadata,
-    async execute({ owner, repo, headBranch }) {
-      return await fetchUnresolvedReviewComments({
-        owner,
-        repo,
-        headBranch,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(context.bus ? { bus: context.bus } : {}),
-        context: context.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'github.review.thread',
-    description: 'Fetch a review thread by ID',
-    schema: z.object({ threadId: z.string() }),
-    metadata: readOnlyMetadata,
-    async execute({ threadId }) {
-      return await fetchReviewThreadById({
-        threadId,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(context.bus ? { bus: context.bus } : {}),
-        context: context.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'github.review.resolve',
-    description: 'Resolve a review thread',
-    schema: z.object({ threadId: z.string() }),
-    metadata: { mutates: true },
-    async execute({ threadId }) {
-      return await resolveReviewThread({
-        threadId,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(context.bus ? { bus: context.bus } : {}),
-        context: context.emitContext,
-      });
-    },
-  });
-
-  register({
-    name: 'github.ci.wait',
-    description: 'Wait for CI checks to complete',
-    schema: z.object({
-      owner: z.string(),
-      repo: z.string(),
-      headBranch: z.string(),
-      pollIntervalMs: z.number().optional(),
-      timeoutMs: z.number().optional(),
-    }),
-    metadata: readOnlyMetadata,
-    async execute({ owner, repo, headBranch, pollIntervalMs, timeoutMs }, ctx) {
-      return await waitForCi({
-        owner,
-        repo,
-        headBranch,
-        pollIntervalMs: pollIntervalMs ?? 15000,
-        timeoutMs: timeoutMs ?? 900000,
-        ...(githubToken ? { token: githubToken } : {}),
-        ...(ctx.bus ? { bus: ctx.bus } : {}),
-        context: ctx.emitContext,
-      });
-    },
-  });
+  for (const definition of getToolDefinitions(context, githubToken)) {
+    register(definition);
+  }
 
   const { sdkServer, toolNames, mutatingToolNames, dangerousToolNames } =
     createClaudeAgentSdkServer(armorer, {

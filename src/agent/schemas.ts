@@ -57,10 +57,28 @@ export const reviewFixPlanSchema = z.object({
 
 export type ReviewFixPlan = z.infer<typeof reviewFixPlanSchema>;
 
+export const reviewThreadSeveritySchema = z.enum([
+  'blocking',
+  'question',
+  'suggestion',
+  'nitpick',
+]);
+
+export type ReviewThreadSeverity = z.infer<typeof reviewThreadSeveritySchema>;
+
 export const reviewClassificationSchema = z.object({
   actionableThreadIds: z.array(z.string()),
   ignoredThreadIds: z.array(z.string()),
   needsContextThreadIds: z.array(z.string()),
+  threads: z
+    .array(
+      z.object({
+        threadId: z.string().min(1),
+        severity: reviewThreadSeveritySchema,
+        summary: z.string().min(1),
+      }),
+    )
+    .optional(),
   clusters: z
     .array(
       z.object({

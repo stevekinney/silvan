@@ -41,8 +41,9 @@ export function QueuePanel({
         }
         const age = formatRelativeTime(request.createdAt, nowMs);
         const shortId = formatQueueId(request.id);
+        const priorityLabel = formatPriorityLabel(request);
         if (compact) {
-          const line = `${shortId} ${request.title} (${age} ago)`;
+          const line = `${priorityLabel} ${shortId} ${request.title} (${age} ago)`;
           return (
             <Text key={`${repoLabel}-${request.id}`}>{truncateText(line, width)}</Text>
           );
@@ -51,7 +52,7 @@ export function QueuePanel({
           <Box key={`${repoLabel}-${request.id}`} flexDirection="column">
             {showRepo ? <Text color="gray">{repoLabel}</Text> : null}
             <Box flexDirection="row" justifyContent="space-between">
-              <Text>{`${shortId} ${request.title}`}</Text>
+              <Text>{`${priorityLabel} ${shortId} ${request.title}`}</Text>
               <Text color="gray">{age} ago</Text>
             </Box>
           </Box>
@@ -72,4 +73,12 @@ export function QueuePanel({
 function formatQueueId(value: string): string {
   if (value.length <= 8) return value;
   return value.slice(0, 8);
+}
+
+function formatPriorityLabel(request: QueueRecord): string {
+  const boost = request.priorityBoost ?? 0;
+  if (boost > 0 && request.effectivePriority !== request.priority) {
+    return `P${request.effectivePriority}(+${boost})`;
+  }
+  return `P${request.effectivePriority}`;
 }

@@ -297,7 +297,18 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
     | { ok?: boolean; lastRunAt?: string }
     | undefined;
   const reviewClassificationSummary = data['reviewClassificationSummary'] as
-    | { actionable?: number; ignored?: number; needsContext?: number }
+    | {
+        actionable?: number;
+        ignored?: number;
+        needsContext?: number;
+        autoResolved?: number;
+        severity?: {
+          blocking?: number;
+          question?: number;
+          suggestion?: number;
+          nitpick?: number;
+        };
+      }
     | undefined;
   const reviewFixPlanSummary = data['reviewFixPlanSummary'] as
     | { actionable?: number; ignored?: number }
@@ -319,6 +330,12 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
         docs?: number;
         mode?: string;
         appliedTo?: string[];
+        status?: string;
+        confidence?: number;
+        threshold?: number;
+        autoApplied?: boolean;
+        commitSha?: string;
+        decisionReason?: string;
       }
     | undefined;
   const recoverySummary = data['recoverySummary'] as
@@ -426,6 +443,19 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
             actionable: reviewClassificationSummary.actionable ?? 0,
             ignored: reviewClassificationSummary.ignored ?? 0,
             needsContext: reviewClassificationSummary.needsContext ?? 0,
+            ...(reviewClassificationSummary.severity
+              ? {
+                  severity: {
+                    blocking: reviewClassificationSummary.severity.blocking ?? 0,
+                    question: reviewClassificationSummary.severity.question ?? 0,
+                    suggestion: reviewClassificationSummary.severity.suggestion ?? 0,
+                    nitpick: reviewClassificationSummary.severity.nitpick ?? 0,
+                  },
+                }
+              : {}),
+            ...(typeof reviewClassificationSummary.autoResolved === 'number'
+              ? { autoResolved: reviewClassificationSummary.autoResolved }
+              : {}),
           },
         }
       : {}),
@@ -485,6 +515,22 @@ function deriveRunFromSnapshot(snapshot: RunSnapshot): RunRecord {
             mode: learningSummary.mode ?? 'artifact',
             ...(learningSummary.appliedTo
               ? { appliedTo: learningSummary.appliedTo }
+              : {}),
+            ...(learningSummary.status ? { status: learningSummary.status } : {}),
+            ...(typeof learningSummary.confidence === 'number'
+              ? { confidence: learningSummary.confidence }
+              : {}),
+            ...(typeof learningSummary.threshold === 'number'
+              ? { threshold: learningSummary.threshold }
+              : {}),
+            ...(typeof learningSummary.autoApplied === 'boolean'
+              ? { autoApplied: learningSummary.autoApplied }
+              : {}),
+            ...(learningSummary.commitSha
+              ? { commitSha: learningSummary.commitSha }
+              : {}),
+            ...(learningSummary.decisionReason
+              ? { decisionReason: learningSummary.decisionReason }
               : {}),
           },
         }

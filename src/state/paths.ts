@@ -29,6 +29,7 @@ export type StatePaths = {
   artifactsDir: string;
   tasksDir: string;
   queueDir: string;
+  learningDir: string;
   metadataPath: string;
 };
 
@@ -61,6 +62,7 @@ export function resolveStatePaths(options: {
       artifactsDir: joinPath(root, 'artifacts'),
       tasksDir: joinPath(root, 'tasks'),
       queueDir: joinPath(root, 'queue', 'requests'),
+      learningDir: joinPath(root, 'learning', 'requests'),
       metadataPath: joinPath(root, 'metadata.json'),
     };
   }
@@ -85,6 +87,7 @@ export function resolveStatePaths(options: {
     artifactsDir: joinPath(repoRoot, 'artifacts'),
     tasksDir: joinPath(repoRoot, 'tasks'),
     queueDir: joinPath(repoRoot, 'queue', 'requests'),
+    learningDir: joinPath(repoRoot, 'learning', 'requests'),
     metadataPath: joinPath(repoRoot, 'metadata.json'),
   };
 }
